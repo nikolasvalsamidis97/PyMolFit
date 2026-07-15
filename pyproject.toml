@@ -9,6 +9,25 @@ description = "Generic pure-Python telluric fitting and correction with source-a
 readme = "README.md"
 license = { text = "Scientific/research use; see THIRD_PARTY_NOTICES.md for bundled AER data terms" }
 requires-python = ">=3.10"
+keywords = [
+    "astronomy",
+    "radiative transfer",
+    "spectroscopy",
+    "telluric correction",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 authors = [
     { name = "Nikolas Valsamidis" }
 ]
@@ -31,6 +50,11 @@ plot = [
 
 [project.scripts]
 pymolfit = "pymolfit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/nikolasvalsamidis97/PyMolFit"
+Issues = "https://github.com/nikolasvalsamidis97/PyMolFit/issues"
+Repository = "https://github.com/nikolasvalsamidis97/PyMolFit.git"
 
 [tool.setuptools.packages.find]
 where = ["src"]
