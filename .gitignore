@@ -1,0 +1,31 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.DS_Store
+.venv/
+venv/
+*.log
+
+# Local validation downloads, caches, external-program work directories, and
+# generated products. Keep the reusable validation programs in local_tests/.
+local_tests/*/
+!local_tests/lblrtm_audit/
+local_tests/lblrtm_audit/*
+!local_tests/lblrtm_audit/*.py
+!local_tests/lblrtm_audit/*.md
+!local_tests/science_readiness/
+local_tests/science_readiness/*
+!local_tests/science_readiness/data/
+local_tests/science_readiness/data/*
+!local_tests/science_readiness/data/README.md
+
+# The blind-review answer key must not be shared with reviewers.
+local_tests/**/independent_review_answer_key.csv
