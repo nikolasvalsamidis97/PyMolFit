@@ -263,7 +263,7 @@ class PartitionTable:
         the same molecule/isotopologue partition sums as Molecfit's LBLRTM.
         """
 
-        resource = resources.files("genmolfit").joinpath("data", "lblrtm_v12_11_tips.npz")
+        resource = resources.files("pymolfit").joinpath("data", "lblrtm_v12_11_tips.npz")
         with resources.as_file(resource) as path, np.load(path) as data:
             return cls(
                 mol_id=np.asarray(data["mol_id"], dtype=int),

@@ -1,7 +1,7 @@
-"""Extract LBLRTM 12.11 TIPS tables into GenMolFit package data.
+"""Extract LBLRTM 12.11 TIPS tables into PyMolFit package data.
 
 This is a development-time provenance tool. The generated NPZ is consumed at
-runtime, so installing GenMolFit does not require LBLRTM or a Fortran compiler.
+runtime, so installing PyMolFit does not require LBLRTM or a Fortran compiler.
 """
 
 from __future__ import annotations

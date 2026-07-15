@@ -3,7 +3,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
-from genmolfit import FitConfig, LineList, ModelConfig, Spectrum, fit_tellurics, transmission_model
+from pymolfit import FitConfig, LineList, ModelConfig, Spectrum, fit_tellurics, transmission_model
 
 
 def main() -> None:

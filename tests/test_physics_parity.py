@@ -1,19 +1,19 @@
 import numpy as np
 from scipy.integrate import trapezoid
 
-from genmolfit.components import (
+from pymolfit.components import (
     _lblrtm_self_mixture_corrected_air_width,
     _lblrtm_self_mixture_corrected_pressure_shift,
 )
-from genmolfit.continuum import MTCKDH2OContinuum, radiation_term_cm, radiation_term_interval_cm
-from genmolfit.linelist import LBLRTM_BROADENER_SPECIES
-from genmolfit.model import (
+from pymolfit.continuum import MTCKDH2OContinuum, radiation_term_cm, radiation_term_interval_cm
+from pymolfit.linelist import LBLRTM_BROADENER_SPECIES
+from pymolfit.model import (
     _fractional_box_kernel,
     _integrated_gaussian_kernel,
     _integrated_lorentz_kernel,
     _molecfit_voigt_approx_kernel,
 )
-from genmolfit.physics import (
+from pymolfit.physics import (
     AMU_KG,
     BOLTZMANN_J_PER_K,
     LBLRTM_SECOND_RADIATION_CONSTANT_CM_K,

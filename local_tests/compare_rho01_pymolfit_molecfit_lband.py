@@ -9,7 +9,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereLayer,
     AtmosphereProfile,
     CO2ContinuumAbsorption,
@@ -38,21 +38,21 @@ PROJECT = Path(__file__).resolve().parents[1]
 EXTERNAL = PROJECT / "local_tests" / "external_absorption"
 RHO01 = Path(
     os.environ.get(
-        "GENMOLFIT_RHO01_PRODUCTS",
+        "PYMOLFIT_RHO01_PRODUCTS",
         PROJECT / "local_tests" / "data" / "rho01",
     )
 )
 MOLECFIT = RHO01 / "molecfit"
 OUTPUT = Path(
     os.environ.get(
-        "GENMOLFIT_COMPARISON_OUTPUT",
-        PROJECT / "local_tests" / "rho01_molecfit_vs_genmolfit_lband",
+        "PYMOLFIT_COMPARISON_OUTPUT",
+        PROJECT / "local_tests" / "rho01_molecfit_vs_pymolfit_lband",
     )
 )
 
 LINE_LIST = Path(
     os.environ.get(
-        "GENMOLFIT_LINE_LIST",
+        "PYMOLFIT_LINE_LIST",
         EXTERNAL / "aer_lband_h2o_co2_co_ch4_o2_strength1e-32.ecsv",
     )
 )
@@ -123,76 +123,76 @@ def _molecfit_header_bool(keyword: str, default: bool) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off", "none", ""}
 
 
-LINE_CUTOFF_CM = _optional_float_env("GENMOLFIT_LINE_CUTOFF_CM")
-LINE_WING_MODE = os.environ.get("GENMOLFIT_LINE_WING_MODE", "lblrtm_panel")
+LINE_CUTOFF_CM = _optional_float_env("PYMOLFIT_LINE_CUTOFF_CM")
+LINE_WING_MODE = os.environ.get("PYMOLFIT_LINE_WING_MODE", "lblrtm_panel")
 LBLRTM_SAMPLE = float(
     os.environ.get(
-        "GENMOLFIT_LBLRTM_SAMPLE",
+        "PYMOLFIT_LBLRTM_SAMPLE",
         _molecfit_header_float("ESO DRS MF PARAM LBLRTM_SAMPLE", 4.0),
     )
 )
 LBLRTM_ALFAL0 = float(
     os.environ.get(
-        "GENMOLFIT_LBLRTM_ALFAL0",
+        "PYMOLFIT_LBLRTM_ALFAL0",
         _molecfit_header_float("ESO DRS MF PARAM LBLRTM_ALFAL0", 0.04),
     )
 )
-LBLRTM_HWF3 = float(os.environ.get("GENMOLFIT_LBLRTM_HWF3", "64.0"))
-LINE_TAPER_CM = float(os.environ.get("GENMOLFIT_LINE_TAPER_CM", "0.0" if LINE_CUTOFF_CM is None else "2.0"))
-SUBTRACT_CUTOFF_PROFILE = os.environ.get("GENMOLFIT_SUBTRACT_CUTOFF_PROFILE", "0").strip().lower() not in {
+LBLRTM_HWF3 = float(os.environ.get("PYMOLFIT_LBLRTM_HWF3", "64.0"))
+LINE_TAPER_CM = float(os.environ.get("PYMOLFIT_LINE_TAPER_CM", "0.0" if LINE_CUTOFF_CM is None else "2.0"))
+SUBTRACT_CUTOFF_PROFILE = os.environ.get("PYMOLFIT_SUBTRACT_CUTOFF_PROFILE", "0").strip().lower() not in {
     "0",
     "false",
     "no",
     "off",
 }
-USE_SOURCE_BOX_WIDTH = _bool_env("GENMOLFIT_SOURCE_BOX_WIDTH", False)
+USE_SOURCE_BOX_WIDTH = _bool_env("PYMOLFIT_SOURCE_BOX_WIDTH", False)
 USE_VARIABLE_LSF = _bool_env(
-    "GENMOLFIT_VARIABLE_LSF",
+    "PYMOLFIT_VARIABLE_LSF",
     _molecfit_header_bool("ESO DRS MF PARAM VARKERN", False),
 )
 USE_MOLECFIT_VOIGT_LSF = _bool_env(
-    "GENMOLFIT_MOLECFIT_VOIGT_LSF",
+    "PYMOLFIT_MOLECFIT_VOIGT_LSF",
     _molecfit_header_bool("ESO DRS MF PARAM KERNMODE", False),
 )
 LSF_KERNEL_WIDTH_FWHM = float(
     os.environ.get(
-        "GENMOLFIT_LSF_KERNEL_WIDTH_FWHM",
+        "PYMOLFIT_LSF_KERNEL_WIDTH_FWHM",
         _molecfit_header_float("ESO DRS MF PARAM KERNFAC", 3.0),
     )
 )
-FIT_LSF_BOX_WIDTH = _bool_env("GENMOLFIT_FIT_LSF_BOX_WIDTH", False)
-LSF_BOX_WIDTH_BOUNDS = _bounds_env("GENMOLFIT_LSF_BOX_WIDTH_BOUNDS", (0.0, 10.0))
-FIT_LSF_LORENTZ_FWHM = _bool_env("GENMOLFIT_FIT_LSF_LORENTZ_FWHM", False)
-LSF_LORENTZ_FWHM_BOUNDS = _bounds_env("GENMOLFIT_LSF_LORENTZ_FWHM_BOUNDS", (0.0, 10.0))
-HIGH_RESOLUTION_GRID = _bool_env("GENMOLFIT_HIGH_RESOLUTION_GRID", True)
-HIGH_RESOLUTION_OVERSAMPLING = float(os.environ.get("GENMOLFIT_HIGH_RESOLUTION_OVERSAMPLING", "5.0"))
-HIGH_RESOLUTION_MARGIN_PIXELS = float(os.environ.get("GENMOLFIT_HIGH_RESOLUTION_MARGIN_PIXELS", "2.0"))
-HIGH_RESOLUTION_REBIN_MODE = os.environ.get("GENMOLFIT_HIGH_RESOLUTION_REBIN_MODE", "molecfit_overlap")
-CONTINUUM_ORDER_ENV = os.environ.get("GENMOLFIT_CONTINUUM_ORDER")
+FIT_LSF_BOX_WIDTH = _bool_env("PYMOLFIT_FIT_LSF_BOX_WIDTH", False)
+LSF_BOX_WIDTH_BOUNDS = _bounds_env("PYMOLFIT_LSF_BOX_WIDTH_BOUNDS", (0.0, 10.0))
+FIT_LSF_LORENTZ_FWHM = _bool_env("PYMOLFIT_FIT_LSF_LORENTZ_FWHM", False)
+LSF_LORENTZ_FWHM_BOUNDS = _bounds_env("PYMOLFIT_LSF_LORENTZ_FWHM_BOUNDS", (0.0, 10.0))
+HIGH_RESOLUTION_GRID = _bool_env("PYMOLFIT_HIGH_RESOLUTION_GRID", True)
+HIGH_RESOLUTION_OVERSAMPLING = float(os.environ.get("PYMOLFIT_HIGH_RESOLUTION_OVERSAMPLING", "5.0"))
+HIGH_RESOLUTION_MARGIN_PIXELS = float(os.environ.get("PYMOLFIT_HIGH_RESOLUTION_MARGIN_PIXELS", "2.0"))
+HIGH_RESOLUTION_REBIN_MODE = os.environ.get("PYMOLFIT_HIGH_RESOLUTION_REBIN_MODE", "molecfit_overlap")
+CONTINUUM_ORDER_ENV = os.environ.get("PYMOLFIT_CONTINUUM_ORDER")
 LINE_MARGIN_MICRON = float(
     os.environ.get(
-        "GENMOLFIT_LINE_MARGIN_MICRON",
+        "PYMOLFIT_LINE_MARGIN_MICRON",
         "0.03" if LBLRTM_ALFAL0 == 0 and LINE_CUTOFF_CM is None else "0.01",
     )
 )
-USE_EXTRA_CIA = _bool_env("GENMOLFIT_EXTRA_CIA", False)
-USE_RAYLEIGH = _bool_env("GENMOLFIT_RAYLEIGH", False)
-USE_N2_CONTINUUM = _bool_env("GENMOLFIT_N2_CONTINUUM", True)
-USE_LBLRTM_H2O_CONTINUUM = _bool_env("GENMOLFIT_LBLRTM_H2O_CONTINUUM", True)
-USE_LBLRTM_CO2_CONTINUUM = _bool_env("GENMOLFIT_LBLRTM_CO2_CONTINUUM", True)
-ATMOSPHERE_SOURCE = os.environ.get("GENMOLFIT_ATMOSPHERE_SOURCE", "mipas_gdas").strip().lower()
-WRITE_PLOTS = _bool_env("GENMOLFIT_WRITE_PLOTS", True)
-USE_MOLECFIT_WEIGHTS = _bool_env("GENMOLFIT_USE_MOLECFIT_WEIGHTS", True)
-FIT_LOSS = os.environ.get("GENMOLFIT_FIT_LOSS", "linear")
-FIT_F_SCALE = float(os.environ.get("GENMOLFIT_F_SCALE", "1.0"))
-SOLVE_CONTINUUM_LINEAR = _bool_env("GENMOLFIT_SOLVE_CONTINUUM_LINEAR", True)
-MAX_NFEV_ENV = os.environ.get("GENMOLFIT_MAX_NFEV", "80")
+USE_EXTRA_CIA = _bool_env("PYMOLFIT_EXTRA_CIA", False)
+USE_RAYLEIGH = _bool_env("PYMOLFIT_RAYLEIGH", False)
+USE_N2_CONTINUUM = _bool_env("PYMOLFIT_N2_CONTINUUM", True)
+USE_LBLRTM_H2O_CONTINUUM = _bool_env("PYMOLFIT_LBLRTM_H2O_CONTINUUM", True)
+USE_LBLRTM_CO2_CONTINUUM = _bool_env("PYMOLFIT_LBLRTM_CO2_CONTINUUM", True)
+ATMOSPHERE_SOURCE = os.environ.get("PYMOLFIT_ATMOSPHERE_SOURCE", "mipas_gdas").strip().lower()
+WRITE_PLOTS = _bool_env("PYMOLFIT_WRITE_PLOTS", True)
+USE_MOLECFIT_WEIGHTS = _bool_env("PYMOLFIT_USE_MOLECFIT_WEIGHTS", True)
+FIT_LOSS = os.environ.get("PYMOLFIT_FIT_LOSS", "linear")
+FIT_F_SCALE = float(os.environ.get("PYMOLFIT_F_SCALE", "1.0"))
+SOLVE_CONTINUUM_LINEAR = _bool_env("PYMOLFIT_SOLVE_CONTINUUM_LINEAR", True)
+MAX_NFEV_ENV = os.environ.get("PYMOLFIT_MAX_NFEV", "80")
 MAX_NFEV = None if MAX_NFEV_ENV.strip().lower() in {"", "none", "null", "off"} else int(MAX_NFEV_ENV)
-FIT_SEGMENT_WAVELENGTH_SHIFTS = _bool_env("GENMOLFIT_FIT_SEGMENT_WAVELENGTH_SHIFTS", True)
-FIT_SEGMENT_WAVELENGTH_POLYNOMIAL_ENV = os.environ.get("GENMOLFIT_FIT_SEGMENT_WAVELENGTH_POLYNOMIAL")
-SEGMENT_WAVELENGTH_POLYNOMIAL_ORDER_ENV = os.environ.get("GENMOLFIT_SEGMENT_WAVELENGTH_POLYNOMIAL_ORDER")
-WAVELENGTH_SHIFT_BOUND = float(os.environ.get("GENMOLFIT_WAVELENGTH_SHIFT_BOUND", "5.0e-4"))
-USE_MOLECFIT_INITIAL_SCALES = _bool_env("GENMOLFIT_USE_MOLECFIT_INITIAL_SCALES", False)
+FIT_SEGMENT_WAVELENGTH_SHIFTS = _bool_env("PYMOLFIT_FIT_SEGMENT_WAVELENGTH_SHIFTS", True)
+FIT_SEGMENT_WAVELENGTH_POLYNOMIAL_ENV = os.environ.get("PYMOLFIT_FIT_SEGMENT_WAVELENGTH_POLYNOMIAL")
+SEGMENT_WAVELENGTH_POLYNOMIAL_ORDER_ENV = os.environ.get("PYMOLFIT_SEGMENT_WAVELENGTH_POLYNOMIAL_ORDER")
+WAVELENGTH_SHIFT_BOUND = float(os.environ.get("PYMOLFIT_WAVELENGTH_SHIFT_BOUND", "5.0e-4"))
+USE_MOLECFIT_INITIAL_SCALES = _bool_env("PYMOLFIT_USE_MOLECFIT_INITIAL_SCALES", False)
 
 
 def uncertainty_from_molecfit_weight(weight: np.ndarray) -> np.ndarray | None:
@@ -315,7 +315,7 @@ def comparison_atmosphere(
         )
         return atmosphere, airmass
     raise ValueError(
-        "GENMOLFIT_ATMOSPHERE_SOURCE must be mipas_gdas, molecfit, header_slant, or header_vertical"
+        "PYMOLFIT_ATMOSPHERE_SOURCE must be mipas_gdas, molecfit, header_slant, or header_vertical"
     )
 
 
@@ -551,8 +551,8 @@ def fit_chip(chip: int, data, line_list, atmosphere, partition_table, h2o_contin
             "success": bool(result.success),
         "nfev": int(result.nfev),
         "cost": float(result.cost),
-        "genmolfit_min_transmission": float(np.nanmin(result.transmission)),
-        "genmolfit_median_transmission": float(np.nanmedian(result.transmission)),
+        "pymolfit_min_transmission": float(np.nanmin(result.transmission)),
+        "pymolfit_median_transmission": float(np.nanmedian(result.transmission)),
         "molecfit_min_transmission": float(np.nanmin(molecfit_transmission)),
         "molecfit_median_transmission": float(np.nanmedian(molecfit_transmission)),
         "transmission_rms_difference": float(np.sqrt(np.nanmean(diff**2))),
@@ -589,28 +589,28 @@ def plot_chip(chip: int, table: Table, output: Path) -> None:
 
     norm_flux = flux / continuum
     molecfit_corrected_norm = norm_flux / np.clip(mol_trans, 0.03, np.inf)
-    genmolfit_corrected_norm = corrected / continuum
+    pymolfit_corrected_norm = corrected / continuum
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True, constrained_layout=True)
-    axes[0].plot(wavelength, norm_flux, color="0.35", lw=0.8, label="Observed / GenMolFit continuum")
-    axes[0].plot(wavelength, gen_trans, color="tab:orange", lw=1.0, label="GenMolFit transmission")
+    axes[0].plot(wavelength, norm_flux, color="0.35", lw=0.8, label="Observed / PyMolFit continuum")
+    axes[0].plot(wavelength, gen_trans, color="tab:orange", lw=1.0, label="PyMolFit transmission")
     axes[0].plot(wavelength, mol_trans, color="tab:blue", lw=1.0, alpha=0.8, label="Molecfit transmission")
     axes[0].set_ylabel("Normalized flux")
     axes[0].legend(loc="best", fontsize=8)
 
     axes[1].plot(wavelength, mol_trans, color="tab:blue", lw=1.0, label="Molecfit")
-    axes[1].plot(wavelength, gen_trans, color="tab:orange", lw=1.0, label="GenMolFit")
+    axes[1].plot(wavelength, gen_trans, color="tab:orange", lw=1.0, label="PyMolFit")
     axes[1].set_ylabel("Transmission")
     axes[1].legend(loc="best", fontsize=8)
 
     axes[2].plot(wavelength, molecfit_corrected_norm, color="tab:blue", lw=0.8, label="Molecfit corrected")
-    axes[2].plot(wavelength, genmolfit_corrected_norm, color="tab:orange", lw=0.8, label="GenMolFit corrected")
+    axes[2].plot(wavelength, pymolfit_corrected_norm, color="tab:orange", lw=0.8, label="PyMolFit corrected")
     axes[2].set_xlabel("Wavelength [micron]")
     axes[2].set_ylabel("Corrected / continuum")
     axes[2].legend(loc="best", fontsize=8)
 
-    fig.suptitle(f"rho01 CNC L-band chip {chip}: Molecfit vs GenMolFit")
-    fig.savefig(output / f"chip_{chip:02d}_molecfit_vs_genmolfit.png", dpi=180)
+    fig.suptitle(f"rho01 CNC L-band chip {chip}: Molecfit vs PyMolFit")
+    fig.savefig(output / f"chip_{chip:02d}_molecfit_vs_pymolfit.png", dpi=180)
     plt.close(fig)
 
 
@@ -634,7 +634,7 @@ def plot_summary(summary_table: Table, output: Path) -> None:
     axes[1].set_xticks(chip)
 
     mode = str(summary_table["line_wing_mode"][0]) if "line_wing_mode" in summary_table.colnames else "unknown"
-    fig.suptitle(f"rho01 CNC L-band Molecfit vs GenMolFit summary ({mode})")
+    fig.suptitle(f"rho01 CNC L-band Molecfit vs PyMolFit summary ({mode})")
     fig.savefig(output / "summary_transmission_differences.png", dpi=180)
     plt.close(fig)
 
@@ -925,19 +925,19 @@ def main() -> None:
             "success": bool(result.success),
             "nfev": int(result.nfev),
             "cost": float(result.cost),
-            "genmolfit_min_transmission": float(np.nanmin(transmission)),
-            "genmolfit_median_transmission": float(np.nanmedian(transmission)),
+            "pymolfit_min_transmission": float(np.nanmin(transmission)),
+            "pymolfit_median_transmission": float(np.nanmedian(transmission)),
             "molecfit_min_transmission": float(np.nanmin(molecfit_transmission)),
             "molecfit_median_transmission": float(np.nanmedian(molecfit_transmission)),
             "transmission_rms_difference": float(np.sqrt(np.nanmean(diff**2))),
             "transmission_median_abs_difference": float(np.nanmedian(np.abs(diff))),
             "continuum_invariant_shape_rms": shape_rms,
-            "genmolfit_weighted_objective": gen_objective,
+            "pymolfit_weighted_objective": gen_objective,
             "molecfit_weighted_objective": molecfit_objective,
             "weighted_objective_ratio": (
                 gen_objective / molecfit_objective if molecfit_objective > 0 else np.nan
             ),
-            "genmolfit_corrected_scatter": float(
+            "pymolfit_corrected_scatter": float(
                 np.nanstd(gen_corrected_relative[reliable] - 1.0)
             ),
             "molecfit_corrected_scatter": float(

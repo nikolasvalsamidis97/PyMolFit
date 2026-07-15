@@ -5,10 +5,10 @@ from pathlib import Path
 import numpy as np
 from astropy.table import Table
 
-from genmolfit.atmosphere import AtmosphereProfile, BOLTZMANN_J_PER_K, CM_PER_M, PA_PER_ATM
-from genmolfit.components import hitran_line_optical_depth_basis
-from genmolfit.linelist import LineList
-from genmolfit.physics import (
+from pymolfit.atmosphere import AtmosphereProfile, BOLTZMANN_J_PER_K, CM_PER_M, PA_PER_ATM
+from pymolfit.components import hitran_line_optical_depth_basis
+from pymolfit.linelist import LineList
+from pymolfit.physics import (
     AMU_KG,
     SECOND_RADIATION_CONSTANT_CM_K,
     SPEED_OF_LIGHT_M_PER_S,

@@ -3,8 +3,8 @@ import pytest
 from astropy.table import Table
 from types import SimpleNamespace
 
-from genmolfit import LineList, ModelConfig, transmission_model
-from genmolfit.cli import build_parser, main
+from pymolfit import LineList, ModelConfig, transmission_model
+from pymolfit.cli import build_parser, main
 
 
 def _fixed_decimal(value, width, decimals):
@@ -112,7 +112,7 @@ def test_cli_install_aer_reports_verified_artifact(monkeypatch, tmp_path, capsys
             managed=True,
         )
 
-    monkeypatch.setattr("genmolfit.cli.install_aer_catalog", fake_install)
+    monkeypatch.setattr("pymolfit.cli.install_aer_catalog", fake_install)
     status = main(["install-aer", "--source", "test.tar.gz", "--cache-dir", str(tmp_path)])
 
     assert status == 0
@@ -122,7 +122,7 @@ def test_cli_install_aer_reports_verified_artifact(monkeypatch, tmp_path, capsys
 
 
 def test_cli_aer_status_is_nonzero_when_catalogue_missing(monkeypatch):
-    monkeypatch.setattr("genmolfit.cli.aer_catalog_status", lambda **kwargs: None)
+    monkeypatch.setattr("pymolfit.cli.aer_catalog_status", lambda **kwargs: None)
     assert main(["aer-status", "--no-reuse-molecfit"]) == 1
 
 

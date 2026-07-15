@@ -13,7 +13,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereLayer,
     AtmosphereProfile,
     H2OContinuumAbsorption,
@@ -33,7 +33,7 @@ EXTERNAL = PROJECT / "local_tests" / "external_absorption"
 DEFAULT_MOLECFIT_ROOT = Path.home() / ".criresflow" / "molecfit"
 DEFAULT_PROFILE = Path(
     os.environ.get(
-        "GENMOLFIT_REFERENCE_ATMOSPHERE",
+        "PYMOLFIT_REFERENCE_ATMOSPHERE",
         PROJECT / "local_tests" / "data" / "rho01" / "ATM_PROFILE_COMBINED.fits",
     )
 )
@@ -100,7 +100,7 @@ def _molecule_flags(*active_indices: int) -> str:
 
 def _write_lnfl_tape5(path: Path, wn_min: float, wn_max: float, flags: str) -> None:
     path.write_text(
-        "$ GenMolFit external golden audit\n"
+        "$ PyMolFit external golden audit\n"
         f"{wn_min:10.3f}{wn_max:10.3f}\n"
         f"{flags:>47s}    LNOUT F100\n"
         "%%%%%%%%%%%%%%%%%%\n"
@@ -132,7 +132,7 @@ def _write_lblrtm_tape5(
         raise ValueError("at least one molecule must be active")
     vbar = 0.5 * (wn_min + wn_max)
     lines = [
-        "$ GenMolFit external golden audit",
+        "$ PyMolFit external golden audit",
         (
             f"    1    1    {continuum:1d}    0    1    0    0"
             "    0    0    1    0    0    0    0    5    5    0    0"
@@ -180,7 +180,7 @@ def _write_lblrtm_tape5(
             f"{0.0:10.4g}{1.2:10.4g}{7.02:10.3e}{0.2:10.3e}"
             f"{4:5d}{0:5d}{1:5d}{0:5d}{0:5d}{0:5d}{1:2d}   {3:2d}{28:3d}",
             "-1",
-            "% GenMolFit external golden audit",
+            "% PyMolFit external golden audit",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
@@ -253,7 +253,7 @@ def _profile_to_layers(profile_path: Path, observer_altitude_km: float) -> Atmos
     return AtmosphereProfile(tuple(layers), metadata={"level_semantics": "boundaries"})
 
 
-def _genmolfit_transmission(
+def _pymolfit_transmission(
     wavenumber_cm: np.ndarray,
     profile_path: Path,
     observer_altitude_km: float,
@@ -330,7 +330,7 @@ def run(args: argparse.Namespace) -> None:
     # the active O2 amount when partitioning dry air into N2 and O2 collision
     # partners for the N2 continuum.
     flags = _molecule_flags(1, 7)
-    with tempfile.TemporaryDirectory(prefix="genmolfit_lblrtm_audit_") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_lblrtm_audit_") as temporary:
         root = Path(temporary)
         lnfl_dir = root / "lnfl"
         lnfl_dir.mkdir()
@@ -369,7 +369,7 @@ def run(args: argparse.Namespace) -> None:
                 if source.exists():
                     shutil.copy2(source, audit_inputs / f"{case.name}_{name}")
             wavenumber, reference = _read_tape28(case_dir / "TAPE28")
-            model = _genmolfit_transmission(
+            model = _pymolfit_transmission(
                 wavenumber,
                 profile_path,
                 args.observer_altitude_km,
@@ -382,14 +382,14 @@ def run(args: argparse.Namespace) -> None:
             product["wavenumber_cm-1"] = wavenumber
             product["wavelength_micron"] = 1.0e4 / wavenumber
             product["lblrtm_transmission"] = reference
-            product["genmolfit_transmission"] = model
+            product["pymolfit_transmission"] = model
             product["difference"] = model - reference
             product.write(output / f"{case.name}.ecsv", format="ascii.ecsv", overwrite=True)
             products.append((case.name, wavenumber, reference, model))
 
         # Divide out the line-only calculation to isolate N2 continuum
         # transmission. This remains valid in windows where the compact
-        # GenMolFit audit line list does not contain every external line.
+        # PyMolFit audit line list does not contain every external line.
         by_name = {name: (wn, reference, model) for name, wn, reference, model in products}
         line_wn, line_reference, line_model = by_name["h2o_lines_only"]
         n2_wn, n2_reference, n2_model = by_name["h2o_lines_and_n2_continuum"]
@@ -414,7 +414,7 @@ def run(args: argparse.Namespace) -> None:
         differential["wavenumber_cm-1"] = line_wn
         differential["wavelength_micron"] = 1.0e4 / line_wn
         differential["lblrtm_transmission"] = reference_component
-        differential["genmolfit_transmission"] = model_component
+        differential["pymolfit_transmission"] = model_component
         differential["difference"] = model_component - reference_component
         differential.write(
             output / f"{differential_name}.ecsv", format="ascii.ecsv", overwrite=True
@@ -438,7 +438,7 @@ def run(args: argparse.Namespace) -> None:
         o2_differential["wavenumber_cm-1"] = o2_wn
         o2_differential["wavelength_micron"] = 1.0e4 / o2_wn
         o2_differential["lblrtm_transmission"] = o2_reference_component
-        o2_differential["genmolfit_transmission"] = o2_model_component
+        o2_differential["pymolfit_transmission"] = o2_model_component
         o2_differential["difference"] = o2_model_component - o2_reference_component
         o2_differential.write(output / f"{o2_name}.ecsv", format="ascii.ecsv", overwrite=True)
         products.append((o2_name, o2_wn, o2_reference_component, o2_model_component))
@@ -451,13 +451,13 @@ def run(args: argparse.Namespace) -> None:
     axes = np.atleast_2d(axes)
     for row, (name, wavenumber, reference, model) in enumerate(products):
         axes[row, 0].plot(wavenumber, reference, color="tab:blue", lw=0.9, label="LBLRTM 12.11")
-        axes[row, 0].plot(wavenumber, model, color="tab:orange", lw=0.8, label="GenMolFit")
+        axes[row, 0].plot(wavenumber, model, color="tab:orange", lw=0.8, label="PyMolFit")
         axes[row, 0].set_ylabel("Transmission")
         axes[row, 0].set_title(name)
         axes[row, 0].legend(fontsize=8)
         axes[row, 1].plot(wavenumber, model - reference, color="black", lw=0.8)
         axes[row, 1].axhline(0.0, color="0.6", lw=0.7)
-        axes[row, 1].set_ylabel("GenMolFit - LBLRTM")
+        axes[row, 1].set_ylabel("PyMolFit - LBLRTM")
         axes[row, 1].set_title(f"{name}: residual")
         axes[row, 0].set_xlabel("Wavenumber [cm$^{-1}$]")
         axes[row, 1].set_xlabel("Wavenumber [cm$^{-1}$]")

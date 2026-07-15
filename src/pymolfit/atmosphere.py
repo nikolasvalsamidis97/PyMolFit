@@ -857,7 +857,7 @@ def _resolve_mipas_profile_name(profile: str, latitude_deg: float | None) -> str
 
 
 def _package_data_path(*parts: str):
-    return resources.files("genmolfit").joinpath("data", *parts)
+    return resources.files("pymolfit").joinpath("data", *parts)
 
 
 def _load_mipas_profile(profile_name: str) -> dict[str, object]:
@@ -1113,7 +1113,7 @@ def _layers_from_atmosphere_levels(
     reference_wavenumber_cm: float = 10_000.0,
     earth_radius_m: float = EARTH_RADIUS_M,
 ) -> tuple[AtmosphereLayer, ...]:
-    """Convert Molecfit/LBLRTM level values into GenMolFit path layers."""
+    """Convert Molecfit/LBLRTM level values into PyMolFit path layers."""
 
     altitude = np.asarray(altitude_m, dtype=float)
     pressure = np.asarray(pressure_hpa, dtype=float)

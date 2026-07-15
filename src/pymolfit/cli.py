@@ -15,7 +15,7 @@ from .workflow import correct_file
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="genmolfit")
+    parser = argparse.ArgumentParser(prog="pymolfit")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     fit_parser = subparsers.add_parser("fit", help="fit and remove telluric absorption")
@@ -402,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     aer_status_parser = subparsers.add_parser(
         "aer-status",
-        help="report the verified AER catalogue available to GenMolFit",
+        help="report the verified AER catalogue available to PyMolFit",
     )
     aer_status_parser.add_argument("--catalog-path", type=Path)
     aer_status_parser.add_argument("--cache-dir", type=Path)

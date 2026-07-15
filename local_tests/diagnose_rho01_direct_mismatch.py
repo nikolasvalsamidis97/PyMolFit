@@ -7,7 +7,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     CO2ContinuumAbsorption,
     H2OContinuumAbsorption,
     HitranLineAbsorption,
@@ -21,7 +21,7 @@ from genmolfit import (
     transmission_from_high_resolution_basis,
 )
 
-import compare_rho01_genmolfit_molecfit_lband as base
+import compare_rho01_pymolfit_molecfit_lband as base
 
 
 PROJECT = Path(__file__).resolve().parents[1]

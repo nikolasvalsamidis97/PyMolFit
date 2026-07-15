@@ -13,20 +13,20 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import LineList, correct_file
+from pymolfit import LineList, correct_file
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 SPECTRA_DIR = Path(
     os.environ.get(
-        "GENMOLFIT_BETAPIC_SPECTRA_DIR",
+        "PYMOLFIT_BETAPIC_SPECTRA_DIR",
         PROJECT / "local_tests" / "data" / "betapic",
     )
 )
 OUTPUT_DIR = Path(__file__).resolve().parent / "betapic_harps_o2_comparison"
 HITRAN_O2_PAR = Path(
     os.environ.get(
-        "GENMOLFIT_HITRAN_O2_PAR",
+        "PYMOLFIT_HITRAN_O2_PAR",
         PROJECT / "local_tests" / "data" / "hitran" / "o2.par",
     )
 )
@@ -63,8 +63,8 @@ def _write_crop_fits(source_path: Path, crop_path: Path) -> tuple[np.ndarray, np
     primary = fits.PrimaryHDU(header=header)
     primary.header["ESO INS SLIT1 WID"] = (0.4, "Default HARPS fibre/slit width for Molecfit test")
     primary.header.setdefault("ESO TEL TH M1 TEMP", primary.header.get("ESO TEL AMBI TEMP", 15.0))
-    primary.header["HIERARCH GENMOLFIT SOURCE"] = source_path.name
-    primary.header["HIERARCH GENMOLFIT WAVE"] = "air micron"
+    primary.header["HIERARCH PYMOLFIT SOURCE"] = source_path.name
+    primary.header["HIERARCH PYMOLFIT WAVE"] = "air micron"
 
     cols = [
         fits.Column(name="lambda", array=wavelength, format="D", unit="um"),
@@ -76,7 +76,7 @@ def _write_crop_fits(source_path: Path, crop_path: Path) -> tuple[np.ndarray, np
     return wavelength, flux, primary.header
 
 
-def _load_genmolfit_o2_lines() -> tuple[LineList | None, str]:
+def _load_pymolfit_o2_lines() -> tuple[LineList | None, str]:
     wavenumber_min = 1.0e4 / 0.6915
     wavenumber_max = 1.0e4 / 0.6860
     if MOLECFIT_AER_LINE_DB.exists():
@@ -92,7 +92,7 @@ def _load_genmolfit_o2_lines() -> tuple[LineList | None, str]:
     return None, str(HITRAN_O2_PAR)
 
 
-def _run_genmolfit(
+def _run_pymolfit(
     crop_path: Path,
     out_dir: Path,
     airmass: float,
@@ -103,9 +103,9 @@ def _run_genmolfit(
     high_resolution_oversampling: float = 5.0,
     output_suffix: str = "",
 ) -> object:
-    corrected_path = out_dir / f"genmolfit_corrected{output_suffix}.txt"
-    product_path = out_dir / f"genmolfit_product{output_suffix}.ecsv"
-    plot_path = out_dir / f"genmolfit_diagnostic{output_suffix}.png"
+    corrected_path = out_dir / f"pymolfit_corrected{output_suffix}.txt"
+    product_path = out_dir / f"pymolfit_product{output_suffix}.ecsv"
+    plot_path = out_dir / f"pymolfit_diagnostic{output_suffix}.png"
     line_kwargs = (
         {"line_list": line_list}
         if line_list is not None
@@ -161,7 +161,7 @@ def _run_molecfit(crop_path: Path, out_dir: Path) -> Path | None:
         header = hdul[0].header
         wavelength_frame, rv_args = _molecfit_wavelength_frame_args(header)
 
-    with tempfile.TemporaryDirectory(prefix="genmolfit_harps_o2_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_harps_o2_") as tmp:
         stage = Path(tmp)
         staged_input = stage / "input.fits"
         staged_sof = stage / "model.sof"
@@ -259,7 +259,7 @@ def _plot_comparison(
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes])
 
-    axes[0].plot(gen_data_wave_vacuum, _normalise(gen_result.model_flux), color="C1", lw=1.0, label="GenMolFit model")
+    axes[0].plot(gen_data_wave_vacuum, _normalise(gen_result.model_flux), color="C1", lw=1.0, label="PyMolFit model")
     axes[0].set_ylabel("Norm. flux")
 
     gen_corrected_flux = _corrected_flux_from_result(gen_result, raw_flux)
@@ -276,7 +276,7 @@ def _plot_comparison(
     axes[1].set_ylabel("Corrected / continuum")
     axes[1].legend(loc="best")
 
-    axes[2].plot(gen_model_wave_vacuum, gen_result.transmission, color="C1", lw=1.0, label="GenMolFit transmission")
+    axes[2].plot(gen_model_wave_vacuum, gen_result.transmission, color="C1", lw=1.0, label="PyMolFit transmission")
     axes[2].set_ylabel("Transmission")
     axes[2].legend(loc="best")
 
@@ -303,7 +303,7 @@ def _plot_comparison(
         metrics["molecfit_model_minus_data_wavelength_micron"] = float(
             np.nanmedian(mol_model_wave[use_mol] - mol_data_wave[use_mol])
         )
-        metrics["genmolfit_model_minus_data_wavelength_micron"] = float(-gen_result.wavelength_shift)
+        metrics["pymolfit_model_minus_data_wavelength_micron"] = float(-gen_result.wavelength_shift)
 
     axes[0].plot(
         gen_data_wave_vacuum,
@@ -370,7 +370,7 @@ def _airmass_from_header(header: fits.Header) -> float:
 def run_all(spectra_dir: Path, output_dir: Path, *, skip_molecfit: bool, max_files: int | None) -> None:
     if not HITRAN_O2_PAR.exists():
         raise FileNotFoundError(f"Missing HITRAN O2 line list: {HITRAN_O2_PAR}")
-    line_list, line_source = _load_genmolfit_o2_lines()
+    line_list, line_source = _load_pymolfit_o2_lines()
     output_dir.mkdir(parents=True, exist_ok=True)
     spectra = sorted(spectra_dir.glob("ADP*.fits"))
     if max_files is not None:
@@ -390,9 +390,9 @@ def run_all(spectra_dir: Path, output_dir: Path, *, skip_molecfit: bool, max_fil
         expected_berv_shift = float(np.nanmedian(wavelength) * berv / SPEED_OF_LIGHT_KM_S) if np.isfinite(berv) else np.nan
         wavelength_frame, _ = _molecfit_wavelength_frame_args(header)
 
-        gen_result = _run_genmolfit(crop_path, case_dir, airmass, line_list)
+        gen_result = _run_pymolfit(crop_path, case_dir, airmass, line_list)
         molecfit_model = None if skip_molecfit else _run_molecfit(crop_path, case_dir)
-        metrics = _plot_comparison(case_dir / "genmolfit_vs_molecfit_o2_bband.png", wavelength, flux, gen_result, molecfit_model)
+        metrics = _plot_comparison(case_dir / "pymolfit_vs_molecfit_o2_bband.png", wavelength, flux, gen_result, molecfit_model)
 
         rows.append(
             {
@@ -405,15 +405,15 @@ def run_all(spectra_dir: Path, output_dir: Path, *, skip_molecfit: bool, max_fil
                 "berv_km_s": berv,
                 "expected_berv_shift_micron": expected_berv_shift,
                 "molecfit_wavelength_frame": wavelength_frame,
-                "genmolfit_line_source": line_source,
+                "pymolfit_line_source": line_source,
                 "n_pixels": int(wavelength.size),
-                "genmolfit_min_transmission": float(np.nanmin(gen_result.transmission)),
-                "genmolfit_median_transmission": float(np.nanmedian(gen_result.transmission)),
-                "genmolfit_o2_scale": float(gen_result.species_scales.get("O2", np.nan)),
-                "genmolfit_rayleigh_scale": float(gen_result.species_scales.get("Rayleigh", np.nan)),
-                "genmolfit_wavelength_shift_micron": float(gen_result.wavelength_shift),
-                "genmolfit_lsf_sigma_pixels": float(gen_result.lsf_sigma_pixels),
-                "genmolfit_lsf_lorentz_fwhm_pixels": float(gen_result.lsf_lorentz_fwhm_pixels),
+                "pymolfit_min_transmission": float(np.nanmin(gen_result.transmission)),
+                "pymolfit_median_transmission": float(np.nanmedian(gen_result.transmission)),
+                "pymolfit_o2_scale": float(gen_result.species_scales.get("O2", np.nan)),
+                "pymolfit_rayleigh_scale": float(gen_result.species_scales.get("Rayleigh", np.nan)),
+                "pymolfit_wavelength_shift_micron": float(gen_result.wavelength_shift),
+                "pymolfit_lsf_sigma_pixels": float(gen_result.lsf_sigma_pixels),
+                "pymolfit_lsf_lorentz_fwhm_pixels": float(gen_result.lsf_lorentz_fwhm_pixels),
                 "molecfit_ran": bool(molecfit_model),
                 **metrics,
             }
@@ -430,7 +430,7 @@ def run_all(spectra_dir: Path, output_dir: Path, *, skip_molecfit: bool, max_fil
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare GenMolFit and Molecfit on beta Pic HARPS O2 B-band spectra.")
+    parser = argparse.ArgumentParser(description="Compare PyMolFit and Molecfit on beta Pic HARPS O2 B-band spectra.")
     parser.add_argument("--spectra-dir", type=Path, default=SPECTRA_DIR)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--skip-molecfit", action="store_true")

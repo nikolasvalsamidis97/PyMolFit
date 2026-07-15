@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     CO2ContinuumAbsorption,
     H2OContinuumAbsorption,
@@ -17,7 +17,7 @@ from genmolfit import (
     correct_arrays,
     physical_transmission_model,
 )
-from genmolfit.components import PairCIAAbsorption
+from pymolfit.components import PairCIAAbsorption
 
 
 def _atmosphere():

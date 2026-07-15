@@ -4,9 +4,9 @@ import json
 import numpy as np
 import pytest
 
-from genmolfit import cache_hitran_par, fetch_hitran_lines
-from genmolfit.hitran import parse_hitran_local_iso_id
-from genmolfit.line_data import HitranAcquisitionError
+from pymolfit import cache_hitran_par, fetch_hitran_lines
+from pymolfit.hitran import parse_hitran_local_iso_id
+from pymolfit.line_data import HitranAcquisitionError
 
 
 def _fixed_decimal(value, width, decimals):

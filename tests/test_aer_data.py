@@ -9,10 +9,10 @@ import tarfile
 import numpy as np
 import pytest
 
-from genmolfit import Spectrum
-from genmolfit import aer_data
-from genmolfit.aer_data import AERDataError, install_aer_catalog, load_aer_line_window
-from genmolfit.workflow import _resolve_line_list
+from pymolfit import Spectrum
+from pymolfit import aer_data
+from pymolfit.aer_data import AERDataError, install_aer_catalog, load_aer_line_window
+from pymolfit.workflow import _resolve_line_list
 
 
 def _fixed_decimal(value, width, decimals):
@@ -257,7 +257,7 @@ def test_workflow_resolves_automatic_aer_window(monkeypatch):
         captured.update(kwargs)
         return Artifact()
 
-    monkeypatch.setattr("genmolfit.workflow.load_aer_line_window", fake_load)
+    monkeypatch.setattr("pymolfit.workflow.load_aer_line_window", fake_load)
     wavenumber = np.linspace(4319.0, 4321.0, 20)
     spectrum = Spectrum(wavelength=1.0e4 / wavenumber, flux=np.ones(wavenumber.size))
 

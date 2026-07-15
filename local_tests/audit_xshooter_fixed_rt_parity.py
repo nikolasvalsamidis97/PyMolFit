@@ -1,8 +1,8 @@
 """Isolate X-shooter radiative-transfer parity from fitting differences.
 
-This diagnostic evaluates GenMolFit at the molecule columns, wavelength
+This diagnostic evaluates PyMolFit at the molecule columns, wavelength
 solution, and instrumental widths fitted independently by Molecfit.  It does
-not tune any GenMolFit coefficient and is not part of the public package API.
+not tune any PyMolFit coefficient and is not part of the public package API.
 """
 
 from __future__ import annotations
@@ -14,18 +14,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 
-from genmolfit.atmosphere import AtmosphereProfile
-from genmolfit.continuum import LBLRTMCO2Continuum, LBLRTMH2OContinuum
-from genmolfit.fit import FitConfig, fit_tellurics
-from genmolfit.linelist import LineList
-from genmolfit.partition import PartitionTable
-from genmolfit.physics import (
+from pymolfit.atmosphere import AtmosphereProfile
+from pymolfit.continuum import LBLRTMCO2Continuum, LBLRTMH2OContinuum
+from pymolfit.fit import FitConfig, fit_tellurics
+from pymolfit.linelist import LineList
+from pymolfit.partition import PartitionTable
+from pymolfit.physics import (
     LBLRTM_DEFAULT_ALFAL0,
     LBLRTM_DEFAULT_SAMPLE,
     LBLRTM_VOIGT_DOMAIN_HWF3,
 )
-from genmolfit.spectrum import Spectrum
-from genmolfit.workflow import _build_components
+from pymolfit.spectrum import Spectrum
+from pymolfit.workflow import _build_components
 
 from local_tests.run_science_readiness_validation import (
     CACHE_PATH,
@@ -172,15 +172,15 @@ def main() -> None:
     all_lines = LineList.from_table(CACHE_PATH)
     rows: list[dict[str, object]] = []
     for case in REAL_BANDS:
-        wavelength, genmolfit, molecfit = _fixed_transmission(case, all_lines)
-        reliable = np.isfinite(genmolfit) & np.isfinite(molecfit) & (molecfit > 0.2)
+        wavelength, pymolfit, molecfit = _fixed_transmission(case, all_lines)
+        reliable = np.isfinite(pymolfit) & np.isfinite(molecfit) & (molecfit > 0.2)
         telluric = reliable & (molecfit < 0.995)
-        delta = genmolfit - molecfit
-        optical_depth_genmolfit = -np.log(np.clip(genmolfit[telluric], 1.0e-12, 1.0))
+        delta = pymolfit - molecfit
+        optical_depth_pymolfit = -np.log(np.clip(pymolfit[telluric], 1.0e-12, 1.0))
         optical_depth_molecfit = -np.log(np.clip(molecfit[telluric], 1.0e-12, 1.0))
         optical_depth_scale = float(
-            np.dot(optical_depth_genmolfit, optical_depth_molecfit)
-            / np.dot(optical_depth_genmolfit, optical_depth_genmolfit)
+            np.dot(optical_depth_pymolfit, optical_depth_molecfit)
+            / np.dot(optical_depth_pymolfit, optical_depth_pymolfit)
         )
         row = {
             "case": case.name,
@@ -188,9 +188,9 @@ def main() -> None:
             "telluric_rms": float(np.sqrt(np.mean(delta[telluric] ** 2))),
             "maximum_absolute_difference": float(np.max(np.abs(delta[reliable]))),
             "optical_depth_correlation": float(
-                np.corrcoef(optical_depth_genmolfit, optical_depth_molecfit)[0, 1]
+                np.corrcoef(optical_depth_pymolfit, optical_depth_molecfit)[0, 1]
             ),
-            "molecfit_to_genmolfit_optical_depth_scale": optical_depth_scale,
+            "molecfit_to_pymolfit_optical_depth_scale": optical_depth_scale,
             "reliable_pixels": int(np.count_nonzero(reliable)),
             "telluric_pixels": int(np.count_nonzero(telluric)),
         }
@@ -198,12 +198,12 @@ def main() -> None:
 
         fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
         axes[0].plot(wavelength, molecfit, lw=0.9, label="Molecfit")
-        axes[0].plot(wavelength, genmolfit, lw=0.8, label="GenMolFit at Molecfit parameters")
+        axes[0].plot(wavelength, pymolfit, lw=0.8, label="PyMolFit at Molecfit parameters")
         axes[0].set_ylabel("Transmission")
         axes[0].legend(loc="best")
         axes[1].plot(wavelength[reliable], delta[reliable], color="black", lw=0.7)
         axes[1].axhline(0.0, color="0.5", lw=0.7)
-        axes[1].set_ylabel("GenMolFit - Molecfit")
+        axes[1].set_ylabel("PyMolFit - Molecfit")
         axes[1].set_xlabel("Vacuum wavelength [micron]")
         fig.suptitle(case.name)
         fig.tight_layout()

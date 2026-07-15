@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from genmolfit.aer_data import (
+from pymolfit.aer_data import (
     AER_CATALOG_FILENAME,
     AER_FILE_SPECS,
     AERCatalogArtifact,
@@ -16,7 +16,7 @@ def stage_aer_molecfit_data(
     *,
     catalog: AERCatalogArtifact | None = None,
 ) -> tuple[Path, AERCatalogArtifact]:
-    """Stage Molecfit data with GenMolFit's verified AER catalogue.
+    """Stage Molecfit data with PyMolFit's verified AER catalogue.
 
     The temporary tree reuses the installed Molecfit profiles and non-catalogue
     HITRAN files through symlinks. It never changes the Molecfit installation.

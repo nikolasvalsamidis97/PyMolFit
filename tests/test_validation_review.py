@@ -40,7 +40,7 @@ def test_independent_review_gate_pass_fail_and_manual(tmp_path, monkeypatch):
         "dataset",
         "instrument",
         "molecfit_version",
-        "genmolfit_version",
+        "pymolfit_version",
         "decision",
         "intrinsic_lines_preserved",
         "masks_usable",
@@ -54,7 +54,7 @@ def test_independent_review_gate_pass_fail_and_manual(tmp_path, monkeypatch):
             "case": "case_01",
             "case_sha256": case_hash,
             "source": "test",
-            "candidate_A": "GenMolFit",
+            "candidate_A": "PyMolFit",
             "candidate_B": "Molecfit",
         }],
     )
@@ -78,7 +78,7 @@ def test_independent_review_gate_pass_fail_and_manual(tmp_path, monkeypatch):
             "dataset": "held-out",
             "instrument": "other",
             "molecfit_version": "4",
-            "genmolfit_version": "0.1.0",
+            "pymolfit_version": "0.1.0",
             "decision": "PASS",
             "intrinsic_lines_preserved": "YES",
             "masks_usable": "YES",
@@ -166,7 +166,7 @@ def test_authenticated_hitran_campaign_gate_is_source_bound(tmp_path, monkeypatc
         ).encode("ascii")
     ).hexdigest()
     source_sha256 = hashlib.sha256(
-        (campaign.ROOT / "src" / "genmolfit" / "line_data.py").read_bytes()
+        (campaign.ROOT / "src" / "pymolfit" / "line_data.py").read_bytes()
     ).hexdigest()
     validator_sha256 = hashlib.sha256(
         (campaign.ROOT / "local_tests" / "validate_authenticated_hitran.py").read_bytes()
@@ -181,7 +181,7 @@ def test_authenticated_hitran_campaign_gate_is_source_bound(tmp_path, monkeypatc
         "api_base_url": "https://hitran.org",
         "api_version": "v2",
         "database_edition": "test",
-        "genmolfit_version": campaign.__version__,
+        "pymolfit_version": campaign.__version__,
         "client_source_sha256": source_sha256,
         "validator_source_sha256": validator_sha256,
         "request": request,

@@ -33,10 +33,10 @@ AER_SOURCE_URL = (
     f"https://zenodo.org/records/{AER_ZENODO_RECORD}/files/"
     f"{AER_ARCHIVE_FILENAME}?download=1"
 )
-AER_CACHE_ENV = "GENMOLFIT_AER_CACHE"
-AER_SOURCE_URL_ENV = "GENMOLFIT_AER_URL"
-AER_CATALOG_PATH_ENV = "GENMOLFIT_AER_CATALOG"
-AER_MOLECFIT_ROOT_ENV = "GENMOLFIT_MOLECFIT_ROOT"
+AER_CACHE_ENV = "PYMOLFIT_AER_CACHE"
+AER_SOURCE_URL_ENV = "PYMOLFIT_AER_URL"
+AER_CATALOG_PATH_ENV = "PYMOLFIT_AER_CATALOG"
+AER_MOLECFIT_ROOT_ENV = "PYMOLFIT_MOLECFIT_ROOT"
 AER_DATA_SCHEMA_VERSION = 2
 AER_WINDOW_SCHEMA_VERSION = 3
 AER_LICENSE_URL = (
@@ -46,7 +46,7 @@ AER_SOURCE_PAGE = f"https://doi.org/10.5281/zenodo.{AER_ZENODO_RECORD}"
 AER_LICENSE_TEXT = """Copyright ©, Atmospheric and Environmental Research, Inc., 2020. All rights reserved.  Atmospheric and Environmental Research,  Inc. (AER) grants USER the right to download, install, use and copy this  database for scientific and research purposes only.  This database may be redistributed as long as this copyright notice is reproduced on any copy made and appropriate acknowledgment is given to AER. This database or any modified version of this database may not be incorporated into any proprietary product or commercial product offered for sale without express written consent of AER. This database is provided as is without any express or implied warranties."""
 
 # These hashes identify the exact payload in the immutable official AER 3.9
-# Zenodo record. Files not yet consumed by GenMolFit are retained so the
+# Zenodo record. Files not yet consumed by PyMolFit are retained so the
 # managed catalogue remains a complete scientific input.
 AER_FILE_SPECS: Mapping[str, tuple[str, str]] = {
     AER_CATALOG_FILENAME: (
@@ -128,7 +128,7 @@ def default_aer_cache_dir() -> Path:
     configured = os.environ.get(AER_CACHE_ENV)
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".cache" / "genmolfit" / "aer"
+    return Path.home() / ".cache" / "pymolfit" / "aer"
 
 
 def find_local_aer_catalog(
@@ -183,7 +183,7 @@ def install_aer_catalog(
 
     Resolution does not require a compiler or an authenticated HITRAN request:
 
-    1. use a verified GenMolFit-managed cache;
+    1. use a verified PyMolFit-managed cache;
     2. reuse a verified exact local catalogue without copying it;
     3. download the pinned official AER Zenodo archive.
     """
@@ -214,7 +214,7 @@ def install_aer_catalog(
     if offline:
         raise AERDataError(
             "AER catalogue is not installed and offline=True prevents downloading it; "
-            "run `genmolfit install-aer` while online"
+            "run `pymolfit install-aer` while online"
         )
 
     configured_source = source
@@ -613,7 +613,7 @@ def _download_archive(
     progress: Callable[[str], None] | None,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = Request(url, headers={"User-Agent": "GenMolFit-AER/0.1"})
+    request = Request(url, headers={"User-Agent": "PyMolFit-AER/0.1"})
     try:
         with opener(request, timeout=timeout_s) as response, destination.open("wb") as handle:
             downloaded = 0

@@ -147,7 +147,7 @@ def correct_arrays(
     """High-level telluric correction for arrays.
 
     This is the notebook-friendly workflow: pass wavelength/flux arrays and,
-    optionally, a HITRAN `.par` or GenMolFit line list. The lower-level
+    optionally, a HITRAN `.par` or PyMolFit line list. The lower-level
     `fit_tellurics` function remains available for full manual control.
     """
 

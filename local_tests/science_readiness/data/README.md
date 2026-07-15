@@ -18,7 +18,7 @@ HD 127750 used in section 8.3.2 of the ESO Molecfit Reflex tutorial 4.4.2:
 
 The held-out comparison uses the tutorial's published fit intervals and the
 UVES static H2O/O2 molecule selection. It does not select intervals or initial
-molecular columns from GenMolFit residuals.
+molecular columns from PyMolFit residuals.
 
 The `keck_hires_bd17` directory adds an independent, non-ESO instrument. It
 contains two extracted orders from the public Keck/HIRES exposure of the
@@ -36,7 +36,7 @@ a4f998016c7a048b20f4fa53c7ddebd1431d663b274309edc6cec6550413111d  HI.20040824.18
 ```
 
 The comparison intervals are the established O2 B and A molecular bands, not
-regions selected from GenMolFit residuals. MAKEE records a heliocentric vacuum
+regions selected from PyMolFit residuals. MAKEE records a heliocentric vacuum
 wavelength scale; the validation first applies the documented `HELIOVEL`
 correction to recover topocentric vacuum wavelengths. Both programs receive
 the same pixels and site weather from the source header.
@@ -66,7 +66,7 @@ The product SHA-256 is:
 
 The fixed intervals `0.6868--0.6905`, `0.7592--0.7625`, and
 `0.7630--0.76515` micron follow the established O2 bands and KPF order
-boundaries, not GenMolFit residuals. KPF L1 wavelengths are vacuum. The SCI1
+boundaries, not PyMolFit residuals. KPF L1 wavelengths are vacuum. The SCI1
 slice is used without combining it with the two slightly different wavelength
 solutions. The validation resolves the header-only `KECK` site to Keck
 coordinates, downloads the bracketing time-local GDAS profiles, and gives the

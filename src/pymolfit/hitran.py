@@ -158,7 +158,7 @@ def read_hitran_par(
 ) -> LineList:
     """Read the common 160-character HITRAN ``.par`` line format.
 
-    Only the fields needed by GenMolFit's first line-by-line model are parsed:
+    Only the fields needed by PyMolFit's first line-by-line model are parsed:
     molecule, isotopologue, wavenumber, intensity, Einstein A, air/self widths,
     lower-state energy, temperature exponent, and pressure shift.
     """

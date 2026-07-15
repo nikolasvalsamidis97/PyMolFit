@@ -9,7 +9,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     CO2ContinuumAbsorption,
     FitConfig,
@@ -32,12 +32,12 @@ PROJECT = Path(__file__).resolve().parents[1]
 EXTERNAL = PROJECT / "local_tests" / "external_absorption"
 RHO01_INPUT = Path(
     os.environ.get(
-        "GENMOLFIT_RHO01_MOLECFIT_INPUT",
+        "PYMOLFIT_RHO01_MOLECFIT_INPUT",
         PROJECT / "local_tests" / "data" / "rho01" / "molecfit_input",
     )
 )
-MOLECFIT_SPEED_CSV = Path("/tmp/genmolfit_molecfit_speed_benchmark/molecfit_speed_summary.csv")
-ASSISTED_GENMOLFIT_OUTPUT = PROJECT / "local_tests" / "speed_benchmark_genmolfit_dynamic_noplot"
+MOLECFIT_SPEED_CSV = Path("/tmp/pymolfit_molecfit_speed_benchmark/molecfit_speed_summary.csv")
+ASSISTED_PYMOLFIT_OUTPUT = PROJECT / "local_tests" / "speed_benchmark_pymolfit_dynamic_noplot"
 OUTPUT = PROJECT / "local_tests" / "fair_runtime_benchmark"
 
 SCIENCE = RHO01_INPUT / "SCIENCE_A.fits"
@@ -49,17 +49,17 @@ CIA_TABLES = {
     "CO2-CO2_CIA": EXTERNAL / "CO2-CO2_2024.cia",
     "O2-O2_CIA": EXTERNAL / "O2-O2_2024.cia",
 }
-HIGH_RESOLUTION_REBIN_MODE = os.environ.get("GENMOLFIT_HIGH_RESOLUTION_REBIN_MODE", "molecfit_overlap")
-SUBTRACT_CUTOFF_PROFILE = os.environ.get("GENMOLFIT_SUBTRACT_CUTOFF_PROFILE", "0").strip().lower() not in {
+HIGH_RESOLUTION_REBIN_MODE = os.environ.get("PYMOLFIT_HIGH_RESOLUTION_REBIN_MODE", "molecfit_overlap")
+SUBTRACT_CUTOFF_PROFILE = os.environ.get("PYMOLFIT_SUBTRACT_CUTOFF_PROFILE", "0").strip().lower() not in {
     "0",
     "false",
     "no",
     "off",
 }
-LINE_WING_MODE = os.environ.get("GENMOLFIT_BENCHMARK_LINE_WING_MODE", "lblrtm_panel")
-FIT_FTOL = float(os.environ.get("GENMOLFIT_BENCHMARK_FTOL", "1e-10"))
-FIT_XTOL = float(os.environ.get("GENMOLFIT_BENCHMARK_XTOL", "1e-10"))
-BASIS_WORKERS = int(os.environ.get("GENMOLFIT_BENCHMARK_BASIS_WORKERS", "0"))
+LINE_WING_MODE = os.environ.get("PYMOLFIT_BENCHMARK_LINE_WING_MODE", "lblrtm_panel")
+FIT_FTOL = float(os.environ.get("PYMOLFIT_BENCHMARK_FTOL", "1e-10"))
+FIT_XTOL = float(os.environ.get("PYMOLFIT_BENCHMARK_XTOL", "1e-10"))
+BASIS_WORKERS = int(os.environ.get("PYMOLFIT_BENCHMARK_BASIS_WORKERS", "0"))
 
 
 def representative_airmass(header: fits.Header) -> float:
@@ -143,7 +143,7 @@ def build_absorption_inputs():
     return line_list, partition_table, tuple(components)
 
 
-def benchmark_genmolfit_from_science() -> tuple[float, dict[str, object]]:
+def benchmark_pymolfit_from_science() -> tuple[float, dict[str, object]]:
     t0 = time.perf_counter()
     spectra, masks, header = load_science_segments(SCIENCE)
     line_list, partition_table, components = build_absorption_inputs()
@@ -228,7 +228,7 @@ def benchmark_genmolfit_from_science() -> tuple[float, dict[str, object]]:
     summary_table.meta["fit_cost"] = float(result.cost)
     summary_table.meta["species_scales"] = repr(result.species_scales)
     summary_table.meta["lsf_sigma_pixels"] = float(result.lsf_sigma_pixels)
-    summary_table.write(OUTPUT / "genmolfit_from_science_summary.ecsv", format="ascii.ecsv", overwrite=True)
+    summary_table.write(OUTPUT / "pymolfit_from_science_summary.ecsv", format="ascii.ecsv", overwrite=True)
     write_seconds = time.perf_counter() - t2
 
     total = time.perf_counter() - t0
@@ -267,8 +267,8 @@ def read_molecfit_timing() -> dict[str, float]:
     return timings
 
 
-def assisted_genmolfit_runtime_note() -> float | None:
-    summary = ASSISTED_GENMOLFIT_OUTPUT / "summary.ecsv"
+def assisted_pymolfit_runtime_note() -> float | None:
+    summary = ASSISTED_PYMOLFIT_OUTPUT / "summary.ecsv"
     if not summary.exists():
         return None
     return 61.19
@@ -276,7 +276,7 @@ def assisted_genmolfit_runtime_note() -> float | None:
 
 def main() -> None:
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    total, details = benchmark_genmolfit_from_science()
+    total, details = benchmark_pymolfit_from_science()
     molecfit = read_molecfit_timing()
     rows = []
     if "TOTAL" in molecfit:
@@ -295,18 +295,18 @@ def main() -> None:
                 "notes": "official fitted-model recipe only",
             }
         )
-    assisted = assisted_genmolfit_runtime_note()
+    assisted = assisted_pymolfit_runtime_note()
     if assisted is not None:
         rows.append(
             {
-                "run": "genmolfit_assisted_by_molecfit_products",
+                "run": "pymolfit_assisted_by_molecfit_products",
                 "seconds": assisted,
                 "notes": "old benchmark; used MOLECFIT_DATA, ATM_PROFILE_COMBINED, BEST_FIT_PARAMETERS",
             }
         )
     rows.append(
         {
-            "run": "genmolfit_from_science_input",
+            "run": "pymolfit_from_science_input",
             "seconds": total,
             "notes": (
                 "loads SCIENCE_A.fits directly; self-contained MIPAS+GDAS atmosphere; "
@@ -318,11 +318,11 @@ def main() -> None:
     )
     timing_table = Table(rows=rows)
     for key, value in details.items():
-        timing_table.meta[f"genmolfit_{key}"] = repr(value)
+        timing_table.meta[f"pymolfit_{key}"] = repr(value)
     timing_table.write(OUTPUT / "runtime_summary.ecsv", format="ascii.ecsv", overwrite=True)
     timing_table.write(OUTPUT / "runtime_summary.csv", format="ascii.csv", overwrite=True)
 
-    print(f"GenMolFit from science input: {total:.3f} s")
+    print(f"PyMolFit from science input: {total:.3f} s")
     for key, value in details.items():
         print(f"  {key}: {value}")
     if molecfit:

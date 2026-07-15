@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from genmolfit import Spectrum, correct_spectrum
+from pymolfit import Spectrum, correct_spectrum
 
 
 def test_correct_spectrum_propagates_flux_and_transmission_uncertainty():

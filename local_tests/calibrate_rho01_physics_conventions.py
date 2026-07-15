@@ -11,35 +11,35 @@ from astropy.table import Table
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-RUNNER = PROJECT / "local_tests" / "compare_rho01_genmolfit_molecfit_lband.py"
+RUNNER = PROJECT / "local_tests" / "compare_rho01_pymolfit_molecfit_lband.py"
 OUTPUT = PROJECT / "local_tests" / "rho01_convention_calibration"
 
 
 VARIANTS = {
     "baseline_integrate": {},
     "center_rebin": {
-        "GENMOLFIT_HIGH_RESOLUTION_REBIN_MODE": "center",
+        "PYMOLFIT_HIGH_RESOLUTION_REBIN_MODE": "center",
     },
     "molecfit_voigt_lsf": {
-        "GENMOLFIT_MOLECFIT_VOIGT_LSF": "1",
+        "PYMOLFIT_MOLECFIT_VOIGT_LSF": "1",
     },
     "center_rebin_molecfit_voigt_lsf": {
-        "GENMOLFIT_HIGH_RESOLUTION_REBIN_MODE": "center",
-        "GENMOLFIT_MOLECFIT_VOIGT_LSF": "1",
+        "PYMOLFIT_HIGH_RESOLUTION_REBIN_MODE": "center",
+        "PYMOLFIT_MOLECFIT_VOIGT_LSF": "1",
     },
     "extra_cia_rayleigh_n2": {
-        "GENMOLFIT_EXTRA_CIA": "1",
-        "GENMOLFIT_RAYLEIGH": "1",
-        "GENMOLFIT_N2_CONTINUUM": "1",
+        "PYMOLFIT_EXTRA_CIA": "1",
+        "PYMOLFIT_RAYLEIGH": "1",
+        "PYMOLFIT_N2_CONTINUUM": "1",
     },
     "self_contained_header_atmosphere": {
-        "GENMOLFIT_ATMOSPHERE_SOURCE": "header_slant",
+        "PYMOLFIT_ATMOSPHERE_SOURCE": "header_slant",
     },
 }
 
 
 def selected_variants() -> dict[str, dict[str, str]]:
-    requested = os.environ.get("GENMOLFIT_VARIANTS")
+    requested = os.environ.get("PYMOLFIT_VARIANTS")
     if requested is None:
         return VARIANTS
     names = [name.strip() for name in requested.split(",") if name.strip()]
@@ -54,8 +54,8 @@ def run_variant(name: str, settings: dict[str, str]) -> dict[str, object]:
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(settings)
-    env["GENMOLFIT_WRITE_PLOTS"] = "0"
-    env["GENMOLFIT_COMPARISON_OUTPUT"] = str(output)
+    env["PYMOLFIT_WRITE_PLOTS"] = "0"
+    env["PYMOLFIT_COMPARISON_OUTPUT"] = str(output)
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
         str(PROJECT / "src") if not existing_pythonpath else f"{PROJECT / 'src'}:{existing_pythonpath}"

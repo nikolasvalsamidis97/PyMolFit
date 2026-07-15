@@ -14,7 +14,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     FitConfig,
     LineList,
@@ -22,7 +22,7 @@ from genmolfit import (
     Spectrum,
     fit_telluric_segments,
 )
-from genmolfit.aer_data import (
+from pymolfit.aer_data import (
     AER_CATALOG_FILENAME,
     AER_CATALOG_VERSION,
     load_aer_line_window,
@@ -45,7 +45,7 @@ MOLECFIT_DATA_ROOT = MOLECFIT_ROOT / "share" / "molecfit" / "data"
 
 # These are the optimized ranges published for the UVES demo spectrum in the
 # ESO Molecfit Reflex tutorial 4.4.2, section 8.3.2. They were not selected
-# from GenMolFit residuals.
+# from PyMolFit residuals.
 FIT_RANGES = (
     (0.586, 0.600),
     (0.625, 0.640),
@@ -172,7 +172,7 @@ def _build_atmosphere(
     )
 
 
-def _run_genmolfit(
+def _run_pymolfit(
     wavelength_air: np.ndarray,
     flux: np.ndarray,
     uncertainty: np.ndarray,
@@ -263,7 +263,7 @@ def _run_molecfit(
     if not MOLECFIT_ESOREX.exists():
         raise FileNotFoundError(f"Molecfit executable not found: {MOLECFIT_ESOREX}")
 
-    with tempfile.TemporaryDirectory(prefix="genmolfit_uves_demo_") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_uves_demo_") as temporary:
         stage = Path(temporary)
         staged_input = stage / "input.fits"
         staged_output = stage / "out"
@@ -347,7 +347,7 @@ def _load_molecfit_model(path: Path) -> dict[str, np.ndarray]:
         }
 
 
-def _concatenate_genmolfit(result) -> dict[str, np.ndarray]:
+def _concatenate_pymolfit(result) -> dict[str, np.ndarray]:
     return {
         "wavelength_vacuum": np.concatenate(
             [segment.spectrum.wavelength for segment in result.segment_results]
@@ -387,7 +387,7 @@ def _write_outputs(
     line_list: LineList,
 ) -> dict[str, float]:
     wavelength_fit_air = np.concatenate([wavelength_air[mask] for mask in masks])
-    gen = _concatenate_genmolfit(gen_result)
+    gen = _concatenate_pymolfit(gen_result)
     n_pixels = min(
         wavelength_fit_air.size,
         *(values.size for values in gen.values()),
@@ -425,13 +425,13 @@ def _write_outputs(
     table["wavelength_vacuum_micron"] = gen["wavelength_vacuum"]
     table["flux"] = gen["flux"]
     table["uncertainty"] = gen["uncertainty"]
-    table["genmolfit_model_flux"] = gen["model_flux"]
+    table["pymolfit_model_flux"] = gen["model_flux"]
     table["molecfit_model_flux"] = mol["mflux"]
-    table["genmolfit_continuum"] = gen["continuum"]
+    table["pymolfit_continuum"] = gen["continuum"]
     table["molecfit_continuum"] = mol_continuum
-    table["genmolfit_transmission"] = gen["transmission"]
+    table["pymolfit_transmission"] = gen["transmission"]
     table["molecfit_transmission"] = mol["mtrans"]
-    table["genmolfit_corrected"] = gen["corrected"]
+    table["pymolfit_corrected"] = gen["corrected"]
     table["molecfit_corrected"] = mol_corrected
     table["reliable"] = reliable
     table["telluric"] = telluric
@@ -448,10 +448,10 @@ def _write_outputs(
             ),
             "fit_ranges_micron": repr(FIT_RANGES),
             "species": repr(SPECIES),
-            "genmolfit_species_scales": repr(gen_result.species_scales),
-            "genmolfit_lsf_sigma_pixels": float(gen_result.lsf_sigma_pixels),
-            "genmolfit_lsf_box_width_pixels": float(gen_result.lsf_box_width_pixels),
-            "genmolfit_lsf_lorentz_fwhm_pixels": float(gen_result.lsf_lorentz_fwhm_pixels),
+            "pymolfit_species_scales": repr(gen_result.species_scales),
+            "pymolfit_lsf_sigma_pixels": float(gen_result.lsf_sigma_pixels),
+            "pymolfit_lsf_box_width_pixels": float(gen_result.lsf_box_width_pixels),
+            "pymolfit_lsf_lorentz_fwhm_pixels": float(gen_result.lsf_lorentz_fwhm_pixels),
             "gdas_source": str(atmosphere.metadata.get("gdas_source", "")),
             "gdas_profile": str(atmosphere.metadata.get("gdas_profile", "")),
         }
@@ -471,17 +471,17 @@ def _write_outputs(
         "transmission_rms": direct_rms,
         "telluric_transmission_rms": telluric_rms,
         "transmission_max_abs": direct_max,
-        "genmolfit_weighted_objective": gen_objective,
+        "pymolfit_weighted_objective": gen_objective,
         "molecfit_weighted_objective": mol_objective,
         "weighted_objective_ratio": gen_objective / mol_objective,
-        "genmolfit_relative_scatter": gen_scatter,
+        "pymolfit_relative_scatter": gen_scatter,
         "molecfit_relative_scatter": mol_scatter,
         "relative_scatter_ratio": gen_scatter / mol_scatter,
-        "genmolfit_seconds": gen_seconds,
+        "pymolfit_seconds": gen_seconds,
         "molecfit_seconds": molecfit_seconds,
-        "genmolfit_nfev": float(gen_result.nfev),
-        "genmolfit_covariance_rank": float(gen_result.covariance_rank),
-        "genmolfit_parameter_count": float(len(gen_result.parameter_names)),
+        "pymolfit_nfev": float(gen_result.nfev),
+        "pymolfit_covariance_rank": float(gen_result.covariance_rank),
+        "pymolfit_parameter_count": float(len(gen_result.parameter_names)),
     }
     with (OUTPUT / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=metrics.keys())
@@ -504,7 +504,7 @@ def _write_outputs(
             gen["transmission"][region],
             color="C1",
             lw=0.9,
-            label="GenMolFit" if label_suffix else None,
+            label="PyMolFit" if label_suffix else None,
         )
         axes[0].plot(
             wavelength_fit_air[region],
@@ -519,7 +519,7 @@ def _write_outputs(
             gen_relative[region],
             color="C1",
             lw=0.65,
-            label="GenMolFit" if label_suffix else None,
+            label="PyMolFit" if label_suffix else None,
         )
         axes[1].plot(
             wavelength_fit_air[region],
@@ -562,7 +562,7 @@ def main() -> None:
         raise RuntimeError("One or more published UVES fit regions contain too few valid pixels")
     input_path = _write_input(wavelength, flux, uncertainty, header, masks)
     line_list = _load_lines()
-    gen_result, atmosphere, gen_seconds = _run_genmolfit(
+    gen_result, atmosphere, gen_seconds = _run_pymolfit(
         wavelength,
         flux,
         uncertainty,

@@ -1,6 +1,6 @@
 # Science-readiness validation
 
-This document defines the validation gate for GenMolFit. Passing unit tests is
+This document defines the validation gate for PyMolFit. Passing unit tests is
 necessary but is not sufficient for scientific use. The campaign is run with:
 
 ```bash
@@ -56,7 +56,7 @@ are reused when present; remove a case's `BEST_FIT_MODEL.fits` and
     feature.
 
 No observation-specific molecular coefficient, detector correction, or fitted
-Molecfit parameter is copied into GenMolFit. Molecfit is executed only by the
+Molecfit parameter is copied into PyMolFit. Molecfit is executed only by the
 validation program as an external reference.
 
 ## Public validation data
@@ -71,7 +71,7 @@ It also downloads the public UVES spectrum
 `ADP.2020-06-08T15_07_14.471.fits` of HD 127750 used by the official ESO
 Molecfit Reflex tutorial. The UVES test uses the tutorial's published
 `0.586--0.600`, `0.625--0.640`, and `0.645--0.653` micron fit regions rather
-than intervals selected from GenMolFit residuals.
+than intervals selected from PyMolFit residuals.
 
 The campaign also retrieves two public level-1 Keck/HIRES orders from KOAID
 `HI.20040824.18925.fits` (BD+17 3248). The established O2 B and A bands are
@@ -106,7 +106,7 @@ both spectra and the AER line cache are embedded in every JSON report.
 - Real-data normalized scatter must improve by at least 10% after correction.
 - Direct transmission comparison requires RMS <= 0.02 overall and <= 0.03 in
   telluric pixels. A disagreement is a warning, rather than a false failure,
-  only when GenMolFit has both a lower weighted objective and lower corrected
+  only when PyMolFit has both a lower weighted objective and lower corrected
   residual scatter than that Molecfit run.
 - The held-out UVES tutorial case has a stricter direct gate: RMS <= 0.005,
   telluric-pixel RMS <= 0.01, maximum absolute difference <= 0.02, no
@@ -121,7 +121,7 @@ both spectra and the AER line cache are embedded in every JSON report.
   a separate science-facing gate requires continuum-invariant line-shape mean
   RMS <= 0.015, maximum <= 0.03, and no regression in weighted objective or
   corrected residual scatter. Direct disagreement remains a warning.
-- The matched GenMolFit/Molecfit wall-time ratio must be <= 1.25.
+- The matched PyMolFit/Molecfit wall-time ratio must be <= 1.25.
 
 These are validation criteria, not production fit coefficients. They do not
 alter the radiative-transfer calculation.
@@ -159,22 +159,22 @@ quadrature with local statistical uncertainty.
 Fit products include hashes of the spectrum, source file, line data, selected
 transitions, atmosphere, component data, and full fit configuration, together
 with the exact fit mask and active parameter bounds.
-GenMolFit and Molecfit consume numerically identical time-local GDAS source
+PyMolFit and Molecfit consume numerically identical time-local GDAS source
 profiles in the X-shooter cases (maximum differences are floating-point
 roundoff).
 
-On the official UVES tutorial spectrum, GenMolFit and Molecfit transmission
+On the official UVES tutorial spectrum, PyMolFit and Molecfit transmission
 agree to RMS `0.00369` (`0.00510` on telluric pixels; maximum `0.00768`). The
-GenMolFit/Molecfit weighted-objective ratio is `0.9936`, the relative-residual
+PyMolFit/Molecfit weighted-objective ratio is `0.9936`, the relative-residual
 scatter ratio is `0.9968`, and the five nonlinear parameters have full
-covariance rank. The matched Gaussian-LSF fit took `6.00 s` in GenMolFit and
+covariance rank. The matched Gaussian-LSF fit took `6.00 s` in PyMolFit and
 `105.62 s` in Molecfit on the validation machine.
 
 On the non-ESO Keck/HIRES O2 case, transmission agrees to RMS `0.00524`
 (`0.00563` on telluric pixels; maximum `0.02759`). The weighted-objective ratio
-is `1.012`; telluric RMS improves by factors of `6.09` and `6.16` for GenMolFit
+is `1.012`; telluric RMS improves by factors of `6.09` and `6.16` for PyMolFit
 and Molecfit, respectively; and the four nonlinear parameters have full
-covariance rank. The run took `1.95 s` in GenMolFit and `49.44 s` in Molecfit.
+covariance rank. The run took `1.95 s` in PyMolFit and `49.44 s` in Molecfit.
 Because KOA describes this automated extraction as a browse product, it is
 portability evidence rather than a substitute for the held-out review.
 In a two-fold blocked validation, every pixel is predicted by a fit that did
@@ -183,10 +183,10 @@ correction coverage is `0.953`, unseen-pixel telluric relative RMS improves by
 `3.88x`, and weighted RMS improves by `19.83x`. The two refits took `4.22 s`.
 
 On the independently reduced Keck/KPF Vega spectrum, transmission agrees to
-RMS `0.00546` (`0.00582` on telluric pixels; maximum `0.02149`). GenMolFit's
+RMS `0.00546` (`0.00582` on telluric pixels; maximum `0.02149`). PyMolFit's
 weighted objective is `0.874` times Molecfit's, and telluric-region RMS
 improves by factors of `21.34` and `20.13`, respectively. All four nonlinear
-parameters have full covariance rank. GenMolFit took `4.13 s`; Molecfit took
+parameters have full covariance rank. PyMolFit took `4.13 s`; Molecfit took
 `63.59 s`. Both solvers used the same time-interpolated Keck GDAS profile.
 Three pre-declared atmosphere/continuum alternatives took `12.80 s` in total.
 Their transmission systematic has median RMS `0.000271`, 95th-percentile RMS
@@ -198,7 +198,7 @@ correction coverage `0.938`, unseen-pixel telluric relative RMS improvement
 Both blocked splits are fixed by pixel position and never inspect residuals or
 Molecfit products.
 
-The latest matched 18-segment CRIRES+ benchmark took `81.059 s` for GenMolFit
+The latest matched 18-segment CRIRES+ benchmark took `81.059 s` for PyMolFit
 and `64.999 s` for the Molecfit model recipe, a wall-time ratio of `1.247`.
 This fresh
 run includes the full `1e-32` line-list threshold, source-backed LBLRTM H2O,
@@ -211,14 +211,14 @@ Molecfit, but the continuum-invariant line-shape mean RMS is 0.01283 (maximum
 0.02479), the total weighted-objective ratio is 0.760, and the median corrected
 scatter ratio is 0.726. The production and Molecfit reference runs use the same
 checksum-pinned AER 3.9 catalogue. The original X-shooter comparison differed in optical,
-J, H, and K while GenMolFit had lower weighted objective and corrected scatter
+J, H, and K while PyMolFit had lower weighted objective and corrected scatter
 than the retained Molecfit runs. A separate fixed-parameter audit, which uses
 Molecfit-reported molecular columns, wavelength shift, and LSF rather than
 refitting either model, gives transmission RMS `0.00038`--`0.00172` across O2
 A, H2O J, H2O H, and H2O/CO2 K, with optical-depth correlations above
 `0.999989`. After making both fitted X-shooter comparisons use only a
 constant wavelength shift, H passes the direct threshold; optical, J, and K
-remain warnings. In those three bands GenMolFit's weighted objectives are
+remain warnings. In those three bands PyMolFit's weighted objectives are
 `0.0590`, `0.0901`, and `0.0663` times Molecfit's and its corrected scatter is
 also lower. The time-local GDAS inputs match exactly, and all 50 merged
 MIPAS-GDAS height, pressure, temperature, and fitted-species levels match Molecfit to
@@ -266,6 +266,6 @@ uncertainty and expose the deficient rank in the fit product.
 - `authenticated_hitran_receipt.json`: optional; created only after a forced
   real API v2 request and contains hashes/request metadata but no credential or
   line data.
-- `../../../dist/genmolfit-0.1.0-py3-none-any.whl`: tested wheel; SHA-256 is
+- `../../../dist/pymolfit-0.1.0-py3-none-any.whl`: tested wheel; SHA-256 is
   `fdfc448f447ce8c17838a8dcc5cbe0fc6baa5b0071cedb07d8ffb27cb8c45ff5` and is
   also recorded in the current campaign report and release manifest.

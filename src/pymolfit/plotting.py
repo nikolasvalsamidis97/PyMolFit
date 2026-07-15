@@ -16,7 +16,7 @@ def plot_fit(
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        raise ImportError("plotting requires matplotlib; install with `pip install genmolfit[plot]`") from exc
+        raise ImportError("plotting requires matplotlib; install with `pip install pymolfit[plot]`") from exc
 
     wave = result.spectrum.wavelength
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(11, 8))

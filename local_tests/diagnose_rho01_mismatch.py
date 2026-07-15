@@ -7,7 +7,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     CO2ContinuumAbsorption,
     FitConfig,
     H2OContinuumAbsorption,
@@ -23,7 +23,7 @@ from genmolfit import (
     fit_telluric_segments,
 )
 
-import compare_rho01_genmolfit_molecfit_lband as base
+import compare_rho01_pymolfit_molecfit_lband as base
 
 
 PROJECT = Path(__file__).resolve().parents[1]

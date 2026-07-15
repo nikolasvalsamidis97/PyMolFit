@@ -3,7 +3,7 @@ import json
 import numpy as np
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     FitConfig,
     LineList,
     ModelConfig,
@@ -12,7 +12,7 @@ from genmolfit import (
     fit_tellurics,
     transmission_model,
 )
-from genmolfit.fit import _linearized_parameter_covariance
+from pymolfit.fit import _linearized_parameter_covariance
 
 
 def test_fit_tellurics_improves_synthetic_spectrum():

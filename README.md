@@ -1,6 +1,6 @@
-# GenMolFit
+# PyMolFit
 
-GenMolFit is a pure-Python generic telluric correction package inspired by ESO
+PyMolFit is a pure-Python generic telluric correction package inspired by ESO
 Molecfit. The goal is to fit and remove telluric absorption from spectra
 without requiring the user to know about ESO recipe files, EsoRex-style
 workflow files, shell paths, or compiled C/Fortran executables.
@@ -17,7 +17,7 @@ scaling, source-backed LBLRTM H2O, CO2, N2, and O2 continua, optional external
 HITRAN CIA tables, LBLRTM `contnm.f90` Rayleigh scattering, layer-by-layer
 radiative transfer, Molecfit-inspired line-window and LSF controls, fitting,
 correction, diagnostics, and comparison tools. Scientific workflows use the
-official versioned AER 3.9 catalogue. GenMolFit downloads it from its immutable
+official versioned AER 3.9 catalogue. PyMolFit downloads it from its immutable
 Zenodo release, verifies it, and caches it automatically;
 the small built-in synthetic list is retained only for tests and examples.
 
@@ -32,7 +32,7 @@ Molecfit is built from several responsibilities:
 - fit continuum, wavelength/resolution adjustments, and molecule abundances
 - divide the observed spectrum by the fitted telluric transmission
 
-GenMolFit keeps the same conceptual split, but implements the first usable
+PyMolFit keeps the same conceptual split, but implements the first usable
 layer in Python:
 
 - `Spectrum`: generic 1D spectrum container
@@ -68,31 +68,31 @@ python -m pip install -e ".[dev,plot]"
 For a normal release install, the intended interface is simply:
 
 ```bash
-python -m pip install genmolfit
-genmolfit fit spectrum.fits corrected.ecsv
+python -m pip install pymolfit
+pymolfit fit spectrum.fits corrected.ecsv
 ```
 
 The wheel does not contain the 759 MiB uncompressed AER catalogue. On first
-scientific use GenMolFit downloads the official AER 3.9 archive from
+scientific use PyMolFit downloads the official AER 3.9 archive from
 [Zenodo record 18881607](https://doi.org/10.5281/zenodo.18881607), extracts its
 line catalogue, broadening tables, and line-coupling table, verifies fixed
-SHA-256 hashes, and stores them under `~/.cache/genmolfit/aer`. No HITRAN
+SHA-256 hashes, and stores them under `~/.cache/pymolfit/aer`. No HITRAN
 account or API key is needed.
 The data can be installed ahead of time and inspected explicitly:
 
 ```bash
-genmolfit install-aer
-genmolfit aer-status
+pymolfit install-aer
+pymolfit aer-status
 ```
 
-Set `GENMOLFIT_AER_URL` only to use another location containing the exact
+Set `PYMOLFIT_AER_URL` only to use another location containing the exact
 `aer_v_3.9.tgz` artifact. The extracted scientific payload must still match
 the hashes pinned from the official Zenodo release.
 
 ## Python Example
 
 ```python
-from genmolfit import LineList, Spectrum, fit_tellurics
+from pymolfit import LineList, Spectrum, fit_tellurics
 
 spectrum = Spectrum(wavelength=wavelength_micron, flux=flux)
 result = fit_tellurics(spectrum, line_list=LineList.demo_near_ir())
@@ -103,7 +103,7 @@ corrected = result.corrected
 For normal scripting, the higher-level workflow is shorter:
 
 ```python
-from genmolfit import correct_file
+from pymolfit import correct_file
 
 result = correct_file(
     "spectrum.fits",
@@ -150,7 +150,7 @@ Jacobian column scaling, so the result is invariant to parameter units.
 
 ## Science-readiness status
 
-GenMolFit has an automated cross-band, cross-instrument validation campaign,
+PyMolFit has an automated cross-band, cross-instrument validation campaign,
 but it does not currently pass its full scientific acceptance gate. See
 [`docs/science_readiness_validation.md`](docs/science_readiness_validation.md)
 for the checklist, public-data provenance, numerical thresholds, current
@@ -165,7 +165,7 @@ HITRAN isotopologue metadata and TIPS q files, line intensities use tabulated
 partition sums instead of the fallback power-law approximation.
 
 ```python
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     FitConfig,
     IsotopologueMetadata,
@@ -218,7 +218,7 @@ The default high-level physical workflow now uses a Molecfit-style
 MIPAS+GDAS atmosphere:
 
 ```python
-from genmolfit import AtmosphereProfile
+from pymolfit import AtmosphereProfile
 
 atmosphere = AtmosphereProfile.from_mipas_gdas(
     observation_time="2022-01-02T05:17:35",
@@ -245,8 +245,8 @@ retained in the product provenance. By default
 `gdas_mode="auto"` tries to download the exact ESO GDAS tarball for the
 rounded observatory coordinates, interpolates the bracketing 3-hour profiles to
 the observation time, and caches both the tarball and the interpolated FITS
-profile under `~/.cache/genmolfit/gdas`. If the exact profile is unavailable,
-GenMolFit falls back to the same bundled six two-month average GDAS profiles
+profile under `~/.cache/pymolfit/gdas`. If the exact profile is unavailable,
+PyMolFit falls back to the same bundled six two-month average GDAS profiles
 that Molecfit ships, merged with the packaged MIPAS climatology.
 
 GDAS source control:
@@ -279,7 +279,7 @@ the same pixels under named configurations:
 
 ```python
 from dataclasses import replace
-from genmolfit import FitConfig, fit_tellurics_with_systematics
+from pymolfit import FitConfig, fit_tellurics_with_systematics
 
 baseline = FitConfig(
     atmosphere=atmosphere,
@@ -316,7 +316,7 @@ generalizes to pixels that were not used by the optimizer:
 
 ```python
 from dataclasses import replace
-from genmolfit import cross_validate_telluric_segments
+from pymolfit import cross_validate_telluric_segments
 
 cross_validation = cross_validate_telluric_segments(
     spectra,
@@ -338,7 +338,7 @@ continuum-only prediction.
 
 ## MT_CKD H2O Continuum
 
-GenMolFit can add the LBLRTM/MT_CKD water-vapor continuum when you provide the
+PyMolFit can add the LBLRTM/MT_CKD water-vapor continuum when you provide the
 AER `absco-ref_wv-mt-ckd.nc` coefficient file. The implementation reads the
 reference self and foreign continuum coefficients, applies density scaling,
 self-continuum temperature scaling, the radiation term, and the same cubic
@@ -347,7 +347,7 @@ interpolation formula as the reference MT_CKD H2O routine.
 Python:
 
 ```python
-from genmolfit import correct_file
+from pymolfit import correct_file
 
 result = correct_file(
     "spectrum.fits",
@@ -375,7 +375,7 @@ result = correct_file(
 Command line:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt \
+pymolfit fit spectrum.txt corrected.txt \
   --hitran-par hitran_h2o.par \
   --mtckd-h2o absco-ref_wv-mt-ckd.nc \
   --atmosphere standard \
@@ -388,9 +388,9 @@ coefficient column from MT_CKD 4.2+ files.
 ## TIPS And Line Wings
 
 HITRAN line intensities are weighted by natural terrestrial isotopologue
-abundances. GenMolFit keeps that as the default. To model a non-terrestrial
+abundances. PyMolFit keeps that as the default. To model a non-terrestrial
 isotopic mixture, attach `IsotopologueMetadata` and pass absolute abundance
-overrides; GenMolFit applies `override / natural_abundance` internally.
+overrides; PyMolFit applies `override / natural_abundance` internally.
 
 ```python
 line_list = line_list.with_isotopologue_metadata(
@@ -428,13 +428,13 @@ config = FitConfig(
 The same controls are available on the CLI:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt \
+pymolfit fit spectrum.txt corrected.txt \
   --hitran-par hitran_lband.par \
   --partition-table tips_lband.ecsv \
   --line-wing-mode lblrtm_dynamic
 ```
 
-For Molecfit-style instrumental broadening, GenMolFit supports the synthetic
+For Molecfit-style instrumental broadening, PyMolFit supports the synthetic
 box/Gaussian/Lorentzian kernel controls. Molecfit's optional `kern_mode`
 Voigt-approximation path is exposed as `lsf_molecfit_voigt=True` or
 `--lsf-molecfit-voigt`.
@@ -449,7 +449,7 @@ pass `h2o_continuum="none"` / `co2_continuum="none"` to disable continua.
 
 ## Rayleigh, N2, CO2, And CIA
 
-GenMolFit also supports external continuum and collision-induced absorption
+PyMolFit also supports external continuum and collision-induced absorption
 tables, plus source-backed `contnm.f90` branches:
 
 - `rayleigh=True` / `--rayleigh` enables the LBLRTM Rayleigh formula for
@@ -483,7 +483,7 @@ result = correct_file(
 Command line:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt \
+pymolfit fit spectrum.txt corrected.txt \
   --hitran-par hitran.par \
   --mtckd-h2o absco-ref_wv-mt-ckd.nc \
   --co2-continuum co2_continuum.ecsv \
@@ -494,13 +494,13 @@ genmolfit fit spectrum.txt corrected.txt \
 ```
 
 The source-backed N2/O2 continua and overlapping HITRAN CIA tables are
-alternative representations. GenMolFit rejects combinations such as
+alternative representations. PyMolFit rejects combinations such as
 `n2_continuum=True` with an N2-N2 CIA table instead of silently double-counting
 the same collision-induced absorption.
 
 The CO2 continuum remains table-driven rather than hardcoded from LBLRTM block
 data. This keeps the package lightweight and lets users update or swap
-continuum datasets without changing GenMolFit code.
+continuum datasets without changing PyMolFit code.
 
 ## Component Architecture
 
@@ -510,7 +510,7 @@ grid. Components with the same species are summed before fitting, so H2O line
 absorption and H2O continuum share one fitted H2O scale factor.
 
 ```python
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     CO2ContinuumAbsorption,
     FitConfig,
@@ -555,7 +555,7 @@ work. They now build this component set internally.
 
 ## Command Line Example
 
-GenMolFit can load several common 1D spectrum formats:
+PyMolFit can load several common 1D spectrum formats:
 
 - whitespace numeric text: wavelength, flux, optional uncertainty
 - CSV numeric text
@@ -568,25 +568,25 @@ GenMolFit can load several common 1D spectrum formats:
 For a non-scientific format smoke test with the synthetic demo line list:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt --demo-lines
+pymolfit fit spectrum.txt corrected.txt --demo-lines
 ```
 
 For a FITS table or 1D FITS image, supply real line data:
 
 ```bash
-genmolfit fit spectrum.fits corrected.txt \
+pymolfit fit spectrum.fits corrected.txt \
   --wavelength-unit nm \
   --hitran-par hitran_window.par
 ```
 
-GenMolFit deliberately refuses to run a line fit without `--hitran-par`,
+PyMolFit deliberately refuses to run a line fit without `--hitran-par`,
 `--line-list`, an explicit continuum-only component, or `--demo-lines`. The
 packaged demo list is synthetic and must not be used for scientific spectra.
 
 With a HITRAN `.par` file:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt \
+pymolfit fit spectrum.txt corrected.txt \
   --hitran-par hitran_h2o_lband.par \
   --mtckd-h2o absco-ref_wv-mt-ckd.nc \
   --hitran-species H2O \
@@ -600,13 +600,13 @@ genmolfit fit spectrum.txt corrected.txt \
 
 The optional partition table should be readable by Astropy and contain:
 `mol_id`, `iso_id`, `temperature_k`, and `q`. If a molecule/isotopologue is
-not present in the table, GenMolFit falls back to its approximate internal
+not present in the table, PyMolFit falls back to its approximate internal
 partition scaling for that line.
 
 Instead of the built-in atmosphere, a profile table can be supplied:
 
 ```bash
-genmolfit fit spectrum.txt corrected.txt \
+pymolfit fit spectrum.txt corrected.txt \
   --hitran-par hitran_lband.par \
   --atmosphere-table profile.ecsv
 ```
@@ -617,10 +617,10 @@ columns are `pressure_atm`, `pressure_hpa`, `pressure_mbar`, or `pressure_pa`.
 Supported path columns are `path_length_m`, `thickness_m`, or `dz_m`. Mixing
 ratio columns should be named like `mix_H2O`, `mix_CO2`, or `vmr_H2O`.
 
-To cache a filtered HITRAN file as a reusable GenMolFit line-list table:
+To cache a filtered HITRAN file as a reusable PyMolFit line-list table:
 
 ```bash
-genmolfit convert-hitran hitran_lband.par h2o_lband.ecsv \
+pymolfit convert-hitran hitran_lband.par h2o_lband.ecsv \
   --species H2O \
   --wavenumber-min 4200 \
   --wavenumber-max 4400 \
@@ -628,28 +628,28 @@ genmolfit convert-hitran hitran_lband.par h2o_lband.ecsv \
   --max-lines 50000
 ```
 
-GenMolFit can optionally acquire a newer or custom wavelength window from
+PyMolFit can optionally acquire a newer or custom wavelength window from
 HITRAN's authenticated
 API v2 without installing HAPI. Create an API key in your HITRAN account, keep
 it in the environment, and request all molecules needed by the fit:
 
 ```bash
 export HITRAN_API_KEY='your-private-key'
-genmolfit fetch-hitran \
+pymolfit fetch-hitran \
   --species H2O --species CO2 --species CH4 \
   --wavelength-min 2.29 --wavelength-max 2.36
 ```
 
 The command prints paths to a standard `.par` file, a directly reusable ECSV
 line table, and a JSON manifest. They are cached under
-`~/.cache/genmolfit/hitran` (or `GENMOLFIT_HITRAN_CACHE`) and include the exact
+`~/.cache/pymolfit/hitran` (or `PYMOLFIT_HITRAN_CACHE`) and include the exact
 query, database edition reported by the service, line coverage, isotopologue
 metadata, and SHA-256 hashes. The API key is never persisted. A verified cache
 hit works offline. Existing licensed files can be imported through the same
 validation/provenance path:
 
 ```bash
-genmolfit cache-hitran downloaded.par \
+pymolfit cache-hitran downloaded.par \
   --species O2 --wavelength-min 0.75 --wavelength-max 0.78
 ```
 
@@ -674,7 +674,7 @@ only while its client-source hash matches the current checkout.
 With common expert controls:
 
 ```bash
-genmolfit fit spectrum_nm.txt corrected.txt \
+pymolfit fit spectrum_nm.txt corrected.txt \
   --wavelength-unit nm \
   --hitran-par hitran_lband.par \
   --airmass 1.3 \
@@ -696,11 +696,11 @@ the observed flux, fitted model, continuum, transmission, corrected flux,
 input/fit/corrected masks, propagated uncertainties, fitted parameters,
 covariance rank, parameters at active bounds, and exact model/input provenance.
 
-To compare a corrected GenMolFit spectrum with a reference product, such as a
+To compare a corrected PyMolFit spectrum with a reference product, such as a
 Molecfit-corrected spectrum:
 
 ```bash
-genmolfit compare corrected.txt reference_corrected.txt --normalize
+pymolfit compare corrected.txt reference_corrected.txt --normalize
 ```
 
 ## Remaining Release Gates

@@ -131,7 +131,7 @@ def build_fit_provenance(
 
     return {
         "schema_version": 1,
-        "genmolfit_version": __version__,
+        "pymolfit_version": __version__,
         "python_version": platform.python_version(),
         "numpy_version": np.__version__,
         "scipy_version": scipy.__version__,

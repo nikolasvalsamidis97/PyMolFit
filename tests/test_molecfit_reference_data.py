@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from genmolfit.aer_data import AER_CATALOG_FILENAME, AER_FILE_SPECS
+from pymolfit.aer_data import AER_CATALOG_FILENAME, AER_FILE_SPECS
 from local_tests.molecfit_reference_data import stage_aer_molecfit_data
 
 

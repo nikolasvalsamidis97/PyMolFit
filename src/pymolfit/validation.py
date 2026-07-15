@@ -434,7 +434,7 @@ def compare_spectra(
     """Compare two spectra on their common wavelength grid.
 
     The reference spectrum is linearly interpolated onto the candidate grid.
-    This is deliberately generic so it can compare GenMolFit output to a
+    This is deliberately generic so it can compare PyMolFit output to a
     Molecfit product, a simulation, or another reduction package.
     """
 

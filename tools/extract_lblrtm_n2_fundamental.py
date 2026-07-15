@@ -1,7 +1,7 @@
 """Extract the LBLRTM 12.11 N2 continuum coefficient tables.
 
 This development-time provenance tool reads the ``bn2f`` and ``bn2f1`` block data from
-LBLRTM's ``contnm.f90`` and writes the compact table consumed by GenMolFit.
+LBLRTM's ``contnm.f90`` and writes the compact table consumed by PyMolFit.
 LBLRTM is not imported or executed at runtime.
 """
 

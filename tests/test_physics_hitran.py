@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-import genmolfit.components as components_module
-from genmolfit import (
+import pymolfit.components as components_module
+from pymolfit import (
     AtmosphereProfile,
     FitConfig,
     IsotopologueMetadata,
@@ -16,14 +16,14 @@ from genmolfit import (
     read_aer_line_file,
     read_hitran_par,
 )
-from genmolfit.physics import (
+from pymolfit.physics import (
     lblrtm_dynamic_line_cutoff_cm,
     lblrtm_dynamic_max_line_cutoff_cm,
     lblrtm_layer_wavenumber_spacing_cm,
     lblrtm_voigt_hwhm,
     line_strength_temperature,
 )
-from genmolfit.components import hitran_line_optical_depth_basis, line_wing_effective_cutoff_cm
+from pymolfit.components import hitran_line_optical_depth_basis, line_wing_effective_cutoff_cm
 
 
 def _fixed_decimal(value, width, decimals):

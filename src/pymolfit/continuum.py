@@ -315,7 +315,7 @@ class LBLRTMH2OContinuum:
 
     @classmethod
     def from_package_data(cls) -> "LBLRTMH2OContinuum":
-        with resources.files("genmolfit").joinpath("data", LBLRTM_H2O_CONTINUUM_DATA).open("rb") as handle:
+        with resources.files("pymolfit").joinpath("data", LBLRTM_H2O_CONTINUUM_DATA).open("rb") as handle:
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -445,7 +445,7 @@ class LBLRTMCO2Continuum:
 
     @classmethod
     def from_package_data(cls) -> "LBLRTMCO2Continuum":
-        with resources.files("genmolfit").joinpath("data", LBLRTM_CO2_CONTINUUM_DATA).open("rb") as handle:
+        with resources.files("pymolfit").joinpath("data", LBLRTM_CO2_CONTINUUM_DATA).open("rb") as handle:
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -531,7 +531,7 @@ class LBLRTMN2FundamentalContinuum:
 
     @classmethod
     def from_package_data(cls) -> "LBLRTMN2FundamentalContinuum":
-        with resources.files("genmolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
+        with resources.files("pymolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -666,7 +666,7 @@ class LBLRTMN2OvertoneContinuum:
 
     @classmethod
     def from_package_data(cls) -> "LBLRTMN2OvertoneContinuum":
-        with resources.files("genmolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
+        with resources.files("pymolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["overtone_wavenumber_cm"], dtype=float),
@@ -786,7 +786,7 @@ class LBLRTMO2Continuum:
 
     @classmethod
     def from_package_data(cls) -> "LBLRTMO2Continuum":
-        with resources.files("genmolfit").joinpath("data", LBLRTM_O2_CONTINUUM_DATA).open("rb") as handle:
+        with resources.files("pymolfit").joinpath("data", LBLRTM_O2_CONTINUUM_DATA).open("rb") as handle:
             data = np.load(handle)
             return cls(
                 fundamental_wavenumber_cm=np.asarray(data["fundamental_wavenumber_cm"], dtype=float),

@@ -2,8 +2,8 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import Spectrum, air_to_vacuum_wavelength, load_spectrum, save_spectrum, vacuum_to_air_wavelength
-from genmolfit.provenance import file_sha256
+from pymolfit import Spectrum, air_to_vacuum_wavelength, load_spectrum, save_spectrum, vacuum_to_air_wavelength
+from pymolfit.provenance import file_sha256
 
 
 def test_ascii_roundtrip(tmp_path):

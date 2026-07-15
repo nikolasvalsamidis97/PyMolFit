@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "genmolfit"
+name = "pymolfit"
 version = "0.1.0"
 description = "Generic pure-Python telluric fitting and correction with source-audited radiative-transfer physics."
 readme = "README.md"
@@ -30,7 +30,7 @@ plot = [
 ]
 
 [project.scripts]
-genmolfit = "genmolfit.cli:main"
+pymolfit = "pymolfit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -39,7 +39,7 @@ where = ["src"]
 license-files = ["THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.package-data]
-genmolfit = [
+pymolfit = [
     "data/*.npz",
     "data/profiles/gdas/*.fits",
     "data/profiles/mipas/*.fits",

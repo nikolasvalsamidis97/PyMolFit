@@ -1,7 +1,7 @@
 """Extract ground-based O2 continuum tables from LBLRTM 12.11.
 
-This provenance tool is used only while building GenMolFit package data.
-GenMolFit does not import or execute LBLRTM at runtime.
+This provenance tool is used only while building PyMolFit package data.
+PyMolFit does not import or execute LBLRTM at runtime.
 """
 
 from __future__ import annotations

@@ -144,7 +144,7 @@ def high_resolution_wavelength_grid(
 
     LBLRTM computes transmission on an internal wavenumber grid and only later
     convolves/rebins to observed pixels. This helper creates the self-contained
-    analogue used by GenMolFit. The returned wavelength grid is monotonically
+    analogue used by PyMolFit. The returned wavelength grid is monotonically
     increasing, while its reciprocal wavenumber grid is uniformly spaced.
 
     The second return value is the median number of high-resolution samples per

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from genmolfit import AtmosphereProfile
-from genmolfit.atmosphere import (
+from pymolfit import AtmosphereProfile
+from pymolfit.atmosphere import (
     BOLTZMANN_J_PER_K,
     DEFAULT_OBSERVATORY_ALTITUDE_M,
     DEFAULT_OBSERVATORY_LATITUDE_DEG,

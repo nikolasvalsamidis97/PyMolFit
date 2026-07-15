@@ -67,7 +67,7 @@ def _write_packet_manifest() -> None:
     ]
     manifest = {
         "schema_version": 1,
-        "purpose": "GenMolFit independent blind telluric-correction review",
+        "purpose": "PyMolFit independent blind telluric-correction review",
         "files": entries,
     }
     _packet_manifest_path().write_text(
@@ -116,20 +116,20 @@ def _finite_normalize(values: np.ndarray) -> np.ndarray:
 
 def _assignment(case_id: str) -> tuple[str, str]:
     digest = hashlib.sha256(case_id.encode("ascii")).digest()
-    return ("GenMolFit", "Molecfit") if digest[0] % 2 == 0 else ("Molecfit", "GenMolFit")
+    return ("PyMolFit", "Molecfit") if digest[0] % 2 == 0 else ("Molecfit", "PyMolFit")
 
 
 def _write_case(
     case_id: str,
     wavelength: np.ndarray,
     raw: np.ndarray,
-    genmolfit: np.ndarray,
+    pymolfit: np.ndarray,
     molecfit: np.ndarray,
     *,
     source: str,
 ) -> dict[str, str]:
     candidate_a, candidate_b = _assignment(case_id)
-    candidates = {"GenMolFit": genmolfit, "Molecfit": molecfit}
+    candidates = {"PyMolFit": pymolfit, "Molecfit": molecfit}
     candidate_a_flux = np.asarray(candidates[candidate_a], dtype=float)
     candidate_b_flux = np.asarray(candidates[candidate_b], dtype=float)
 
@@ -189,7 +189,7 @@ def _xshooter_cases() -> list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.
                 f"case_{index:02d}",
                 np.asarray(table["wavelength_air_micron"], dtype=float),
                 _finite_normalize(table["raw_flux"]),
-                np.asarray(table["genmolfit_corrected_relative"], dtype=float),
+                np.asarray(table["pymolfit_corrected_relative"], dtype=float),
                 np.asarray(table["molecfit_corrected_relative"], dtype=float),
                 str(path.relative_to(ROOT)),
             )
@@ -199,7 +199,7 @@ def _xshooter_cases() -> list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.
 
 def _crires_cases(start_index: int) -> list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]]:
     result = []
-    base = ROOT / "local_tests" / "rho01_molecfit_vs_genmolfit_lband"
+    base = ROOT / "local_tests" / "rho01_molecfit_vs_pymolfit_lband"
     for offset, chip in enumerate((2, 6, 10, 14, 18)):
         path = base / f"chip_{chip:02d}_comparison.ecsv"
         if not path.exists():
@@ -264,7 +264,7 @@ def _prepare_held_out_form() -> None:
         "dataset",
         "instrument",
         "molecfit_version",
-        "genmolfit_version",
+        "pymolfit_version",
         "decision",
         "intrinsic_lines_preserved",
         "masks_usable",
@@ -296,8 +296,8 @@ def build_packet() -> None:
     cases = _xshooter_cases()
     cases.extend(_crires_cases(len(cases) + 1))
     answer_rows = [
-        _write_case(case_id, wavelength, raw, genmolfit, molecfit, source=source)
-        for case_id, wavelength, raw, genmolfit, molecfit, source in cases
+        _write_case(case_id, wavelength, raw, pymolfit, molecfit, source=source)
+        for case_id, wavelength, raw, pymolfit, molecfit, source in cases
     ]
 
     with ANSWER_KEY.open("w", newline="", encoding="utf-8") as handle:
@@ -346,7 +346,7 @@ intrinsic-line field. A preference is not required when the candidates are
 scientifically equivalent. Do not alter `case_sha256`.
 
 The reviewer must also process at least one familiar held-out spectrum that
-was not selected by the GenMolFit developer, using documented settings for
+was not selected by the PyMolFit developer, using documented settings for
 both programs. Record that dataset, versions, settings, residual diagnostics,
 mask and uncertainty usability, and the final signed `PASS` or `FAIL` decision
 in `held_out_review.csv`. Use `YES` or `NO` in its three assessment fields.

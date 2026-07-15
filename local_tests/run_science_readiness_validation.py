@@ -23,9 +23,9 @@ import scipy
 import astropy
 from astropy.io import fits
 from astropy.table import Table
-import genmolfit.atmosphere as atmosphere_impl
+import pymolfit.atmosphere as atmosphere_impl
 
-from genmolfit import (
+from pymolfit import (
     __version__,
     AtmosphereProfile,
     FitConfig,
@@ -42,14 +42,14 @@ from genmolfit import (
     physical_optical_depth_basis,
     transmission_model,
 )
-from genmolfit.aer_data import (
+from pymolfit.aer_data import (
     AER_CATALOG_FILENAME,
     AER_CATALOG_SHA256,
     AER_CATALOG_VERSION,
     AERCatalogArtifact,
     install_aer_catalog,
 )
-from genmolfit.model import transmission_from_basis
+from pymolfit.model import transmission_from_basis
 
 try:
     from local_tests.molecfit_reference_data import stage_aer_molecfit_data
@@ -569,7 +569,7 @@ def _shared_uncertainty_and_output_checks(
     )
 
     assert final_result is not None
-    with tempfile.TemporaryDirectory(prefix="genmolfit_product_audit_") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_product_audit_") as temporary:
         product_path = Path(temporary) / "segment.ecsv"
         final_result.segment_results[0].write(product_path)
         product = Table.read(product_path, format="ascii.ecsv")
@@ -1320,17 +1320,17 @@ def _normalise(values: np.ndarray) -> np.ndarray:
 
 
 def _compare_gdas_profiles(
-    genmolfit_path: Path,
+    pymolfit_path: Path,
     molecfit_path: Path,
 ) -> tuple[bool, float, str]:
     columns = ("press", "height", "temp", "relhum")
-    genmolfit = Table.read(genmolfit_path, hdu=1)
+    pymolfit = Table.read(pymolfit_path, hdu=1)
     molecfit = Table.read(molecfit_path, hdu=1)
-    if len(genmolfit) != len(molecfit):
-        return False, np.inf, f"level counts differ ({len(genmolfit)} vs {len(molecfit)})"
+    if len(pymolfit) != len(molecfit):
+        return False, np.inf, f"level counts differ ({len(pymolfit)} vs {len(molecfit)})"
     maxima = {}
     for column in columns:
-        delta = np.asarray(genmolfit[column], dtype=float) - np.asarray(
+        delta = np.asarray(pymolfit[column], dtype=float) - np.asarray(
             molecfit[column], dtype=float
         )
         maxima[column] = float(np.nanmax(np.abs(delta)))
@@ -1343,7 +1343,7 @@ def _compare_combined_atmosphere_profiles(
     gdas_path: Path,
     molecfit_path: Path,
 ) -> tuple[bool, float, str]:
-    """Compare GenMolFit's merged MIPAS/GDAS levels to Molecfit's product."""
+    """Compare PyMolFit's merged MIPAS/GDAS levels to Molecfit's product."""
 
     metadata = dict(atmosphere.metadata)
     altitude_m = float(metadata["observatory_altitude_m"])
@@ -1416,7 +1416,7 @@ def _run_xshooter_case(
     *,
     run_molecfit: bool,
 ) -> tuple[list[ValidationCheck], dict[str, object]]:
-    from genmolfit import correct_file
+    from pymolfit import correct_file
 
     case_dir = OUTPUT_DIR / "xshooter" / case.name
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -1434,7 +1434,7 @@ def _run_xshooter_case(
     started = time.perf_counter()
     result = correct_file(
         crop,
-        case_dir / "genmolfit_corrected.txt",
+        case_dir / "pymolfit_corrected.txt",
         input_format="fits",
         wavelength_col="lambda",
         flux_col="flux",
@@ -1462,8 +1462,8 @@ def _run_xshooter_case(
         fit_lsf_sigma=True,
         lsf_sigma_bounds=(0.0, 8.0),
         estimate_uncertainties=True,
-        product_path=case_dir / "genmolfit_product.ecsv",
-        plot_path=case_dir / "genmolfit_fit.png",
+        product_path=case_dir / "pymolfit_product.ecsv",
+        plot_path=case_dir / "pymolfit_fit.png",
     )
     gen_seconds = time.perf_counter() - started
     atmosphere = AtmosphereProfile.from_fits_header_mipas_gdas(
@@ -1558,21 +1558,21 @@ def _run_xshooter_case(
         agreement_passed = transmission_rms <= 0.02 and (
             not np.isfinite(telluric_rms) or telluric_rms <= 0.03
         )
-        genmolfit_chi2 = 2.0 * float(result.cost)
-        genmolfit_fits_better = (
+        pymolfit_chi2 = 2.0 * float(result.cost)
+        pymolfit_fits_better = (
             np.isfinite(molecfit_best_chi2)
-            and genmolfit_chi2 <= 1.05 * molecfit_best_chi2
+            and pymolfit_chi2 <= 1.05 * molecfit_best_chi2
             and np.isfinite(molecfit_corrected_scatter)
             and corrected_scatter <= molecfit_corrected_scatter
         )
         if agreement_passed:
             agreement_status = "PASS"
             agreement_details = f"telluric_rms={telluric_rms:.5g}"
-        elif genmolfit_fits_better:
+        elif pymolfit_fits_better:
             agreement_status = "WARN"
             agreement_details = (
-                f"telluric_rms={telluric_rms:.5g}; models disagree, but GenMolFit has lower "
-                f"weighted objective ({genmolfit_chi2:.5g} vs {molecfit_best_chi2:.5g}) and "
+                f"telluric_rms={telluric_rms:.5g}; models disagree, but PyMolFit has lower "
+                f"weighted objective ({pymolfit_chi2:.5g} vs {molecfit_best_chi2:.5g}) and "
                 f"corrected scatter ({corrected_scatter:.5g} vs {molecfit_corrected_scatter:.5g})"
             )
         else:
@@ -1589,12 +1589,12 @@ def _run_xshooter_case(
                 required=agreement_status != "WARN",
             )
         )
-        genmolfit_gdas = Path(str(atmosphere.metadata.get("gdas_profile", "")))
+        pymolfit_gdas = Path(str(atmosphere.metadata.get("gdas_profile", "")))
         molecfit_gdas = case_dir / "GDAS.fits"
         molecfit_combined = case_dir / "ATM_PROFILE_COMBINED.fits"
-        if genmolfit_gdas.exists() and molecfit_gdas.exists():
+        if pymolfit_gdas.exists() and molecfit_gdas.exists():
             gdas_equal, gdas_difference, gdas_details = _compare_gdas_profiles(
-                genmolfit_gdas,
+                pymolfit_gdas,
                 molecfit_gdas,
             )
             checks.append(
@@ -1644,16 +1644,16 @@ def _run_xshooter_case(
                     details="one or both Molecfit atmosphere products are unavailable",
                 )
             )
-        objective_ratio = genmolfit_chi2 / molecfit_best_chi2
+        objective_ratio = pymolfit_chi2 / molecfit_best_chi2
         checks.append(
             ValidationCheck(
                 "real_correction",
                 f"X-shooter {case.band} weighted fit quality versus Molecfit",
                 "PASS" if np.isfinite(objective_ratio) and objective_ratio <= 1.05 else "FAIL",
                 value=objective_ratio,
-                threshold="GenMolFit weighted objective / Molecfit best chi-square <= 1.05",
+                threshold="PyMolFit weighted objective / Molecfit best chi-square <= 1.05",
                 details=(
-                    f"GenMolFit={genmolfit_chi2:.5g}, Molecfit={molecfit_best_chi2:.5g}; "
+                    f"PyMolFit={pymolfit_chi2:.5g}, Molecfit={molecfit_best_chi2:.5g}; "
                     "screening and optimizer implementations are not identical"
                 ),
             )
@@ -1671,9 +1671,9 @@ def _run_xshooter_case(
     table = Table()
     table["wavelength_air_micron"] = wavelength
     table["raw_flux"] = flux
-    table["genmolfit_transmission"] = result.transmission
-    table["genmolfit_transmission_uncertainty"] = result.transmission_uncertainty
-    table["genmolfit_corrected_relative"] = corrected_relative
+    table["pymolfit_transmission"] = result.transmission
+    table["pymolfit_transmission_uncertainty"] = result.transmission_uncertainty
+    table["pymolfit_corrected_relative"] = corrected_relative
     table["molecfit_transmission"] = molecfit_transmission
     table["molecfit_corrected_relative"] = molecfit_corrected_relative
     table.write(case_dir / "comparison.ecsv", overwrite=True)
@@ -1682,12 +1682,12 @@ def _run_xshooter_case(
     axes[0].plot(wavelength, _normalise(flux), color="black", lw=0.8, label="raw")
     axes[0].set_ylabel("Normalized raw flux")
     axes[0].legend(loc="best")
-    axes[1].plot(wavelength, result.transmission, color="C1", lw=0.9, label="GenMolFit")
+    axes[1].plot(wavelength, result.transmission, color="C1", lw=0.9, label="PyMolFit")
     if np.any(np.isfinite(molecfit_transmission)):
         axes[1].plot(wavelength, molecfit_transmission, color="C0", lw=0.8, alpha=0.8, label="Molecfit")
     axes[1].set_ylabel("Transmission")
     axes[1].legend(loc="best")
-    axes[2].plot(wavelength[reliable_gen], corrected_relative[reliable_gen], color="C1", lw=0.8, label="GenMolFit")
+    axes[2].plot(wavelength[reliable_gen], corrected_relative[reliable_gen], color="C1", lw=0.8, label="PyMolFit")
     if np.any(np.isfinite(molecfit_corrected_relative)):
         axes[2].plot(wavelength, molecfit_corrected_relative, color="C0", lw=0.8, alpha=0.8, label="Molecfit")
     axes[2].axhline(1.0, color="0.4", lw=0.7)
@@ -1708,7 +1708,7 @@ def _run_xshooter_case(
         "species": ",".join(case.species),
         "n_pixels": wavelength.size,
         "n_lines": lines.wavelength.size,
-        "genmolfit_seconds": gen_seconds,
+        "pymolfit_seconds": gen_seconds,
         "molecfit_seconds": molecfit_seconds,
         "molecfit_best_chi2": molecfit_best_chi2,
         "molecfit_reduced_chi2": molecfit_reduced_chi2,
@@ -1720,11 +1720,11 @@ def _run_xshooter_case(
         "improvement": improvement,
         "transmission_rms": transmission_rms,
         "telluric_rms": telluric_rms,
-        "genmolfit_cost": result.cost,
-        "genmolfit_reduced_chi_square": result.reduced_chi_square,
-        "genmolfit_nfev": result.nfev,
-        "genmolfit_lsf_sigma_pixels": result.lsf_sigma_pixels,
-        "genmolfit_wavelength_shift_micron": result.wavelength_shift,
+        "pymolfit_cost": result.cost,
+        "pymolfit_reduced_chi_square": result.reduced_chi_square,
+        "pymolfit_nfev": result.nfev,
+        "pymolfit_lsf_sigma_pixels": result.lsf_sigma_pixels,
+        "pymolfit_wavelength_shift_micron": result.wavelength_shift,
         "species_scales": str(result.species_scales),
         "species_scale_uncertainties": str(result.species_scale_uncertainties),
         "gdas_source": atmosphere.metadata.get("gdas_source", "unknown"),
@@ -1830,8 +1830,8 @@ def _existing_external_checks(
         maximum = float(row["transmission_max_abs"])
         objective_ratio = float(row["weighted_objective_ratio"])
         scatter_ratio = float(row["relative_scatter_ratio"])
-        covariance_rank = int(float(row["genmolfit_covariance_rank"]))
-        parameter_count = int(float(row["genmolfit_parameter_count"]))
+        covariance_rank = int(float(row["pymolfit_covariance_rank"]))
+        parameter_count = int(float(row["pymolfit_parameter_count"]))
         direct_pass = rms <= 0.005 and telluric_rms <= 0.01 and maximum <= 0.02
         checks.extend(
             [
@@ -1873,7 +1873,7 @@ def _existing_external_checks(
                 "corrected_scatter_ratio": scatter_ratio,
                 "covariance_rank": covariance_rank,
                 "parameter_count": parameter_count,
-                "genmolfit_seconds": float(row["genmolfit_seconds"]),
+                "pymolfit_seconds": float(row["pymolfit_seconds"]),
                 "molecfit_seconds": float(row["molecfit_seconds"]),
             }
         )
@@ -1914,11 +1914,11 @@ def _existing_external_checks(
         telluric_rms = float(row["telluric_transmission_rms"])
         maximum = float(row["transmission_max_abs"])
         objective_ratio = float(row["weighted_objective_ratio"])
-        gen_corrected = float(row["genmolfit_telluric_rms_from_unity"])
+        gen_corrected = float(row["pymolfit_telluric_rms_from_unity"])
         mol_corrected = float(row["molecfit_telluric_rms_from_unity"])
-        improvement = float(row["genmolfit_telluric_rms_improvement"])
-        covariance_rank = int(float(row["genmolfit_covariance_rank"]))
-        parameter_count = int(float(row["genmolfit_parameter_count"]))
+        improvement = float(row["pymolfit_telluric_rms_improvement"])
+        covariance_rank = int(float(row["pymolfit_covariance_rank"]))
+        parameter_count = int(float(row["pymolfit_parameter_count"]))
         cv_prediction = float(row["cross_validation_prediction_coverage"])
         cv_reliable = float(row["cross_validation_reliable_correction_coverage"])
         cv_relative = float(row["cross_validation_relative_rms_improvement"])
@@ -2002,9 +2002,9 @@ def _existing_external_checks(
                 "cross_validation_reliable_correction_coverage": cv_reliable,
                 "cross_validation_relative_rms_improvement": cv_relative,
                 "cross_validation_weighted_rms_improvement": cv_weighted,
-                "genmolfit_seconds": float(row["genmolfit_seconds"]),
-                "genmolfit_cross_validation_seconds": float(
-                    row["genmolfit_cross_validation_seconds"]
+                "pymolfit_seconds": float(row["pymolfit_seconds"]),
+                "pymolfit_cross_validation_seconds": float(
+                    row["pymolfit_cross_validation_seconds"]
                 ),
                 "molecfit_seconds": float(row["molecfit_seconds"]),
             }
@@ -2046,11 +2046,11 @@ def _existing_external_checks(
         telluric_rms = float(row["telluric_transmission_rms"])
         maximum = float(row["transmission_max_abs"])
         objective_ratio = float(row["weighted_objective_ratio"])
-        gen_corrected = float(row["genmolfit_telluric_rms_from_unity"])
+        gen_corrected = float(row["pymolfit_telluric_rms_from_unity"])
         mol_corrected = float(row["molecfit_telluric_rms_from_unity"])
-        improvement = float(row["genmolfit_telluric_rms_improvement"])
-        covariance_rank = int(float(row["genmolfit_covariance_rank"]))
-        parameter_count = int(float(row["genmolfit_parameter_count"]))
+        improvement = float(row["pymolfit_telluric_rms_improvement"])
+        covariance_rank = int(float(row["pymolfit_covariance_rank"]))
+        parameter_count = int(float(row["pymolfit_parameter_count"]))
         systematics_p95 = float(row["systematics_transmission_rms_p95"])
         systematics_max = float(row["systematics_transmission_envelope_max"])
         systematics_finite = float(row["systematics_finite_fraction"])
@@ -2156,9 +2156,9 @@ def _existing_external_checks(
                 "cross_validation_reliable_correction_coverage": cv_reliable,
                 "cross_validation_relative_rms_improvement": cv_relative,
                 "cross_validation_weighted_rms_improvement": cv_weighted,
-                "genmolfit_seconds": float(row["genmolfit_seconds"]),
-                "genmolfit_cross_validation_seconds": float(
-                    row["genmolfit_cross_validation_seconds"]
+                "pymolfit_seconds": float(row["pymolfit_seconds"]),
+                "pymolfit_cross_validation_seconds": float(
+                    row["pymolfit_cross_validation_seconds"]
                 ),
                 "molecfit_seconds": float(row["molecfit_seconds"]),
             }
@@ -2174,7 +2174,7 @@ def _existing_external_checks(
             )
         )
 
-    crires_path = ROOT / "local_tests" / "rho01_molecfit_vs_genmolfit_lband" / "summary.csv"
+    crires_path = ROOT / "local_tests" / "rho01_molecfit_vs_pymolfit_lband" / "summary.csv"
     if crires_path.exists():
         table = Table.read(crires_path, format="ascii.csv")
         values = np.asarray(table["transmission_rms_difference"], dtype=float)
@@ -2185,9 +2185,9 @@ def _existing_external_checks(
             name in table.colnames
             for name in (
                 "continuum_invariant_shape_rms",
-                "genmolfit_weighted_objective",
+                "pymolfit_weighted_objective",
                 "molecfit_weighted_objective",
-                "genmolfit_corrected_scatter",
+                "pymolfit_corrected_scatter",
                 "molecfit_corrected_scatter",
             )
         )
@@ -2197,10 +2197,10 @@ def _existing_external_checks(
             shape = np.asarray(table["continuum_invariant_shape_rms"], dtype=float)
             shape_mean = float(np.nanmean(shape))
             shape_max = float(np.nanmax(shape))
-            gen_objective = float(np.nansum(table["genmolfit_weighted_objective"]))
+            gen_objective = float(np.nansum(table["pymolfit_weighted_objective"]))
             molecfit_objective = float(np.nansum(table["molecfit_weighted_objective"]))
             objective_ratio = gen_objective / molecfit_objective
-            gen_scatter = float(np.nanmedian(table["genmolfit_corrected_scatter"]))
+            gen_scatter = float(np.nanmedian(table["pymolfit_corrected_scatter"]))
             molecfit_scatter = float(np.nanmedian(table["molecfit_corrected_scatter"]))
             scatter_ratio = gen_scatter / molecfit_scatter
             shape_pass = (
@@ -2417,7 +2417,7 @@ def _runtime_check() -> tuple[ValidationCheck, dict[str, object]]:
         return ValidationCheck("runtime", "matched CRIRES benchmark", "SKIP"), {}
     table = Table.read(path, format="ascii.csv")
     mapping = {str(row["run"]): float(row["seconds"]) for row in table}
-    gen = mapping["genmolfit_from_science_input"]
+    gen = mapping["pymolfit_from_science_input"]
     molecfit = mapping["molecfit_model_only"]
     ratio = gen / molecfit
     return (
@@ -2426,8 +2426,8 @@ def _runtime_check() -> tuple[ValidationCheck, dict[str, object]]:
             "matched CRIRES benchmark",
             "PASS" if ratio <= 1.25 else "FAIL",
             value=ratio,
-            threshold="GenMolFit/Molecfit wall time <= 1.25",
-            details=f"GenMolFit={gen:.3f}s, Molecfit={molecfit:.3f}s",
+            threshold="PyMolFit/Molecfit wall time <= 1.25",
+            details=f"PyMolFit={gen:.3f}s, Molecfit={molecfit:.3f}s",
         ),
         {"group": "runtime", "case": "CRIRES_18_segment", "gen_seconds": gen, "molecfit_seconds": molecfit, "ratio": ratio},
     )
@@ -2491,7 +2491,7 @@ def _fixed_rt_parity_checks(
         telluric_rms = float(record["telluric_rms"])
         maximum = float(record["maximum_absolute_difference"])
         correlation = float(record["optical_depth_correlation"])
-        scale = float(record["molecfit_to_genmolfit_optical_depth_scale"])
+        scale = float(record["molecfit_to_pymolfit_optical_depth_scale"])
         passed = (
             rms <= 0.002
             and telluric_rms <= 0.002
@@ -2564,7 +2564,7 @@ def _package_checks() -> tuple[list[ValidationCheck], list[dict[str, object]]]:
         }
     )
 
-    wheels = sorted((ROOT / "dist").glob("genmolfit-*.whl"), key=lambda path: path.stat().st_mtime)
+    wheels = sorted((ROOT / "dist").glob("pymolfit-*.whl"), key=lambda path: path.stat().st_mtime)
     if not wheels:
         checks.append(ValidationCheck("package", "wheel contents and freshness", "FAIL", details="no wheel in dist/"))
         checks.append(ValidationCheck("package", "isolated wheel install and smoke test", "SKIP"))
@@ -2573,8 +2573,8 @@ def _package_checks() -> tuple[list[ValidationCheck], list[dict[str, object]]]:
     wheel = wheels[-1]
     wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
     source_files = [
-        *list((ROOT / "src" / "genmolfit").rglob("*.py")),
-        *list((ROOT / "src" / "genmolfit" / "data").rglob("*")),
+        *list((ROOT / "src" / "pymolfit").rglob("*.py")),
+        *list((ROOT / "src" / "pymolfit" / "data").rglob("*")),
         ROOT / "pyproject.toml",
         ROOT / "README.md",
         ROOT / "THIRD_PARTY_NOTICES.md",
@@ -2584,15 +2584,15 @@ def _package_checks() -> tuple[list[ValidationCheck], list[dict[str, object]]]:
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
     expected_suffixes = (
-        "genmolfit/__init__.py",
-        "genmolfit/aer_data.py",
-        "genmolfit/provenance.py",
-        "genmolfit/systematics.py",
-        "genmolfit/validation.py",
-        "genmolfit/data/lblrtm_v12_11_n2_fundamental.npz",
-        "genmolfit/data/lblrtm_v12_11_o2_continuum.npz",
-        "genmolfit/data/lblrtm_v12_11_h2o_continuum.npz",
-        "genmolfit/data/lblrtm_v12_11_co2_continuum.npz",
+        "pymolfit/__init__.py",
+        "pymolfit/aer_data.py",
+        "pymolfit/provenance.py",
+        "pymolfit/systematics.py",
+        "pymolfit/validation.py",
+        "pymolfit/data/lblrtm_v12_11_n2_fundamental.npz",
+        "pymolfit/data/lblrtm_v12_11_o2_continuum.npz",
+        "pymolfit/data/lblrtm_v12_11_h2o_continuum.npz",
+        "pymolfit/data/lblrtm_v12_11_co2_continuum.npz",
     )
     missing = [suffix for suffix in expected_suffixes if not any(name.endswith(suffix) for name in names)]
     notice_present = any(
@@ -2618,7 +2618,7 @@ def _package_checks() -> tuple[list[ValidationCheck], list[dict[str, object]]]:
         )
     )
 
-    with tempfile.TemporaryDirectory(prefix="genmolfit_wheel_campaign_") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_wheel_campaign_") as temporary:
         temporary_path = Path(temporary)
         environment = temporary_path / "venv"
         create = subprocess.run(
@@ -2642,9 +2642,9 @@ def _package_checks() -> tuple[list[ValidationCheck], list[dict[str, object]]]:
             smoke_code = """
 import pathlib
 import numpy as np
-import genmolfit
-from genmolfit import LBLRTMN2OvertoneContinuum, LBLRTMO2Continuum, correct_arrays
-assert 'site-packages' in pathlib.Path(genmolfit.__file__).parts
+import pymolfit
+from pymolfit import LBLRTMN2OvertoneContinuum, LBLRTMO2Continuum, correct_arrays
+assert 'site-packages' in pathlib.Path(pymolfit.__file__).parts
 assert LBLRTMN2OvertoneContinuum.from_package_data().wavenumber_cm.size == 191
 assert LBLRTMO2Continuum.from_package_data().visible_wavenumber_cm.size == 1474
 try:
@@ -2854,7 +2854,7 @@ def _authenticated_hitran_check() -> ValidationCheck:
         ).encode("ascii")
         request_sha256 = hashlib.sha256(encoded).hexdigest()
         source_sha256 = hashlib.sha256(
-            (ROOT / "src" / "genmolfit" / "line_data.py").read_bytes()
+            (ROOT / "src" / "pymolfit" / "line_data.py").read_bytes()
         ).hexdigest()
         validator_sha256 = hashlib.sha256(
             (ROOT / "local_tests" / "validate_authenticated_hitran.py").read_bytes()
@@ -2869,7 +2869,7 @@ def _authenticated_hitran_check() -> ValidationCheck:
             and receipt.get("credential_persisted") is False
             and receipt.get("api_version") == "v2"
             and receipt.get("api_base_url") == "https://hitran.org"
-            and receipt.get("genmolfit_version") == __version__
+            and receipt.get("pymolfit_version") == __version__
             and receipt.get("client_source_sha256") == source_sha256
             and receipt.get("validator_source_sha256") == validator_sha256
             and request.get("source") == "hitran_api"
@@ -2986,7 +2986,7 @@ def _independent_review_check() -> ValidationCheck:
             invalid.append(case)
             continue
         answer = answers[(case, row["case_sha256"])]
-        gen_candidate = "A" if answer.get("candidate_A") == "GenMolFit" else "B"
+        gen_candidate = "A" if answer.get("candidate_A") == "PyMolFit" else "B"
         if (
             values[f"candidate_{gen_candidate}_material_artifact"] != "NO"
             or values[f"candidate_{gen_candidate}_intrinsic_lines_preserved"] != "YES"
@@ -3008,7 +3008,7 @@ def _independent_review_check() -> ValidationCheck:
         "dataset",
         "instrument",
         "molecfit_version",
-        "genmolfit_version",
+        "pymolfit_version",
         "decision",
         "intrinsic_lines_preserved",
         "masks_usable",
@@ -3062,7 +3062,7 @@ def _independent_review_check() -> ValidationCheck:
         threshold="independent reviewer finds no scientifically material regression",
         details=(
             f"reviewer={held['reviewer']}, held-out={held['dataset']}, "
-            f"decision={decision}, blind GenMolFit regressions={regressions}"
+            f"decision={decision}, blind PyMolFit regressions={regressions}"
         ),
     )
 
@@ -3144,7 +3144,7 @@ def run(*, skip_molecfit: bool = False) -> ScienceReadinessReport:
         "Keck HIRES high-resolution optical": HIRES_SUMMARY,
         "Keck KPF high-resolution optical": KPF_SUMMARY,
         "X-shooter medium-resolution optical/NIR": DATA_DIR / XSHOOTER_DATASETS["VIS"][0],
-        "CRIRES+ high-resolution infrared": ROOT / "local_tests" / "rho01_molecfit_vs_genmolfit_lband" / "summary.csv",
+        "CRIRES+ high-resolution infrared": ROOT / "local_tests" / "rho01_molecfit_vs_pymolfit_lband" / "summary.csv",
     }
     for name, path in instrument_evidence.items():
         checks.append(
@@ -3198,7 +3198,7 @@ def run(*, skip_molecfit: bool = False) -> ScienceReadinessReport:
         dataset_hashes[f"KOA/{relative}"] = hashlib.sha256(path.read_bytes()).hexdigest()
     kpf_path = KPF_DATA_DIR / KPF_FILENAME
     dataset_hashes[f"KOA/{KPF_FILENAME}"] = hashlib.sha256(kpf_path.read_bytes()).hexdigest()
-    wheels = sorted((ROOT / "dist").glob("genmolfit-*.whl"), key=lambda path: path.stat().st_mtime)
+    wheels = sorted((ROOT / "dist").glob("pymolfit-*.whl"), key=lambda path: path.stat().st_mtime)
     wheel_sha256 = hashlib.sha256(wheels[-1].read_bytes()).hexdigest() if wheels else None
     report = ScienceReadinessReport.create(
         checks,
@@ -3222,7 +3222,7 @@ def run(*, skip_molecfit: bool = False) -> ScienceReadinessReport:
             "keck_kpf_koaid": KPF_KOAID,
             "molecfit_executable": str(MOLECFIT_ESOREX),
             "molecfit_skipped": skip_molecfit,
-            "genmolfit_version": __version__,
+            "pymolfit_version": __version__,
             "python_version": sys.version.split()[0],
             "numpy_version": np.__version__,
             "scipy_version": scipy.__version__,
@@ -3241,7 +3241,7 @@ def run(*, skip_molecfit: bool = False) -> ScienceReadinessReport:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the GenMolFit science-readiness campaign.")
+    parser = argparse.ArgumentParser(description="Run the PyMolFit science-readiness campaign.")
     parser.add_argument(
         "--skip-molecfit",
         action="store_true",

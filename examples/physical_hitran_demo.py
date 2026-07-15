@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import matplotlib.pyplot as plt
 import numpy as np
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     LineList,
     PhysicalModelConfig,

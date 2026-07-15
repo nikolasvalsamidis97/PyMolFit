@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.io import netcdf_file
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     LBLRTMN2FundamentalContinuum,
     LBLRTMN2OvertoneContinuum,
@@ -13,7 +13,7 @@ from genmolfit import (
     correct_arrays,
     physical_transmission_model,
 )
-from genmolfit.continuum import (
+from pymolfit.continuum import (
     LBLRTM_CONTNM_LOSCHMIDT_CM3,
     LBLRTM_N2_ROT_SF296,
     LBLRTM_N2_ROT_T296,
@@ -23,7 +23,7 @@ from genmolfit.continuum import (
     lblrtm_rayleigh_optical_depth,
     radiation_term_cm,
 )
-from genmolfit.linelist import LineList
+from pymolfit.linelist import LineList
 
 
 def _write_continuum_file(path):

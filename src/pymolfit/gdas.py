@@ -146,10 +146,10 @@ def _normalize_mode(mode: str) -> str:
 def _cache_root(cache_dir: str | Path | None) -> Path:
     if cache_dir is not None:
         return Path(cache_dir).expanduser()
-    env_cache = os.environ.get("GENMOLFIT_GDAS_CACHE")
+    env_cache = os.environ.get("PYMOLFIT_GDAS_CACHE")
     if env_cache:
         return Path(env_cache).expanduser()
-    return Path.home() / ".cache" / "genmolfit" / "gdas"
+    return Path.home() / ".cache" / "pymolfit" / "gdas"
 
 
 def _site_id(longitude_deg: float, latitude_deg: float) -> str:

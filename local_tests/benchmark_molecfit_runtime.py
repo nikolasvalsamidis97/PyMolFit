@@ -14,11 +14,11 @@ MOLECFIT_ROOT = Path.home() / ".criresflow" / "molecfit"
 ESOREX = MOLECFIT_ROOT / "bin" / "esorex"
 INPUT = Path(
     os.environ.get(
-        "GENMOLFIT_RHO01_MOLECFIT_INPUT",
+        "PYMOLFIT_RHO01_MOLECFIT_INPUT",
         PROJECT / "local_tests" / "data" / "rho01" / "molecfit_input",
     )
 )
-OUTPUT = Path("/tmp/genmolfit_molecfit_speed_benchmark")
+OUTPUT = Path("/tmp/pymolfit_molecfit_speed_benchmark")
 FTOL = os.environ.get("MOLECFIT_BENCHMARK_FTOL", "1e-10")
 XTOL = os.environ.get("MOLECFIT_BENCHMARK_XTOL", "1e-10")
 
@@ -32,7 +32,7 @@ def main() -> None:
         raise FileNotFoundError("rho01 Molecfit inputs are unavailable")
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="genmolfit_molecfit_runtime_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_molecfit_runtime_") as tmp:
         work = Path(tmp)
         products = work / "products"
         products.mkdir()

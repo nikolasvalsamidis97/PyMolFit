@@ -16,7 +16,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     FitConfig,
     LineList,
@@ -25,13 +25,13 @@ from genmolfit import (
     cross_validate_telluric_segments,
     fit_telluric_segments,
 )
-from genmolfit.aer_data import (
+from pymolfit.aer_data import (
     AER_CATALOG_FILENAME,
     AER_CATALOG_VERSION,
     load_aer_line_window,
 )
-from genmolfit.io import load_spectrum
-from genmolfit.workflow import _spectrum_to_observatory_vacuum
+from pymolfit.io import load_spectrum
+from pymolfit.workflow import _spectrum_to_observatory_vacuum
 
 try:
     from local_tests.molecfit_reference_data import stage_aer_molecfit_data
@@ -144,20 +144,20 @@ def _build_atmosphere(header: fits.Header, segments: list[Spectrum]) -> Atmosphe
     )
 
 
-def _run_genmolfit(
+def _run_pymolfit(
     segments: list[Spectrum],
     header: fits.Header,
     line_list: LineList,
 ):
     atmosphere = _build_atmosphere(header, segments)
-    config = _genmolfit_config(atmosphere)
+    config = _pymolfit_config(atmosphere)
     started = time.perf_counter()
     result = fit_telluric_segments(segments, line_list=line_list, config=config)
     elapsed = time.perf_counter() - started
     return result, atmosphere, config, elapsed
 
 
-def _genmolfit_config(atmosphere: AtmosphereProfile) -> FitConfig:
+def _pymolfit_config(atmosphere: AtmosphereProfile) -> FitConfig:
     return FitConfig(
         species=SPECIES,
         atmosphere=atmosphere,
@@ -184,7 +184,7 @@ def _genmolfit_config(atmosphere: AtmosphereProfile) -> FitConfig:
     )
 
 
-def _run_genmolfit_cross_validation(
+def _run_pymolfit_cross_validation(
     segments: list[Spectrum],
     line_list: LineList,
     config: FitConfig,
@@ -282,7 +282,7 @@ def _run_molecfit(input_path: Path, *, force: bool) -> tuple[Path, float]:
     if not MOLECFIT_ESOREX.exists():
         raise FileNotFoundError(f"Molecfit executable not found: {MOLECFIT_ESOREX}")
 
-    with tempfile.TemporaryDirectory(prefix="genmolfit_hires_bd17_") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_hires_bd17_") as temporary:
         stage = Path(temporary)
         staged_input = stage / "input.fits"
         staged_output = stage / "out"
@@ -376,14 +376,14 @@ def _write_outputs(
     result,
     cross_validation,
     atmosphere: AtmosphereProfile,
-    genmolfit_seconds: float,
+    pymolfit_seconds: float,
     cross_validation_seconds: float,
     molecfit: dict[str, np.ndarray],
     molecfit_seconds: float,
     line_list: LineList,
 ) -> dict[str, float]:
     for index, segment in enumerate(result.segment_results, 1):
-        segment.write(OUTPUT / f"genmolfit_segment_{index}.ecsv")
+        segment.write(OUTPUT / f"pymolfit_segment_{index}.ecsv")
 
     wavelength = np.concatenate([segment.spectrum.wavelength for segment in result.segment_results])
     flux = np.concatenate([segment.spectrum.flux for segment in result.segment_results])
@@ -425,13 +425,13 @@ def _write_outputs(
     table["wavelength_vacuum_micron"] = wavelength
     table["flux"] = flux
     table["uncertainty"] = error
-    table["genmolfit_model_flux"] = gen_model
+    table["pymolfit_model_flux"] = gen_model
     table["molecfit_model_flux"] = molecule["mflux"]
-    table["genmolfit_continuum"] = gen_continuum
+    table["pymolfit_continuum"] = gen_continuum
     table["molecfit_continuum"] = mol_continuum
-    table["genmolfit_transmission"] = gen_transmission
+    table["pymolfit_transmission"] = gen_transmission
     table["molecfit_transmission"] = molecule["mtrans"]
-    table["genmolfit_corrected_normalized"] = gen_corrected
+    table["pymolfit_corrected_normalized"] = gen_corrected
     table["molecfit_corrected_normalized"] = mol_corrected
     table["reliable"] = reliable
     table["telluric"] = telluric
@@ -472,7 +472,7 @@ def _write_outputs(
         "transmission_rms": transmission_rms,
         "telluric_transmission_rms": telluric_transmission_rms,
         "transmission_max_abs": float(np.max(np.abs(delta[reliable]))),
-        "genmolfit_weighted_objective": _weighted_objective(flux, gen_model, error),
+        "pymolfit_weighted_objective": _weighted_objective(flux, gen_model, error),
         "molecfit_weighted_objective": _weighted_objective(flux, molecule["mflux"], error),
         "weighted_objective_ratio": (
             _weighted_objective(flux, gen_model, error)
@@ -481,26 +481,26 @@ def _write_outputs(
         "raw_telluric_rms_from_unity": float(
             np.sqrt(np.nanmean(np.square(raw_gen_normalized[telluric] - 1.0)))
         ),
-        "genmolfit_telluric_rms_from_unity": float(
+        "pymolfit_telluric_rms_from_unity": float(
             np.sqrt(np.nanmean(np.square(gen_corrected[telluric] - 1.0)))
         ),
         "molecfit_telluric_rms_from_unity": float(
             np.sqrt(np.nanmean(np.square(mol_corrected[telluric] - 1.0)))
         ),
-        "genmolfit_quiet_rms_from_unity": float(
+        "pymolfit_quiet_rms_from_unity": float(
             np.sqrt(np.nanmean(np.square(gen_corrected[quiet] - 1.0)))
         ),
         "molecfit_quiet_rms_from_unity": float(
             np.sqrt(np.nanmean(np.square(mol_corrected[quiet] - 1.0)))
         ),
-        "genmolfit_seconds": genmolfit_seconds,
-        "genmolfit_cross_validation_seconds": cross_validation_seconds,
+        "pymolfit_seconds": pymolfit_seconds,
+        "pymolfit_cross_validation_seconds": cross_validation_seconds,
         "molecfit_seconds": molecfit_seconds,
-        "genmolfit_nfev": float(result.nfev),
-        "genmolfit_covariance_rank": float(result.covariance_rank),
-        "genmolfit_parameter_count": float(len(result.parameter_names)),
-        "genmolfit_o2_scale": float(result.species_scales["O2"]),
-        "genmolfit_lsf_sigma_pixels": float(result.lsf_sigma_pixels),
+        "pymolfit_nfev": float(result.nfev),
+        "pymolfit_covariance_rank": float(result.covariance_rank),
+        "pymolfit_parameter_count": float(len(result.parameter_names)),
+        "pymolfit_o2_scale": float(result.species_scales["O2"]),
+        "pymolfit_lsf_sigma_pixels": float(result.lsf_sigma_pixels),
         "cross_validation_block_size": float(cross_validation.block_size),
         "cross_validation_n_folds": float(cross_validation.n_folds),
         "cross_validation_prediction_coverage": float(
@@ -522,9 +522,9 @@ def _write_outputs(
             cross_validation.metrics["all_folds_successful"]
         ),
     }
-    metrics["genmolfit_telluric_rms_improvement"] = (
+    metrics["pymolfit_telluric_rms_improvement"] = (
         metrics["raw_telluric_rms_from_unity"]
-        / metrics["genmolfit_telluric_rms_from_unity"]
+        / metrics["pymolfit_telluric_rms_from_unity"]
     )
     metrics["molecfit_telluric_rms_improvement"] = (
         metrics["raw_telluric_rms_from_unity"]
@@ -548,9 +548,9 @@ def _write_outputs(
         region = slice(start, start + count)
         x = wavelength[region]
         axes[0, column].plot(x, raw_gen_normalized[region], color="0.35", lw=0.7, label="Input")
-        axes[0, column].plot(x, gen_transmission[region], color="C1", lw=0.9, label="GenMolFit T")
+        axes[0, column].plot(x, gen_transmission[region], color="C1", lw=0.9, label="PyMolFit T")
         axes[0, column].plot(x, molecule["mtrans"][region], color="C0", lw=0.8, label="Molecfit T")
-        axes[1, column].plot(x, gen_corrected[region], color="C1", lw=0.7, label="GenMolFit")
+        axes[1, column].plot(x, gen_corrected[region], color="C1", lw=0.7, label="PyMolFit")
         axes[1, column].plot(x, mol_corrected[region], color="C0", lw=0.7, alpha=0.8, label="Molecfit")
         axes[2, column].plot(x, gen_relative[region], color="C1", lw=0.65)
         axes[2, column].plot(x, mol_relative[region], color="C0", lw=0.65, alpha=0.8)
@@ -589,12 +589,12 @@ def main() -> None:
 
     segments, header = _load_segments()
     line_list = _load_lines()
-    result, atmosphere, config, genmolfit_seconds = _run_genmolfit(
+    result, atmosphere, config, pymolfit_seconds = _run_pymolfit(
         segments,
         header,
         line_list,
     )
-    cross_validation, cross_validation_seconds = _run_genmolfit_cross_validation(
+    cross_validation, cross_validation_seconds = _run_pymolfit_cross_validation(
         segments,
         line_list,
         config,
@@ -608,7 +608,7 @@ def main() -> None:
         result,
         cross_validation,
         atmosphere,
-        genmolfit_seconds,
+        pymolfit_seconds,
         cross_validation_seconds,
         _load_molecfit_model(molecfit_path),
         molecfit_seconds,

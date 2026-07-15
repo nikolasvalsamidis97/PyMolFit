@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     LineList,
     ModelConfig,
     Spectrum,
@@ -12,16 +12,16 @@ from genmolfit import (
     transmission_model,
     vacuum_to_air_wavelength,
 )
-from genmolfit.physics import SPEED_OF_LIGHT_M_PER_S
-from genmolfit.workflow import (
+from pymolfit.physics import SPEED_OF_LIGHT_M_PER_S
+from pymolfit.workflow import (
     _make_atmosphere,
     _ranges_to_observatory_vacuum,
     _resolve_initial_wavelength_shift,
     _resolve_line_list,
     _spectrum_to_observatory_vacuum,
 )
-from genmolfit.fit import _shift_basis
-from genmolfit.model import optical_depth_basis, transmission_from_basis
+from pymolfit.fit import _shift_basis
+from pymolfit.model import optical_depth_basis, transmission_from_basis
 
 
 def _fixed_decimal(value, width, decimals):

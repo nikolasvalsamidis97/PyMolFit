@@ -15,7 +15,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from genmolfit import AtmosphereProfile, LineList, Spectrum
+from pymolfit import AtmosphereProfile, LineList, Spectrum
 
 try:
     from local_tests import compare_uves_official_demo as uves
@@ -66,8 +66,8 @@ def _stripped_input(source: Path, destination: Path) -> tuple[str, ...]:
         if normalized in explicit or normalized.startswith(atmospheric_prefixes):
             del header[key]
             removed.append(str(key))
-    header["HIERARCH GENMOLFIT ATM MODE"] = "generic standard_midlatitude"
-    header["HIERARCH GENMOLFIT META STRIPPED"] = True
+    header["HIERARCH PYMOLFIT ATM MODE"] = "generic standard_midlatitude"
+    header["HIERARCH PYMOLFIT META STRIPPED"] = True
     copied.writeto(destination, overwrite=True)
     copied.close()
     return tuple(sorted(removed))
@@ -135,7 +135,7 @@ def _run_fit(
     lines: LineList,
     output: Path,
 ) -> tuple[object, float]:
-    result, _, fit_seconds = uves._run_genmolfit(
+    result, _, fit_seconds = uves._run_pymolfit(
         wavelength,
         flux,
         uncertainty,
@@ -152,7 +152,7 @@ def _run_fit(
 
 
 def _concatenate(result: object) -> dict[str, np.ndarray]:
-    return uves._concatenate_genmolfit(result)
+    return uves._concatenate_pymolfit(result)
 
 
 def _fit_wavelength(wavelength: np.ndarray, masks: list[np.ndarray]) -> np.ndarray:
@@ -334,7 +334,7 @@ def _plot_spectrum(
         )
     axes[0].set_ylabel("Region-normalized flux")
     axes[0].set_title(
-        "GenMolFit atmosphere sensitivity: observation-specific versus metadata-free generic"
+        "PyMolFit atmosphere sensitivity: observation-specific versus metadata-free generic"
     )
     axes[0].legend(loc="lower left", ncol=3, frameon=False)
     axes[0].text(
@@ -429,7 +429,7 @@ def _plot_atmospheres(
     axes[0].set_ylabel("Approximate altitude (km)")
     axes[0].set_ylim(2.0, 50.0)
     axes[0].legend(loc="upper right", frameon=False)
-    fig.suptitle("Atmospheric profiles supplied to the two GenMolFit runs")
+    fig.suptitle("Atmospheric profiles supplied to the two PyMolFit runs")
     fig.tight_layout()
     fig.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -559,7 +559,7 @@ def run(output: Path) -> dict[str, object]:
         writer.writeheader()
         writer.writerow(metrics)
     manifest = {
-        "test": "GenMolFit observation-specific versus metadata-free atmosphere",
+        "test": "PyMolFit observation-specific versus metadata-free atmosphere",
         "source": str(uves.SOURCE),
         "shared_line_list": str(SHARED_LINES if SHARED_LINES.is_file() else uves.LINE_CACHE),
         "shared_gdas": str(shared_gdas),
@@ -592,7 +592,7 @@ def run(output: Path) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare time-local and metadata-free GenMolFit atmospheres on UVES data."
+        description="Compare time-local and metadata-free PyMolFit atmospheres on UVES data."
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()

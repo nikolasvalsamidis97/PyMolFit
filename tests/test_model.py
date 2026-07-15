@@ -1,6 +1,6 @@
 import numpy as np
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereLayer,
     AtmosphereProfile,
     LineList,
@@ -17,7 +17,7 @@ from genmolfit import (
     transmission_from_high_resolution_basis,
     transmission_model,
 )
-from genmolfit.model import convolve_lsf
+from pymolfit.model import convolve_lsf
 
 
 def test_transmission_model_shape_and_bounds():

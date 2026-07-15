@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.table import Table
 
-import genmolfit
-from genmolfit import LineList
+import pymolfit
+from pymolfit import LineList
 
 try:
     from local_tests import compare_uves_official_demo as uves
@@ -69,7 +69,7 @@ def _comparison_arrays(
     molecfit_model: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, np.ndarray]]:
     wavelength_fit = _concatenated_air_wavelength(wavelength_air, masks)
-    gen = uves._concatenate_genmolfit(result)
+    gen = uves._concatenate_pymolfit(result)
     n_pixels = min(
         wavelength_fit.size,
         *(values.size for values in gen.values()),
@@ -157,9 +157,9 @@ def _calculate_metrics(
         "comparison_pixel_count": int(np.count_nonzero(reliable)),
         "telluric_pixel_count": int(np.count_nonzero(telluric)),
         "line_count": int(line_count),
-        "genmolfit_seconds": float(gen_seconds),
+        "pymolfit_seconds": float(gen_seconds),
         "molecfit_seconds": float(molecfit_seconds),
-        "genmolfit_over_molecfit_time": float(gen_seconds / molecfit_seconds),
+        "pymolfit_over_molecfit_time": float(gen_seconds / molecfit_seconds),
         "transmission_rms_absolute": float(np.sqrt(np.mean(direct**2))),
         "telluric_transmission_rms_absolute": float(
             np.sqrt(np.mean(direct_telluric**2))
@@ -175,12 +175,12 @@ def _calculate_metrics(
         "relative_transmission_max_abs_percent": float(
             np.max(np.abs(relative_values))
         ),
-        "genmolfit_weighted_objective": float(gen_objective),
+        "pymolfit_weighted_objective": float(gen_objective),
         "molecfit_weighted_objective": float(molecfit_objective),
         "weighted_objective_ratio": float(gen_objective / molecfit_objective),
-        "genmolfit_nfev": int(gen_result.nfev),
-        "genmolfit_covariance_rank": int(gen_result.covariance_rank),
-        "genmolfit_parameter_count": int(len(gen_result.parameter_names)),
+        "pymolfit_nfev": int(gen_result.nfev),
+        "pymolfit_covariance_rank": int(gen_result.covariance_rank),
+        "pymolfit_parameter_count": int(len(gen_result.parameter_names)),
         "shared_gdas_max_abs_difference": float(gdas_max_difference),
     }
     return metrics, reliable, relative
@@ -198,13 +198,13 @@ def _write_table(
     table["wavelength_air_angstrom"] = wavelength * 1.0e4
     table["observed_flux"] = gen["flux"]
     table["uncertainty"] = gen["uncertainty"]
-    table["genmolfit_model_flux"] = gen["model_flux"]
+    table["pymolfit_model_flux"] = gen["model_flux"]
     table["molecfit_model_flux"] = mol["mflux"]
-    table["genmolfit_transmission"] = gen["transmission"]
+    table["pymolfit_transmission"] = gen["transmission"]
     table["molecfit_transmission"] = mol["mtrans"]
     table["relative_transmission_difference_percent"] = relative
     table["comparison_mask"] = reliable
-    table.meta["relative_difference_definition"] = "100 * (GenMolFit - Molecfit) / Molecfit"
+    table.meta["relative_difference_definition"] = "100 * (PyMolFit - Molecfit) / Molecfit"
     table.meta["transmission_floor"] = TRANSMISSION_FLOOR
     table.write(output, format="ascii.ecsv", overwrite=True)
 
@@ -248,7 +248,7 @@ def _plot(
             _normalise_region(gen["model_flux"][region]),
             color="#d95f02",
             lw=0.85,
-            label="GenMolFit model" if first else None,
+            label="PyMolFit model" if first else None,
         )
         axes[0].plot(
             x[region],
@@ -268,9 +268,9 @@ def _plot(
     )
     axes[0].legend(loc="lower left", ncol=3, frameon=False)
     timing = (
-        f"GenMolFit: {float(metrics['genmolfit_seconds']):.2f} s\n"
+        f"PyMolFit: {float(metrics['pymolfit_seconds']):.2f} s\n"
         f"Molecfit: {float(metrics['molecfit_seconds']):.2f} s\n"
-        f"GenMolFit / Molecfit: {float(metrics['genmolfit_over_molecfit_time']):.2f}x"
+        f"PyMolFit / Molecfit: {float(metrics['pymolfit_over_molecfit_time']):.2f}x"
     )
     axes[0].text(
         0.985,
@@ -291,7 +291,7 @@ def _plot(
     axes[1].text(
         0.012,
         0.08,
-        "100 × (GenMolFit − Molecfit) / Molecfit\n"
+        "100 × (PyMolFit − Molecfit) / Molecfit\n"
         f"RMS = {float(metrics['relative_transmission_rms_percent']):.3f}%   "
         f"95th |difference| = {float(metrics['relative_transmission_p95_abs_percent']):.3f}%\n"
         f"Only T > {TRANSMISSION_FLOOR:.1f} in both models; display limits use the 99.5th percentile",
@@ -335,7 +335,7 @@ def run(output: Path) -> dict[str, object]:
 
     gen_started = time.perf_counter()
     line_list = _fresh_shared_lines(output)
-    gen_result, atmosphere, _ = uves._run_genmolfit(
+    gen_result, atmosphere, _ = uves._run_pymolfit(
         wavelength,
         flux,
         uncertainty,
@@ -345,10 +345,10 @@ def run(output: Path) -> dict[str, object]:
         gdas_profile=shared_gdas,
     )
     for index, segment in enumerate(gen_result.segment_results, start=1):
-        segment.write(output / f"genmolfit_segment_{index}.ecsv")
+        segment.write(output / f"pymolfit_segment_{index}.ecsv")
     gen_seconds = time.perf_counter() - gen_started
     if not gen_result.success:
-        raise RuntimeError(f"GenMolFit failed: {gen_result.message}")
+        raise RuntimeError(f"PyMolFit failed: {gen_result.message}")
 
     molecfit_path, molecfit_seconds = uves._run_molecfit(
         input_path,
@@ -382,7 +382,7 @@ def run(output: Path) -> dict[str, object]:
         writer.writeheader()
         writer.writerow(metrics)
     manifest = {
-        "test": "broad-span UVES GenMolFit versus Molecfit comparison",
+        "test": "broad-span UVES PyMolFit versus Molecfit comparison",
         "source": str(uves.SOURCE),
         "source_sha256": _sha256(uves.SOURCE),
         "input_sha256": _sha256(input_path),
@@ -393,12 +393,12 @@ def run(output: Path) -> dict[str, object]:
         "selected_lines_sha256": _sha256(output / "selected_aer_lines.fits"),
         "fit_ranges_micron": [list(interval) for interval in uves.FIT_RANGES],
         "species": list(uves.SPECIES),
-        "genmolfit_version": genmolfit.__version__,
+        "pymolfit_version": pymolfit.__version__,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "timing_definition": (
             "Spectrum download/cropping, installed-catalog acquisition, and GDAS acquisition are "
-            "excluded for both. GenMolFit includes fresh AER line selection, atmosphere assembly, "
+            "excluded for both. PyMolFit includes fresh AER line selection, atmosphere assembly, "
             "fit, and native segment products. Molecfit includes fresh LNFL/TAPE3 construction, "
             "atmosphere assembly, fit, and native recipe products. Plotting is excluded."
         ),
@@ -411,7 +411,7 @@ def run(output: Path) -> dict[str, object]:
             "same_continuum_order": 2,
             "same_wavelength_polynomial_order": 1,
             "same_gaussian_lsf_initial_fwhm_pixels": 1.0,
-            "same_optimizer_tolerances": "FTOL=XTOL=1e-10; GenMolFit also GTOL=1e-10",
+            "same_optimizer_tolerances": "FTOL=XTOL=1e-10; PyMolFit also GTOL=1e-10",
             "known_unmatched_component": "SciPy least_squares versus Molecfit MPFIT",
         },
         "metrics": metrics,
@@ -425,7 +425,7 @@ def run(output: Path) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a cold, matched, broad-span UVES GenMolFit/Molecfit comparison."
+        description="Run a cold, matched, broad-span UVES PyMolFit/Molecfit comparison."
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()

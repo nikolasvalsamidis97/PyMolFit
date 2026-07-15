@@ -3,21 +3,21 @@ from dataclasses import fields
 import numpy as np
 from scipy.special import wofz
 
-from genmolfit.atmosphere import (
+from pymolfit.atmosphere import (
     AtmosphereLayer,
     AtmosphereProfile,
     BOLTZMANN_J_PER_K,
     CM_PER_M,
     PA_PER_ATM,
 )
-import genmolfit.components as components_impl
-from genmolfit.components import (
+import pymolfit.components as components_impl
+from pymolfit.components import (
     _line_wing_settings,
     _screen_and_accumulate_f4_chunk,
     hitran_line_optical_depth_basis,
 )
-from genmolfit.linelist import LineList
-from genmolfit.physics import (
+from pymolfit.linelist import LineList
+from pymolfit.physics import (
     AMU_KG,
     LBLRTM_AVRAT,
     LBLRTM_AVRAT_ZETA_GRID,
@@ -244,7 +244,7 @@ def test_single_line_component_path_matches_audited_lblrtm_panel_formula():
     """Audit the complete HITRAN line-basis path for one isolated layer/line.
 
     This intentionally uses synthetic data, not a real spectrum.  It verifies
-    that GenMolFit's combined line path still follows the source-derived
+    that PyMolFit's combined line path still follows the source-derived
     bookkeeping: HITRAN pressure shift, HITRAN temperature intensity scaling,
     Doppler width, Lorentz width, column density, and the LBLRTM panel Voigt
     accumulator.

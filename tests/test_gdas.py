@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from genmolfit.gdas import GDASProfileUnavailable, resolve_time_local_gdas_profile
+from pymolfit.gdas import GDASProfileUnavailable, resolve_time_local_gdas_profile
 
 
 def _add_gdas_member(tar, name, *, temp, relhum):

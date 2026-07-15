@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from genmolfit import (
+from pymolfit import (
     AtmosphereProfile,
     CIABlock,
     FitConfig,

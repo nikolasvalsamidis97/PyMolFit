@@ -1,6 +1,6 @@
 # Third-party scientific data notices
 
-GenMolFit includes coefficient and partition-sum tables extracted from the
+PyMolFit includes coefficient and partition-sum tables extracted from the
 LBLRTM 12.11 source distribution supplied with ESO Molecfit. The tables retain
 their scientific provenance so that the corresponding pure-Python equations
 can be reproduced without running or importing LBLRTM.
@@ -22,7 +22,7 @@ Included LBLRTM-derived package data:
 - `lblrtm_v12_11_n2_fundamental.npz`
 - `lblrtm_v12_11_o2_continuum.npz`
 
-GenMolFit can also acquire the official AER line-parameter catalogue version
+PyMolFit can also acquire the official AER line-parameter catalogue version
 3.9 from Zenodo record 18881607. The 759 MiB uncompressed catalogue is not
 embedded in the Python wheel: it is downloaded as versioned static data,
 checksum-verified, and stored in the user's cache. An exact local copy may be

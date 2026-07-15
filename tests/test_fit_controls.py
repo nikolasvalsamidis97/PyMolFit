@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from genmolfit import (
+from pymolfit import (
     FitConfig,
     LineList,
     ModelConfig,
@@ -11,10 +11,10 @@ from genmolfit import (
     fit_tellurics,
     transmission_model,
 )
-from genmolfit.diagnostics import correction_summary, residual_by_window
-from genmolfit.atmosphere import AtmosphereProfile
-from genmolfit.fit import _shift_basis
-from genmolfit.model import optical_depth_basis, transmission_from_basis
+from pymolfit.diagnostics import correction_summary, residual_by_window
+from pymolfit.atmosphere import AtmosphereProfile
+from pymolfit.fit import _shift_basis
+from pymolfit.model import optical_depth_basis, transmission_from_basis
 
 
 def test_optimizer_tolerances_match_molecfit_defaults():

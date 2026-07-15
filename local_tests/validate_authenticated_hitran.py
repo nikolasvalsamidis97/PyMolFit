@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 import tempfile
 
-import genmolfit.line_data as line_data_impl
-from genmolfit import __version__, fetch_hitran_lines
+import pymolfit.line_data as line_data_impl
+from pymolfit import __version__, fetch_hitran_lines
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +54,7 @@ def run(
 
     client_source = Path(line_data_impl.__file__).resolve()
     validator_source = Path(__file__).resolve()
-    with tempfile.TemporaryDirectory(prefix="genmolfit_hitran_live_") as directory:
+    with tempfile.TemporaryDirectory(prefix="pymolfit_hitran_live_") as directory:
         artifact = fetcher(
             SPECIES,
             wavenumber_min_cm=WAVENUMBER_MIN_CM,
@@ -86,8 +86,8 @@ def run(
             "api_base_url": line_data_impl.HITRAN_API_BASE_URL,
             "api_version": manifest.get("api_version"),
             "database_edition": manifest.get("database_edition"),
-            "genmolfit_version": __version__,
-            "client_source": "src/genmolfit/line_data.py",
+            "pymolfit_version": __version__,
+            "client_source": "src/pymolfit/line_data.py",
             "client_source_sha256": _sha256(client_source),
             "validator_source": "local_tests/validate_authenticated_hitran.py",
             "validator_source_sha256": _sha256(validator_source),
@@ -119,7 +119,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Exercise GenMolFit's authenticated HITRAN client and write a redacted receipt."
+        description="Exercise PyMolFit's authenticated HITRAN client and write a redacted receipt."
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_RECEIPT)
     parser.add_argument("--timeout", type=float, default=60.0)

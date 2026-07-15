@@ -21,7 +21,7 @@ from .provenance import file_sha256
 HITRAN_API_BASE_URL = "https://hitran.org"
 HITRAN_API_VERSION = "v2"
 HITRAN_API_KEY_ENV = "HITRAN_API_KEY"
-HITRAN_CACHE_ENV = "GENMOLFIT_HITRAN_CACHE"
+HITRAN_CACHE_ENV = "PYMOLFIT_HITRAN_CACHE"
 HITRAN_CITATION_URL = "https://hitran.org/citepolicy/"
 HITRAN_DOCUMENTATION_URL = "https://hitran.org/docs/"
 LINE_DATA_SCHEMA_VERSION = 1
@@ -50,7 +50,7 @@ def default_hitran_cache_dir() -> Path:
     configured = os.environ.get(HITRAN_CACHE_ENV)
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".cache" / "genmolfit" / "hitran"
+    return Path.home() / ".cache" / "pymolfit" / "hitran"
 
 
 def fetch_hitran_lines(
@@ -282,7 +282,7 @@ def _request_json(url: str, *, opener: _OpenUrl, timeout_s: float) -> Mapping[st
 
 
 def _request_text(url: str, *, opener: _OpenUrl, timeout_s: float) -> str:
-    request = Request(url, headers={"User-Agent": "GenMolFit line-data client"})
+    request = Request(url, headers={"User-Agent": "PyMolFit line-data client"})
     try:
         response = opener(request, timeout=float(timeout_s))
         with response:

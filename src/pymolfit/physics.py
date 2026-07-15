@@ -14,7 +14,7 @@ SECOND_RADIATION_CONSTANT_CM_K = (const.h * const.c / const.k_B).to_value(u.cm *
 LOSCHMIDT_CM3 = ((101_325.0 * u.Pa) / (const.k_B * (273.15 * u.K))).to_value(1 / u.cm**3)
 
 # Legacy constants used by the LBLRTM source bundled with Molecfit 4.4.4
-# (lblrtm/src/phys_consts.f90). GenMolFit defaults to modern Astropy values,
+# (lblrtm/src/phys_consts.f90). PyMolFit defaults to modern Astropy values,
 # but these constants make source-parity tests explicit and reproducible.
 LBLRTM_BOLTZMANN_J_PER_K = 1.3806503e-23
 LBLRTM_SPEED_OF_LIGHT_M_PER_S = 2.99792458e8
@@ -430,7 +430,7 @@ def lblrtm_dynamic_line_cutoff_cm(
 
     Molecfit writes `ALFAL0=0` by default for some runs. The bundled LBLRTM
     source divides by that value, which effectively removes the finite
-    `ALFMAX` cap on IEEE platforms. GenMolFit treats zero the same way while
+    `ALFMAX` cap on IEEE platforms. PyMolFit treats zero the same way while
     still rejecting negative values.
     """
 

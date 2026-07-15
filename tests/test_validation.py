@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from genmolfit import (
+from pymolfit import (
     FitConfig,
     LineList,
     ModelConfig,
