@@ -10,6 +10,7 @@ from pymolfit import (
     optical_depth_basis,
     prepare_piecewise_constant_rebin,
     prepare_sample_average_rebin,
+    radiative_transfer_grid_point_count,
     radiative_transfer_wavelength_grid,
     rebin_high_resolution_values,
     rebin_piecewise_constant_values,
@@ -187,9 +188,11 @@ def test_radiative_transfer_grid_uses_lblrtm_layer_spacing_and_is_bounded():
     )
 
     native, step = radiative_transfer_wavelength_grid(model, atmosphere)
+    point_count = radiative_transfer_grid_point_count(model, atmosphere)
     native_wavenumber = 1.0e4 / native
 
     assert np.all(np.diff(native) > 0)
+    assert point_count == native.size
     np.testing.assert_allclose(np.diff(native_wavenumber), -step, rtol=0.0, atol=2.0e-9)
     assert step < np.min(np.abs(np.diff(1.0e4 / model)))
     assert native.size < 2_000_000

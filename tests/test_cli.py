@@ -77,6 +77,9 @@ def test_cli_exposes_native_radiative_transfer_controls():
             "0.002",
             "--radiative-transfer-max-points",
             "12345",
+            "--no-auto-segment",
+            "--segment-size",
+            "0.005",
             "--lblrtm-avmass-amu",
             "35.5",
         ]
@@ -85,6 +88,8 @@ def test_cli_exposes_native_radiative_transfer_controls():
     assert args.radiative_transfer_grid == "model"
     assert args.radiative_transfer_step_cm == 0.002
     assert args.radiative_transfer_max_points == 12345
+    assert args.auto_segment is False
+    assert args.segment_size == 0.005
     assert args.lblrtm_avmass_amu == 35.5
 
 

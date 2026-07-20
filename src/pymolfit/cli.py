@@ -11,7 +11,7 @@ from .linelist import LineList
 from .line_data import HitranAcquisitionError, cache_hitran_par, fetch_hitran_lines
 from .physics import LBLRTM_DEFAULT_AVMASS_AMU
 from .validation import compare_spectra
-from .workflow import correct_file
+from .workflow import DEFAULT_SEGMENT_SIZE_MICRON, correct_file
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,6 +186,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=2_000_000,
         help="maximum native radiative-transfer grid size before requiring spectral segmentation",
+    )
+    fit_parser.add_argument(
+        "--auto-segment",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="automatically split broad 1D spectra and fit shared molecular columns",
+    )
+    fit_parser.add_argument(
+        "--segment-size",
+        type=float,
+        default=DEFAULT_SEGMENT_SIZE_MICRON,
+        metavar="MICRON",
+        help="maximum automatic segment width in microns (default: 0.01 = 100 Angstrom)",
     )
     fit_parser.add_argument(
         "--line-cutoff-cm",
@@ -628,6 +641,8 @@ def main(argv: list[str] | None = None) -> int:
             radiative_transfer_grid=args.radiative_transfer_grid,
             radiative_transfer_step_cm=args.radiative_transfer_step_cm,
             radiative_transfer_max_points=args.radiative_transfer_max_points,
+            auto_segment=args.auto_segment,
+            segment_size=args.segment_size,
             line_cutoff_cm=args.line_cutoff_cm,
             subtract_cutoff_profile=args.subtract_cutoff_profile,
             line_taper_cm=args.line_taper_cm,

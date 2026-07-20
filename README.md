@@ -128,6 +128,28 @@ result as a provenance-bearing ECSV table. Pass `aer_catalog=None` (Python) or
 `--no-auto-aer` (CLI) only when intentionally running a continuum-only model
 or supplying another opacity source.
 
+Broad physical spectra are segmented automatically. The default maximum
+segment width is `segment_size=0.01` micron (100 Angstrom), and PyMolFit
+subdivides further when the atmosphere-dependent native radiative-transfer
+grid would exceed `radiative_transfer_max_points`. Molecular column scales and
+fitted LSF parameters are shared across segments, while each segment receives
+its own continuum. Segments outside explicit `fit_ranges` receive the shared
+fitted transmission without contributing to the atmospheric fit. The returned
+`TelluricFitResult` and written products are stitched back onto one monotonic
+wavelength axis; segment boundaries are recorded in provenance.
+
+```python
+result = correct_file(
+    "broad_spectrum.fits",
+    "corrected.txt",
+    segment_size=0.005,  # optional 50 Angstrom expert override
+)
+```
+
+Set `auto_segment=False` to request the legacy single-grid behavior. The CLI
+equivalents are `--segment-size 0.005` and `--no-auto-segment`. `segment_size`
+is always expressed in microns, independently of the input table unit.
+
 `solve_continuum_linear=True` removes the linear continuum coefficients from
 the nonlinear optimizer and is recommended for spectra with large absolute
 flux values. With `estimate_uncertainties=True`, the result includes a
@@ -154,8 +176,8 @@ PyMolFit has an automated cross-band, cross-instrument validation campaign,
 but it does not currently pass its full scientific acceptance gate. See
 [`docs/science_readiness_validation.md`](docs/science_readiness_validation.md)
 for the checklist, public-data provenance, numerical thresholds, current
-caveats, and reproducible evidence files. Do not describe version `0.1.0` as a
-validated drop-in replacement for Molecfit.
+caveats, and reproducible evidence files. Do not describe the current release
+as a validated drop-in replacement for Molecfit.
 
 ## Physical HITRAN Example
 
