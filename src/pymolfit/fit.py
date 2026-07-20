@@ -23,6 +23,7 @@ from .model import (
     optical_depth_basis,
     prepare_piecewise_constant_rebin,
     prepare_sample_average_rebin,
+    radiative_transfer_grid_point_count,
     radiative_transfer_wavelength_grid,
     transmission_from_basis,
     transmission_from_high_resolution_basis,
@@ -677,6 +678,54 @@ def _prepare_high_resolution_grids(
 ]:
     """Prepare the native RT, internal model, and detector rebin grids."""
 
+    model_wavelength, pixels_per_observed = _high_resolution_model_grid(
+        observed_wavelength,
+        config,
+    )
+    basis_wavelength = model_wavelength
+    native_to_model_plan = None
+    if _uses_native_radiative_transfer_grid(config):
+        basis_wavelength, _ = radiative_transfer_wavelength_grid(
+            model_wavelength,
+            config.atmosphere,
+            sample=config.lblrtm_sample,
+            alfal0=config.lblrtm_alfal0,
+            avmass_amu=config.lblrtm_avmass_amu,
+            step_cm=config.radiative_transfer_step_cm,
+            max_points=config.radiative_transfer_max_points,
+        )
+        native_to_model_plan = prepare_sample_average_rebin(
+            model_wavelength,
+            basis_wavelength,
+        )
+    overlap_aliases = {
+        "molecfit",
+        "molecfit_overlap",
+        "molecfit_rebin",
+    }
+    detector_input_wavelength = (
+        basis_wavelength
+        if str(config.high_resolution_rebin_mode).strip().lower().replace("-", "_")
+        in overlap_aliases
+        else model_wavelength
+    )
+    detector_rebin_plan = prepare_piecewise_constant_rebin(
+        observed_wavelength,
+        detector_input_wavelength,
+    )
+    return (
+        basis_wavelength,
+        model_wavelength,
+        pixels_per_observed,
+        native_to_model_plan,
+        detector_rebin_plan,
+    )
+
+
+def _high_resolution_model_grid(
+    observed_wavelength: np.ndarray,
+    config: FitConfig,
+) -> tuple[np.ndarray, float]:
     gaussian_sigma = (
         config.lsf_sigma_bounds[1] if config.fit_lsf_sigma else config.lsf_sigma_pixels
     )
@@ -717,48 +766,27 @@ def _prepare_high_resolution_grids(
         float(config.high_resolution_margin_pixels),
         kernel_margin + shift_margin + 1.0,
     )
-    model_wavelength, pixels_per_observed = high_resolution_wavelength_grid(
+    return high_resolution_wavelength_grid(
         observed_wavelength,
         oversampling=config.high_resolution_oversampling,
         margin_pixels=effective_margin,
     )
-    basis_wavelength = model_wavelength
-    native_to_model_plan = None
-    if _uses_native_radiative_transfer_grid(config):
-        basis_wavelength, _ = radiative_transfer_wavelength_grid(
-            model_wavelength,
-            config.atmosphere,
-            sample=config.lblrtm_sample,
-            alfal0=config.lblrtm_alfal0,
-            avmass_amu=config.lblrtm_avmass_amu,
-            step_cm=config.radiative_transfer_step_cm,
-            max_points=config.radiative_transfer_max_points,
-        )
-        native_to_model_plan = prepare_sample_average_rebin(
-            model_wavelength,
-            basis_wavelength,
-        )
-    overlap_aliases = {
-        "molecfit",
-        "molecfit_overlap",
-        "molecfit_rebin",
-    }
-    detector_input_wavelength = (
-        basis_wavelength
-        if str(config.high_resolution_rebin_mode).strip().lower().replace("-", "_")
-        in overlap_aliases
-        else model_wavelength
-    )
-    detector_rebin_plan = prepare_piecewise_constant_rebin(
-        observed_wavelength,
-        detector_input_wavelength,
-    )
-    return (
-        basis_wavelength,
+
+
+def _radiative_transfer_point_count(
+    observed_wavelength: np.ndarray,
+    config: FitConfig,
+) -> int:
+    if not _uses_native_radiative_transfer_grid(config):
+        return 0
+    model_wavelength, _ = _high_resolution_model_grid(observed_wavelength, config)
+    return radiative_transfer_grid_point_count(
         model_wavelength,
-        pixels_per_observed,
-        native_to_model_plan,
-        detector_rebin_plan,
+        config.atmosphere,
+        sample=config.lblrtm_sample,
+        alfal0=config.lblrtm_alfal0,
+        avmass_amu=config.lblrtm_avmass_amu,
+        step_cm=config.radiative_transfer_step_cm,
     )
 
 
@@ -1755,6 +1783,7 @@ def fit_telluric_segments(
     config: FitConfig | None = None,
     fit_masks: Sequence[np.ndarray | None] | None = None,
     continuum_priors: Sequence[np.ndarray | None] | None = None,
+    global_wavelength_bounds: tuple[float, float] | None = None,
 ) -> MultiTelluricFitResult:
     """Fit several spectral segments with shared telluric scales.
 
@@ -1802,16 +1831,26 @@ def fit_telluric_segments(
     if len(continuum_priors) != len(spectra):
         raise ValueError("continuum_priors must have the same length as spectra")
 
-    global_wavelength_bounds = None
     if global_wavelength_order is not None:
-        wavelength_arrays = [
-            spectrum.to_unit("micron").wavelength
-            for spectrum in spectra
-        ]
-        global_wavelength_bounds = (
-            float(min(np.nanmin(values) for values in wavelength_arrays)),
-            float(max(np.nanmax(values) for values in wavelength_arrays)),
-        )
+        if global_wavelength_bounds is None:
+            wavelength_arrays = [
+                spectrum.to_unit("micron").wavelength
+                for spectrum in spectra
+            ]
+            global_wavelength_bounds = (
+                float(min(np.nanmin(values) for values in wavelength_arrays)),
+                float(max(np.nanmax(values) for values in wavelength_arrays)),
+            )
+        else:
+            global_wavelength_bounds = tuple(
+                float(value) for value in global_wavelength_bounds
+            )
+            if (
+                len(global_wavelength_bounds) != 2
+                or not np.all(np.isfinite(global_wavelength_bounds))
+                or global_wavelength_bounds[1] <= global_wavelength_bounds[0]
+            ):
+                raise ValueError("global_wavelength_bounds must be finite and increasing")
 
     jobs = list(zip(spectra, fit_masks, continuum_priors, strict=True))
     worker_count = min(4, len(jobs)) if config.basis_workers == 0 else min(config.basis_workers, len(jobs))
@@ -2392,5 +2431,114 @@ def fit_telluric_segments(
         reduced_chi_square=reduced_chi_square,
         covariance_rank=covariance_rank,
         parameter_bound_status=bound_status,
+        provenance=provenance,
+    )
+
+
+def _apply_multi_fit_to_segment(
+    spectrum: Spectrum,
+    *,
+    line_list: LineList,
+    config: FitConfig,
+    fit_result: MultiTelluricFitResult,
+    global_wavelength_bounds: tuple[float, float] | None = None,
+) -> TelluricFitResult:
+    """Apply shared fitted parameters to a segment that did not constrain the fit."""
+
+    evaluation_config = replace(config, fit_ranges=None, exclude_ranges=None)
+    global_wavelength_order = _global_wavelength_polynomial_order(config)
+    prepared = _prepare_multi_fit_segment(
+        spectrum,
+        None,
+        None,
+        line_list=line_list,
+        config=evaluation_config,
+        global_wavelength_order=global_wavelength_order,
+        global_wavelength_bounds=global_wavelength_bounds,
+        segment_wavelength_order=None,
+    )
+    if global_wavelength_order is None:
+        wavelength_coefficients = np.array([0.0], dtype=float)
+        wavelength_shift_all: float | np.ndarray = 0.0
+        wavelength_shift_basis: float | np.ndarray = 0.0
+    else:
+        wavelength_coefficients = np.asarray(
+            fit_result.segment_results[0].wavelength_coefficients,
+            dtype=float,
+        )
+        wavelength_shift_all = _wavelength_shift_from_coefficients(
+            prepared.wavelength_shift_design_all,
+            wavelength_coefficients,
+        )
+        wavelength_shift_basis = _wavelength_shift_from_coefficients(
+            prepared.wavelength_shift_design_basis,
+            wavelength_coefficients,
+        )
+
+    transmission = _transmission_from_prepared_basis(
+        prepared.spectrum.wavelength,
+        prepared.species_names,
+        prepared.basis_all,
+        config=evaluation_config,
+        species_scales=fit_result.species_scales,
+        airmass=evaluation_config.airmass,
+        wavelength_shift=(
+            wavelength_shift_basis
+            if evaluation_config.high_resolution_grid
+            else wavelength_shift_all
+        ),
+        lsf_sigma_pixels=fit_result.lsf_sigma_pixels,
+        lsf_box_width_pixels=fit_result.lsf_box_width_pixels,
+        lsf_lorentz_fwhm_pixels=fit_result.lsf_lorentz_fwhm_pixels,
+        basis_wavelength=prepared.basis_wavelength,
+        model_wavelength=prepared.model_wavelength,
+        highres_pixels_per_observed_pixel=prepared.highres_pixels_per_observed_pixel,
+        rebin_plan=prepared.rebin_plan,
+        native_to_model_plan=prepared.native_to_model_plan,
+    )
+    continuum_coefficients = _solve_linear_continuum(
+        prepared.design_fit,
+        transmission[prepared.valid],
+        prepared.flux_fit,
+        prepared.sigma,
+    )
+    continuum = prepared.design_all @ continuum_coefficients
+    model_flux = continuum * transmission
+    corrected = correct_spectrum(
+        prepared.spectrum,
+        transmission,
+        min_transmission=config.min_transmission,
+    )
+    provenance = {
+        **dict(fit_result.provenance),
+        "application_only_segment": True,
+    }
+    return TelluricFitResult(
+        spectrum=prepared.spectrum,
+        corrected=corrected,
+        transmission=transmission,
+        continuum=continuum,
+        model_flux=model_flux,
+        species_scales=dict(fit_result.species_scales),
+        wavelength_shift=float(np.nanmedian(wavelength_shift_all)),
+        wavelength_coefficients=wavelength_coefficients,
+        lsf_sigma_pixels=float(fit_result.lsf_sigma_pixels),
+        lsf_box_width_pixels=float(fit_result.lsf_box_width_pixels),
+        lsf_lorentz_fwhm_pixels=float(fit_result.lsf_lorentz_fwhm_pixels),
+        continuum_coefficients=continuum_coefficients,
+        metrics=_fit_metrics(prepared.spectrum.flux, model_flux, continuum),
+        success=bool(fit_result.success),
+        message=f"{fit_result.message} (shared model applied outside fit ranges)",
+        cost=float(fit_result.cost),
+        nfev=int(fit_result.nfev),
+        parameter_names=tuple(fit_result.parameter_names),
+        parameter_covariance=fit_result.parameter_covariance,
+        parameter_standard_errors=dict(fit_result.parameter_standard_errors),
+        species_scale_uncertainties=dict(fit_result.species_scale_uncertainties),
+        transmission_uncertainty=None,
+        reduced_chi_square=float(fit_result.reduced_chi_square),
+        covariance_rank=int(fit_result.covariance_rank),
+        fit_mask=np.zeros(prepared.spectrum.wavelength.size, dtype=bool),
+        parameter_bound_status=dict(fit_result.parameter_bound_status),
         provenance=provenance,
     )

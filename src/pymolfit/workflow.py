@@ -28,7 +28,16 @@ from .components import (
     line_wing_effective_cutoff_cm,
 )
 from .continuum import HitranCIATable, LBLRTMCO2Continuum, LBLRTMH2OContinuum, MTCKDH2OContinuum, TabulatedContinuum
-from .fit import FitConfig, TelluricFitResult, fit_tellurics
+from .fit import (
+    FitConfig,
+    MultiTelluricFitResult,
+    TelluricFitResult,
+    _apply_multi_fit_to_segment,
+    _fit_metrics,
+    _radiative_transfer_point_count,
+    fit_telluric_segments,
+    fit_tellurics,
+)
 from .io import infer_spectrum_format, load_spectrum, save_spectrum
 from .linelist import LineList
 from .partition import PartitionTable
@@ -43,6 +52,9 @@ from .physics import (
 )
 from .plotting import plot_fit
 from .spectrum import Spectrum
+
+
+DEFAULT_SEGMENT_SIZE_MICRON = 0.01
 
 
 def correct_arrays(
@@ -109,6 +121,8 @@ def correct_arrays(
     radiative_transfer_grid: str = "auto",
     radiative_transfer_step_cm: float | None = None,
     radiative_transfer_max_points: int = 2_000_000,
+    auto_segment: bool = True,
+    segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON,
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,
     line_taper_cm: float = 0.0,
@@ -218,6 +232,8 @@ def correct_arrays(
         radiative_transfer_grid=radiative_transfer_grid,
         radiative_transfer_step_cm=radiative_transfer_step_cm,
         radiative_transfer_max_points=radiative_transfer_max_points,
+        auto_segment=auto_segment,
+        segment_size=segment_size,
         line_cutoff_cm=line_cutoff_cm,
         subtract_cutoff_profile=subtract_cutoff_profile,
         line_taper_cm=line_taper_cm,
@@ -322,6 +338,8 @@ def correct_file(
     radiative_transfer_grid: str = "auto",
     radiative_transfer_step_cm: float | None = None,
     radiative_transfer_max_points: int = 2_000_000,
+    auto_segment: bool = True,
+    segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON,
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,
     line_taper_cm: float = 0.0,
@@ -433,6 +451,8 @@ def correct_file(
         radiative_transfer_grid=radiative_transfer_grid,
         radiative_transfer_step_cm=radiative_transfer_step_cm,
         radiative_transfer_max_points=radiative_transfer_max_points,
+        auto_segment=auto_segment,
+        segment_size=segment_size,
         line_cutoff_cm=line_cutoff_cm,
         subtract_cutoff_profile=subtract_cutoff_profile,
         line_taper_cm=line_taper_cm,
@@ -541,6 +561,8 @@ def _correct_spectrum_workflow(
     radiative_transfer_grid: str,
     radiative_transfer_step_cm: float | None,
     radiative_transfer_max_points: int,
+    auto_segment: bool,
+    segment_size: float,
     line_cutoff_cm: float | None,
     subtract_cutoff_profile: bool,
     line_taper_cm: float,
@@ -803,7 +825,357 @@ def _correct_spectrum_workflow(
         gtol=gtol,
         estimate_uncertainties=estimate_uncertainties,
     )
-    return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
+    if auto_segment and (not np.isfinite(segment_size) or segment_size <= 0):
+        raise ValueError("segment_size must be a positive finite value in microns")
+    if not auto_segment or not resolved_high_resolution_grid:
+        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
+    segments = _split_spectrum(
+        spectrum,
+        segment_size=segment_size,
+        minimum_points=continuum_order + 2,
+    )
+    segments = _subdivide_segments_for_grid_limit(
+        segments,
+        config=fit_config,
+        minimum_points=continuum_order + 2,
+    )
+    if len(segments) == 1:
+        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
+    active = tuple(
+        _segment_has_fit_pixels(segment, fit_config)
+        for segment in segments
+    )
+    active_segments = tuple(
+        segment for segment, is_active in zip(segments, active, strict=True) if is_active
+    )
+    if not active_segments:
+        raise ValueError("fit_ranges and exclude_ranges leave no segment with enough fit pixels")
+    full_wavelength_micron = spectrum.to_unit("micron").wavelength
+    full_bounds = (
+        float(np.nanmin(full_wavelength_micron)),
+        float(np.nanmax(full_wavelength_micron)),
+    )
+    multi_result = fit_telluric_segments(
+        active_segments,
+        line_list=resolved_line_list,
+        config=fit_config,
+        global_wavelength_bounds=full_bounds,
+    )
+    fitted_results = iter(multi_result.segment_results)
+    segment_results = tuple(
+        next(fitted_results)
+        if is_active
+        else _apply_multi_fit_to_segment(
+            segment,
+            line_list=resolved_line_list,
+            config=fit_config,
+            fit_result=multi_result,
+            global_wavelength_bounds=full_bounds,
+        )
+        for segment, is_active in zip(segments, active, strict=True)
+    )
+    return _stitch_segment_results(
+        multi_result,
+        segment_size=segment_size,
+        segment_results=segment_results,
+    )
+
+
+def _split_spectrum(
+    spectrum: Spectrum,
+    *,
+    segment_size: float,
+    minimum_points: int = 3,
+) -> tuple[Spectrum, ...]:
+    """Split a spectrum into contiguous wavelength intervals in microns."""
+
+    if not np.isfinite(segment_size) or segment_size <= 0:
+        raise ValueError("segment_size must be a positive finite value in microns")
+    if minimum_points < 2:
+        raise ValueError("minimum_points must be at least two")
+
+    ordered = spectrum.to_unit("micron").sorted()
+    wavelength = ordered.wavelength
+    if wavelength.size < minimum_points:
+        return (ordered,)
+    if not np.all(np.isfinite(wavelength)):
+        raise ValueError(
+            "automatic segmentation requires finite wavelengths; remove or mask "
+            "rows with invalid wavelength coordinates"
+        )
+
+    span = float(wavelength[-1] - wavelength[0])
+    if span <= segment_size:
+        return (ordered,)
+
+    ratio = span / segment_size
+    ratio -= 1.0e-12 * max(1.0, abs(ratio))
+    segment_count = max(1, int(np.ceil(ratio)))
+    edges = np.linspace(wavelength[0], wavelength[-1], segment_count + 1)
+    stops = np.searchsorted(wavelength, edges[1:-1], side="left")
+    boundaries = np.concatenate(([0], stops, [wavelength.size]))
+    ranges = [
+        [int(start), int(stop)]
+        for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
+        if stop > start
+    ]
+
+    index = 0
+    while index < len(ranges):
+        start, stop = ranges[index]
+        if stop - start >= minimum_points or len(ranges) == 1:
+            index += 1
+            continue
+        if index > 0:
+            ranges[index - 1][1] = stop
+            ranges.pop(index)
+        else:
+            ranges[1][0] = start
+            ranges.pop(0)
+
+    segments = []
+    for segment_index, (start, stop) in enumerate(ranges):
+        uncertainty = (
+            None
+            if ordered.uncertainty is None
+            else ordered.uncertainty[start:stop].copy()
+        )
+        mask = None if ordered.mask is None else ordered.mask[start:stop].copy()
+        segments.append(
+            Spectrum(
+                wavelength=ordered.wavelength[start:stop].copy(),
+                flux=ordered.flux[start:stop].copy(),
+                uncertainty=uncertainty,
+                mask=mask,
+                wavelength_unit="micron",
+                wavelength_medium=ordered.wavelength_medium,
+                meta={
+                    **dict(ordered.meta),
+                    "segment_index": segment_index,
+                    "segment_count": len(ranges),
+                    "segment_size_micron": float(segment_size),
+                },
+            )
+        )
+    return tuple(segments)
+
+
+def _subdivide_segments_for_grid_limit(
+    segments: tuple[Spectrum, ...],
+    *,
+    config: FitConfig,
+    minimum_points: int,
+) -> tuple[Spectrum, ...]:
+    pending = list(segments)
+    accepted: list[Spectrum] = []
+    while pending:
+        segment = pending.pop(0)
+        required_points = _radiative_transfer_point_count(segment.wavelength, config)
+        if required_points <= config.radiative_transfer_max_points:
+            accepted.append(segment)
+            continue
+        if segment.wavelength.size < 2 * minimum_points:
+            raise ValueError(
+                "automatic segmentation cannot satisfy radiative_transfer_max_points "
+                f"without producing fewer than {minimum_points} pixels per segment; "
+                "raise radiative_transfer_max_points or reduce the continuum order"
+            )
+        midpoint = 0.5 * (segment.wavelength[0] + segment.wavelength[-1])
+        split = int(np.searchsorted(segment.wavelength, midpoint, side="left"))
+        split = min(
+            max(split, minimum_points),
+            segment.wavelength.size - minimum_points,
+        )
+        left = _slice_spectrum(segment, 0, split)
+        right = _slice_spectrum(segment, split, segment.wavelength.size)
+        pending[0:0] = [left, right]
+
+    segment_count = len(accepted)
+    return tuple(
+        Spectrum(
+            wavelength=segment.wavelength,
+            flux=segment.flux,
+            uncertainty=segment.uncertainty,
+            mask=segment.mask,
+            wavelength_unit=segment.wavelength_unit,
+            wavelength_medium=segment.wavelength_medium,
+            meta={
+                **dict(segment.meta),
+                "segment_index": index,
+                "segment_count": segment_count,
+            },
+        )
+        for index, segment in enumerate(accepted)
+    )
+
+
+def _segment_has_fit_pixels(segment: Spectrum, config: FitConfig) -> bool:
+    wavelength = segment.to_unit("micron").wavelength
+    selected = segment.valid.copy()
+    if config.fit_ranges is not None:
+        include = np.zeros(wavelength.shape, dtype=bool)
+        for lower, upper in config.fit_ranges:
+            include |= (wavelength >= lower) & (wavelength <= upper)
+        selected &= include
+    if config.exclude_ranges is not None:
+        for lower, upper in config.exclude_ranges:
+            selected &= ~((wavelength >= lower) & (wavelength <= upper))
+    return bool(np.count_nonzero(selected) >= config.continuum_order + 2)
+
+
+def _slice_spectrum(spectrum: Spectrum, start: int, stop: int) -> Spectrum:
+    return Spectrum(
+        wavelength=spectrum.wavelength[start:stop].copy(),
+        flux=spectrum.flux[start:stop].copy(),
+        uncertainty=(
+            None
+            if spectrum.uncertainty is None
+            else spectrum.uncertainty[start:stop].copy()
+        ),
+        mask=None if spectrum.mask is None else spectrum.mask[start:stop].copy(),
+        wavelength_unit=spectrum.wavelength_unit,
+        wavelength_medium=spectrum.wavelength_medium,
+        meta=dict(spectrum.meta),
+    )
+
+
+def _concatenate_spectra(
+    spectra: tuple[Spectrum, ...],
+    *,
+    corrected: bool,
+    segment_size: float,
+) -> Spectrum:
+    first = spectra[0]
+    uncertainty = None
+    if all(spectrum.uncertainty is not None for spectrum in spectra):
+        uncertainty = np.concatenate(
+            [np.asarray(spectrum.uncertainty, dtype=float) for spectrum in spectra]
+        )
+    mask = None
+    if any(spectrum.mask is not None for spectrum in spectra):
+        mask = np.concatenate(
+            [
+                np.ones(spectrum.wavelength.size, dtype=bool)
+                if spectrum.mask is None
+                else np.asarray(spectrum.mask, dtype=bool)
+                for spectrum in spectra
+            ]
+        )
+    return Spectrum(
+        wavelength=np.concatenate([spectrum.wavelength for spectrum in spectra]),
+        flux=np.concatenate([spectrum.flux for spectrum in spectra]),
+        uncertainty=uncertainty,
+        mask=mask,
+        wavelength_unit=first.wavelength_unit,
+        wavelength_medium=first.wavelength_medium,
+        meta={
+            **dict(first.meta),
+            "telluric_corrected": corrected,
+            "automatic_segmentation": True,
+            "segment_count": len(spectra),
+            "segment_size_micron": float(segment_size),
+        },
+    )
+
+
+def _stitch_segment_results(
+    result: MultiTelluricFitResult,
+    *,
+    segment_size: float,
+    segment_results: tuple[TelluricFitResult, ...] | None = None,
+) -> TelluricFitResult:
+    """Return the normal single-result interface for an automatic segmented fit."""
+
+    source_results = result.segment_results if segment_results is None else segment_results
+    segment_results = tuple(
+        sorted(
+            source_results,
+            key=lambda item: float(np.nanmin(item.spectrum.wavelength)),
+        )
+    )
+    spectra = tuple(item.spectrum for item in segment_results)
+    corrected_spectra = tuple(item.corrected for item in segment_results)
+    spectrum = _concatenate_spectra(
+        spectra,
+        corrected=False,
+        segment_size=segment_size,
+    )
+    corrected = _concatenate_spectra(
+        corrected_spectra,
+        corrected=True,
+        segment_size=segment_size,
+    )
+    transmission = np.concatenate([item.transmission for item in segment_results])
+    continuum = np.concatenate([item.continuum for item in segment_results])
+    model_flux = np.concatenate([item.model_flux for item in segment_results])
+    fit_mask = np.concatenate(
+        [
+            np.zeros(item.spectrum.wavelength.size, dtype=bool)
+            if item.fit_mask is None
+            else np.asarray(item.fit_mask, dtype=bool)
+            for item in segment_results
+        ]
+    )
+    transmission_uncertainty = None
+    if all(item.transmission_uncertainty is not None for item in segment_results):
+        transmission_uncertainty = np.concatenate(
+            [
+                np.asarray(item.transmission_uncertainty, dtype=float)
+                for item in segment_results
+            ]
+        )
+    continuum_coefficients = np.concatenate(
+        [np.asarray(item.continuum_coefficients, dtype=float) for item in segment_results]
+    )
+    wavelength_coefficients = np.asarray(
+        segment_results[0].wavelength_coefficients,
+        dtype=float,
+    )
+    boundaries = [
+        [
+            float(np.nanmin(item.spectrum.wavelength)),
+            float(np.nanmax(item.spectrum.wavelength)),
+        ]
+        for item in segment_results
+    ]
+    provenance = {
+        **dict(result.provenance),
+        "segmentation": {
+            "automatic": True,
+            "segment_size_micron": float(segment_size),
+            "segment_count": len(segment_results),
+            "boundaries_micron": boundaries,
+        },
+    }
+    return TelluricFitResult(
+        spectrum=spectrum,
+        corrected=corrected,
+        transmission=transmission,
+        continuum=continuum,
+        model_flux=model_flux,
+        species_scales=dict(result.species_scales),
+        wavelength_shift=float(result.wavelength_shift),
+        wavelength_coefficients=wavelength_coefficients,
+        lsf_sigma_pixels=float(result.lsf_sigma_pixels),
+        lsf_box_width_pixels=float(result.lsf_box_width_pixels),
+        lsf_lorentz_fwhm_pixels=float(result.lsf_lorentz_fwhm_pixels),
+        continuum_coefficients=continuum_coefficients,
+        metrics=_fit_metrics(spectrum.flux, model_flux, continuum),
+        success=bool(result.success),
+        message=f"{result.message} (automatic segmentation: {len(segment_results)} segments)",
+        cost=float(result.cost),
+        nfev=int(result.nfev),
+        parameter_names=tuple(result.parameter_names),
+        parameter_covariance=result.parameter_covariance,
+        parameter_standard_errors=dict(result.parameter_standard_errors),
+        species_scale_uncertainties=dict(result.species_scale_uncertainties),
+        transmission_uncertainty=transmission_uncertainty,
+        reduced_chi_square=float(result.reduced_chi_square),
+        covariance_rank=int(result.covariance_rank),
+        fit_mask=fit_mask,
+        parameter_bound_status=dict(result.parameter_bound_status),
+        provenance=provenance,
+    )
 
 
 def _resolve_line_list(

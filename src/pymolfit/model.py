@@ -204,6 +204,53 @@ def radiative_transfer_wavelength_grid(
     entirely determined by the wavelength interval and atmospheric profile.
     """
 
+    start, stop, desired_step, n_points = _radiative_transfer_grid_definition(
+        model_wavelength_micron,
+        atmosphere,
+        sample=sample,
+        alfal0=alfal0,
+        avmass_amu=avmass_amu,
+        step_cm=step_cm,
+        max_points=max_points,
+    )
+    actual_step = (stop - start) / float(n_points - 1)
+    wavenumber = start + actual_step * np.arange(n_points, dtype=float)
+    return 1.0e4 / wavenumber[::-1], actual_step
+
+
+def radiative_transfer_grid_point_count(
+    model_wavelength_micron: np.ndarray,
+    atmosphere: AtmosphereProfile,
+    *,
+    sample: float = LBLRTM_DEFAULT_SAMPLE,
+    alfal0: float = LBLRTM_DEFAULT_ALFAL0,
+    avmass_amu: float = LBLRTM_DEFAULT_AVMASS_AMU,
+    step_cm: float | None = None,
+) -> int:
+    """Return the native RT grid size without allocating the native grid."""
+
+    *_, n_points = _radiative_transfer_grid_definition(
+        model_wavelength_micron,
+        atmosphere,
+        sample=sample,
+        alfal0=alfal0,
+        avmass_amu=avmass_amu,
+        step_cm=step_cm,
+        max_points=None,
+    )
+    return n_points
+
+
+def _radiative_transfer_grid_definition(
+    model_wavelength_micron: np.ndarray,
+    atmosphere: AtmosphereProfile,
+    *,
+    sample: float,
+    alfal0: float,
+    avmass_amu: float,
+    step_cm: float | None,
+    max_points: int | None,
+) -> tuple[float, float, float, int]:
     model_wavelength = np.asarray(model_wavelength_micron, dtype=float)
     finite = np.sort(model_wavelength[np.isfinite(model_wavelength)])
     if finite.ndim != 1 or finite.size < 2:
@@ -216,7 +263,7 @@ def radiative_transfer_wavelength_grid(
         raise ValueError("alfal0 must be non-negative and finite")
     if avmass_amu <= 0 or not np.isfinite(avmass_amu):
         raise ValueError("avmass_amu must be positive and finite")
-    if max_points < 2:
+    if max_points is not None and max_points < 2:
         raise ValueError("max_points must be at least two")
 
     wavelength_edges = _pixel_edges_from_centers(finite)
@@ -270,15 +317,13 @@ def radiative_transfer_wavelength_grid(
     if desired_step <= 0 or not np.isfinite(desired_step):
         raise ValueError("the radiative-transfer grid spacing is not positive and finite")
     n_points = max(2, int(np.ceil((stop - start) / desired_step)) + 1)
-    if n_points > max_points:
+    if max_points is not None and n_points > max_points:
         raise ValueError(
             "automatic radiative-transfer grid requires "
             f"{n_points:,} points, exceeding max_points={max_points:,}; "
             "split the spectrum into narrower segments or raise the explicit limit"
         )
-    actual_step = (stop - start) / float(n_points - 1)
-    wavenumber = start + actual_step * np.arange(n_points, dtype=float)
-    return 1.0e4 / wavenumber[::-1], actual_step
+    return start, stop, desired_step, n_points
 
 
 def transmission_from_high_resolution_basis(

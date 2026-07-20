@@ -104,6 +104,101 @@ def test_correct_arrays_accepts_native_radiative_transfer_controls():
     assert result.success
 
 
+def test_correct_file_automatically_segments_native_grid_and_stitches_output(tmp_path):
+    hitran_path = tmp_path / "h2o.par"
+    input_path = tmp_path / "broad_spectrum.txt"
+    output_path = tmp_path / "corrected.txt"
+    hitran_path.write_text(_hitran_row() + "\n")
+    center = 1.0e4 / 4320.0
+    wavelength = np.linspace(center - 0.015, center + 0.015, 600)
+    np.savetxt(input_path, np.column_stack([wavelength, np.ones_like(wavelength)]))
+
+    with pytest.raises(ValueError, match="exceeding max_points"):
+        correct_file(
+            input_path,
+            hitran_par=hitran_path,
+            hitran_species=("H2O",),
+            mixing_ratios={"H2O": 1.0e-5},
+            allow_default_observatory=True,
+            continuum_order=0,
+            solve_continuum_linear=True,
+            radiative_transfer_max_points=20_000,
+            auto_segment=False,
+        )
+
+    result = correct_file(
+        input_path,
+        output_path,
+        hitran_par=hitran_path,
+        hitran_species=("H2O",),
+        mixing_ratios={"H2O": 1.0e-5},
+        allow_default_observatory=True,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        radiative_transfer_max_points=20_000,
+        segment_size=0.01,
+        fit_ranges=((center - 0.001, center + 0.001),),
+    )
+
+    assert result.success
+    assert output_path.exists()
+    segmentation = result.provenance["segmentation"]
+    assert segmentation["segment_count"] >= 3
+    assert all(
+        upper - lower <= 0.01 + 1.0e-12
+        for lower, upper in segmentation["boundaries_micron"]
+    )
+    assert result.spectrum.wavelength.size == wavelength.size
+    assert result.corrected.wavelength.size == wavelength.size
+    assert 0 < np.count_nonzero(result.fit_mask) < wavelength.size
+    np.testing.assert_allclose(result.spectrum.wavelength, wavelength)
+    assert np.loadtxt(output_path).shape[0] == wavelength.size
+
+
+def test_segmented_physical_result_matches_unsegmented_result(tmp_path):
+    hitran_path = tmp_path / "h2o.par"
+    hitran_path.write_text(_hitran_row() + "\n")
+    center = 1.0e4 / 4320.0
+    wavelength = np.linspace(center - 0.015, center + 0.015, 600)
+    flux = np.ones_like(wavelength)
+    options = {
+        "hitran_par": hitran_path,
+        "hitran_species": ("H2O",),
+        "mixing_ratios": {"H2O": 1.0e-5},
+        "allow_default_observatory": True,
+        "continuum_order": 0,
+        "solve_continuum_linear": True,
+        "radiative_transfer_max_points": 200_000,
+    }
+
+    segmented = correct_arrays(
+        wavelength,
+        flux,
+        segment_size=0.01,
+        **options,
+    )
+    unsegmented = correct_arrays(
+        wavelength,
+        flux,
+        auto_segment=False,
+        **options,
+    )
+
+    assert segmented.provenance["segmentation"]["segment_count"] == 3
+    np.testing.assert_allclose(
+        segmented.transmission,
+        unsegmented.transmission,
+        rtol=0.0,
+        atol=2.0e-8,
+    )
+    np.testing.assert_allclose(
+        segmented.corrected.flux,
+        unsegmented.corrected.flux,
+        rtol=0.0,
+        atol=2.0e-8,
+    )
+
+
 def test_correct_arrays_exposes_global_wavelength_polynomial():
     wavelength = np.linspace(2.31, 2.36, 700)
     line_list = LineList.demo_near_ir()
