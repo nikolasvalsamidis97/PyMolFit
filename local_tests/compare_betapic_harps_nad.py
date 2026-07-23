@@ -31,8 +31,8 @@ MOLECFIT_AER_LINE_DB = MOLECFIT_ROOT / "share" / "molecfit" / "data" / "hitran" 
 NAD_CROP = (0.5882, 0.5907)
 NAD_FIT = (0.58825, 0.59065)
 NAD_EXCLUDE = (
-    (0.58888, 0.58912),
-    (0.58948, 0.58978),
+    (0.58888, 0.58934),
+    (0.58936, 0.58993),
 )
 SPEED_OF_LIGHT_KM_S = 299_792.458
 

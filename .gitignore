@@ -16,6 +16,7 @@ venv/
 
 # Local validation downloads, caches, external-program work directories, and
 # generated products. Keep the reusable validation programs in local_tests/.
+local_tests/*.ipynb
 local_tests/*/
 !local_tests/lblrtm_audit/
 local_tests/lblrtm_audit/*
