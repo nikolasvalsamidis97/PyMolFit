@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 import numpy as np
+import astropy.units as u
+from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.io import fits
+from astropy.time import Time
 
 from .aer_data import AERCatalogArtifact, load_aer_line_window
 from .atmosphere import (
@@ -56,6 +59,31 @@ from .spectrum import Spectrum
 
 DEFAULT_SEGMENT_SIZE_MICRON = 0.01
 
+InputSpectrumFormat = Literal["txt", "dat", "csv", "ascii", "ecsv", "fits", "fit", "fz"]
+WavelengthMedium = Literal["vacuum", "vac", "air"]
+AtmosphereMode = Literal["mipas_gdas", "mipas", "gdas", "single", "standard"]
+MIPASProfileName = Literal["equ", "std", "tro", "auto"]
+GDASMode = Literal["auto", "online", "cache", "average"]
+HighResolutionRebinMode = Literal[
+    "integrate",
+    "center",
+    "sample_average",
+    "molecfit_overlap",
+    "molecfit_average",
+]
+RadiativeTransferGrid = Literal["auto", "model"]
+LineWingMode = Literal[
+    "full",
+    "hard_cutoff",
+    "subtracted_cutoff",
+    "tapered_cutoff",
+    "lblrtm_subtracted",
+    "lblrtm_dynamic",
+    "lblrtm_table",
+    "lblrtm_panel",
+]
+LeastSquaresLoss = Literal["linear", "soft_l1", "huber", "cauchy", "arctan"]
+
 
 def correct_arrays(
     wavelength: np.ndarray,
@@ -63,7 +91,7 @@ def correct_arrays(
     *,
     uncertainty: np.ndarray | None = None,
     wavelength_unit: str = "micron",
-    wavelength_medium: str = "vacuum",
+    wavelength_medium: WavelengthMedium = "vacuum",
     line_list: LineList | None = None,
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
@@ -88,10 +116,10 @@ def correct_arrays(
     physical: bool | None = None,
     atmosphere: AtmosphereProfile | None = None,
     atmosphere_table: str | Path | None = None,
-    atmosphere_mode: str = "mipas_gdas",
-    mipas_profile: str = "equ",
+    atmosphere_mode: AtmosphereMode = "mipas_gdas",
+    mipas_profile: MIPASProfileName = "equ",
     gdas_profile: str | Path | None = None,
-    gdas_mode: str = "auto",
+    gdas_mode: GDASMode = "auto",
     gdas_cache_dir: str | Path | None = None,
     gdas_download_timeout_s: float = 15.0,
     observatory_latitude_deg: float | None = None,
@@ -117,8 +145,8 @@ def correct_arrays(
     high_resolution_grid: bool = True,
     high_resolution_oversampling: float = 5.0,
     high_resolution_margin_pixels: float = 2.0,
-    high_resolution_rebin_mode: str = "molecfit_overlap",
-    radiative_transfer_grid: str = "auto",
+    high_resolution_rebin_mode: HighResolutionRebinMode = "molecfit_overlap",
+    radiative_transfer_grid: RadiativeTransferGrid = "auto",
     radiative_transfer_step_cm: float | None = None,
     radiative_transfer_max_points: int = 2_000_000,
     auto_segment: bool = True,
@@ -126,7 +154,7 @@ def correct_arrays(
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,
     line_taper_cm: float = 0.0,
-    line_wing_mode: str = "lblrtm_panel",
+    line_wing_mode: LineWingMode = "lblrtm_panel",
     lblrtm_sample: float = LBLRTM_DEFAULT_SAMPLE,
     lblrtm_alfal0: float = LBLRTM_DEFAULT_ALFAL0,
     lblrtm_avmass_amu: float = LBLRTM_DEFAULT_AVMASS_AMU,
@@ -138,9 +166,13 @@ def correct_arrays(
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
+    min_transmission: float = 0.03,
     fit_wavelength_shift: bool = False,
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
+    fit_segment_wavelength_shifts: bool = False,
+    fit_segment_wavelength_polynomial: bool = False,
+    segment_wavelength_polynomial_order: int = 1,
     initial_wavelength_shift: float | None = None,
     wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4),
     fit_lsf_sigma: bool = False,
@@ -151,7 +183,7 @@ def correct_arrays(
     lsf_lorentz_fwhm_bounds: tuple[float, float] = (0.0, 10.0),
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
-    loss: str = "linear",
+    loss: LeastSquaresLoss = "linear",
     f_scale: float = 1.0,
     ftol: float = 1.0e-10,
     xtol: float = 1.0e-10,
@@ -249,9 +281,13 @@ def correct_arrays(
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
+        min_transmission=min_transmission,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
+        fit_segment_wavelength_shifts=fit_segment_wavelength_shifts,
+        fit_segment_wavelength_polynomial=fit_segment_wavelength_polynomial,
+        segment_wavelength_polynomial_order=segment_wavelength_polynomial_order,
         initial_wavelength_shift=initial_wavelength_shift,
         wavelength_shift_bounds=wavelength_shift_bounds,
         fit_lsf_sigma=fit_lsf_sigma,
@@ -275,12 +311,12 @@ def correct_file(
     input_path: str | Path,
     output_path: str | Path | None = None,
     *,
-    input_format: str | None = None,
+    input_format: InputSpectrumFormat | None = None,
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
     wavelength_unit: str = "micron",
-    wavelength_medium: str = "vacuum",
+    wavelength_medium: WavelengthMedium = "vacuum",
     line_list: LineList | None = None,
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
@@ -305,10 +341,10 @@ def correct_file(
     physical: bool | None = None,
     atmosphere: AtmosphereProfile | None = None,
     atmosphere_table: str | Path | None = None,
-    atmosphere_mode: str = "mipas_gdas",
-    mipas_profile: str = "equ",
+    atmosphere_mode: AtmosphereMode = "mipas_gdas",
+    mipas_profile: MIPASProfileName = "equ",
     gdas_profile: str | Path | None = None,
-    gdas_mode: str = "auto",
+    gdas_mode: GDASMode = "auto",
     gdas_cache_dir: str | Path | None = None,
     gdas_download_timeout_s: float = 15.0,
     observatory_latitude_deg: float | None = None,
@@ -334,8 +370,8 @@ def correct_file(
     high_resolution_grid: bool = True,
     high_resolution_oversampling: float = 5.0,
     high_resolution_margin_pixels: float = 2.0,
-    high_resolution_rebin_mode: str = "molecfit_overlap",
-    radiative_transfer_grid: str = "auto",
+    high_resolution_rebin_mode: HighResolutionRebinMode = "molecfit_overlap",
+    radiative_transfer_grid: RadiativeTransferGrid = "auto",
     radiative_transfer_step_cm: float | None = None,
     radiative_transfer_max_points: int = 2_000_000,
     auto_segment: bool = True,
@@ -343,7 +379,7 @@ def correct_file(
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,
     line_taper_cm: float = 0.0,
-    line_wing_mode: str = "lblrtm_panel",
+    line_wing_mode: LineWingMode = "lblrtm_panel",
     lblrtm_sample: float = LBLRTM_DEFAULT_SAMPLE,
     lblrtm_alfal0: float = LBLRTM_DEFAULT_ALFAL0,
     lblrtm_avmass_amu: float = LBLRTM_DEFAULT_AVMASS_AMU,
@@ -355,9 +391,13 @@ def correct_file(
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
+    min_transmission: float = 0.03,
     fit_wavelength_shift: bool = False,
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
+    fit_segment_wavelength_shifts: bool = False,
+    fit_segment_wavelength_polynomial: bool = False,
+    segment_wavelength_polynomial_order: int = 1,
     initial_wavelength_shift: float | None = None,
     wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4),
     fit_lsf_sigma: bool = False,
@@ -368,7 +408,7 @@ def correct_file(
     lsf_lorentz_fwhm_bounds: tuple[float, float] = (0.0, 10.0),
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
-    loss: str = "linear",
+    loss: LeastSquaresLoss = "linear",
     f_scale: float = 1.0,
     ftol: float = 1.0e-10,
     xtol: float = 1.0e-10,
@@ -379,7 +419,123 @@ def correct_file(
     plot_path: str | Path | None = None,
     show_plot: bool = False,
 ) -> TelluricFitResult:
-    """High-level file workflow: load, fit, correct, and optionally write products."""
+    """Load a one-dimensional spectrum, fit telluric absorption, and correct it.
+
+    String-valued options use the canonical choices listed below. ``None``
+    generally means automatic discovery or that the optional feature is
+    disabled, as described for the individual parameter.
+
+    :param input_path: Input reduced 1D spectrum in FITS, text, CSV, or ECSV format.
+    :param output_path: Optional path for the corrected wavelength/flux ASCII spectrum; ``None`` keeps it in memory only.
+    :param input_format: ``None`` infers from the filename; explicit choices are ``txt``, ``dat``, ``csv``, ``ascii``, ``ecsv``, ``fits``, ``fit``, or ``fz``.
+    :param wavelength_col: Wavelength column name or zero-based index; ``None`` uses recognized names or the first numeric column.
+    :param flux_col: Flux column name or zero-based index; ``None`` uses recognized names or the second numeric column.
+    :param uncertainty_col: Optional uncertainty column name or zero-based index; ``None`` performs an unweighted fit.
+    :param wavelength_unit: Unit of input wavelengths, such as ``micron``/``um``, ``nm``, ``angstrom``/``aa``, or ``m``.
+    :param wavelength_medium: ``air`` declares standard-air wavelengths; ``vacuum`` or ``vac`` declares vacuum wavelengths. PyMolFit converts internally, rather than changing what the file contains.
+    :param line_list: In-memory PyMolFit ``LineList``; use this instead of ``line_list_path`` or ``hitran_par``.
+    :param line_list_path: Astropy-readable PyMolFit line-list table path; ``None`` leaves line-data resolution to another source.
+    :param hitran_par: Path to a HITRAN (High-resolution Transmission Molecular Absorption Database) ``.par`` file containing molecular line positions, strengths, pressure broadening, and lower-state energies; ``None`` normally uses the managed AER catalogue.
+    :param hitran_species: Molecule names retained from HITRAN/AER, such as ``H2O``, ``O2``, or ``CO2``; ``None`` keeps every atmospheric species with transitions in the wavelength window.
+    :param hitran_min_strength: Minimum HITRAN reference line intensity to retain, controlling whether weak molecular transitions enter the opacity calculation; ``None`` applies no intensity threshold.
+    :param hitran_max_lines: Maximum number of strongest retained lines; ``None`` keeps all lines passing the other filters.
+    :param demo_line_list: ``True`` uses a tiny synthetic test list; ``False`` uses scientific line data. Never enable this for scientific correction.
+    :param aer_catalog: AER is Atmospheric and Environmental Research's LBLRTM-ready molecular line catalogue derived from HITRAN; ``auto`` discovers/downloads it, a path or artifact selects it explicitly, and ``None`` disables automatic AER data.
+    :param aer_cache_dir: Directory for managed AER catalogues and wavelength-window caches; ``None`` uses PyMolFit's user cache.
+    :param aer_source: Override archive URL or local archive path used on an AER cache miss; ``None`` uses the official configured source.
+    :param aer_offline: ``True`` forbids AER network access and requires cached data; ``False`` permits download on a cache miss.
+    :param aer_reuse_molecfit: ``True`` may reuse a verified compatible local AER/Molecfit catalogue; ``False`` uses only the managed or explicit source.
+    :param aer_timeout_s: Per-request AER download timeout in seconds.
+    :param partition_table: Molecular partition sums convert HITRAN reference line strengths to each atmospheric layer's temperature; provide an object/table path, or use ``None`` for packaged LBLRTM/TIPS-compatible data.
+    :param h2o_continuum: H2O continuum represents broad water absorption not captured by isolated discrete lines; provide an object/coefficient path, use ``lblrtm`` for packaged coefficients, or ``None`` for automatic packaged data when physical H2O lines are present.
+    :param h2o_continuum_foreign_closure: ``True`` enables the optional MT_CKD foreign-continuum closure coefficients; ``False`` uses the normal selected continuum.
+    :param co2_continuum: CO2 continuum represents broad carbon-dioxide absorption between/under discrete lines; provide an object/coefficient path, use ``lblrtm`` for packaged coefficients, or ``None`` for automatic packaged data when physical CO2 lines are present.
+    :param o2_cia: Collision-induced absorption (CIA) is broadband absorption created during molecular collisions; provide a HITRAN O2 CIA object/file path, or ``None`` to omit this explicit table.
+    :param n2_cia: Collision-induced absorption (CIA) is broadband absorption created during molecular collisions; provide a HITRAN N2 CIA object/file path, or ``None`` to omit this explicit table.
+    :param cia_tables: Mapping from additional collision-pair names to HITRAN CIA objects or paths, adding broadband collision opacity beyond O2/N2; ``None`` adds no generic CIA tables.
+    :param components: Additional or replacement absorption-component objects; ``None`` builds components from the selected physical data.
+    :param physical: ``None`` auto-detects physical HITRAN modelling, ``True`` requires it, and ``False`` disables the layered physical-atmosphere path.
+    :param atmosphere: Explicit ``AtmosphereProfile``; when provided it overrides the atmosphere builder and cannot be combined with ``atmosphere_table``.
+    :param atmosphere_table: Astropy-readable atmosphere profile table; ``None`` builds an atmosphere from FITS metadata and the selected mode.
+    :param atmosphere_mode: Selects how the vertical pressure, temperature, humidity, and gas profile is built: ``mipas_gdas``/``mipas``/``gdas`` merges a MIPAS satellite-derived climatological reference for the full/upper atmosphere with time-and-location-specific GDAS weather in the lower atmosphere, ``standard`` builds a generic layered midlatitude atmosphere, and ``single`` uses one homogeneous layer.
+    :param mipas_profile: MIPAS (Michelson Interferometer for Passive Atmospheric Sounding) supplies climatological vertical pressure, temperature, and trace-gas profiles, especially above GDAS coverage; ``equ`` selects equatorial, ``std`` midlatitude standard, ``tro`` tropical, and ``auto`` currently follows Molecfit's equatorial default.
+    :param gdas_profile: GDAS (NOAA Global Data Assimilation System) supplies observation-time/location meteorology such as pressure, height, temperature, and humidity for the lower atmosphere; provide an explicit FITS profile or use ``None`` to resolve one according to ``gdas_mode``.
+    :param gdas_mode: Controls the NOAA GDAS weather profile used to replace the lower part of the MIPAS climatology: ``auto`` tries exact cached/downloaded time-local data then falls back to a monthly average, ``online`` requires exact cache/download success, ``cache`` requires exact cached data without network access, and ``average`` always uses a generic monthly profile.
+    :param gdas_cache_dir: Directory for GDAS archives and interpolated profiles; ``None`` uses ``PYMOLFIT_GDAS_CACHE`` or the default user cache.
+    :param gdas_download_timeout_s: Per-URL timeout in seconds for ESO GDAS downloads.
+    :param observatory_latitude_deg: Geodetic observatory latitude in degrees; ``None`` reads FITS metadata when available.
+    :param observatory_longitude_deg: Geodetic observatory longitude in degrees, positive east; ``None`` reads FITS metadata when available.
+    :param observatory_altitude_m: Observatory altitude above sea level in metres; ``None`` reads FITS metadata when available.
+    :param allow_default_observatory: ``True`` permits the Paranal fallback when geometry is missing; ``False`` raises instead of silently assuming a site.
+    :param airmass: Line-of-sight airmass; the default allows usable FITS airmass metadata to supply the observation value in MIPAS/GDAS mode.
+    :param pressure_atm: Surface pressure in atmospheres for ``single``/``standard`` or metadata fallback atmosphere construction.
+    :param temperature_k: Surface or single-layer temperature in kelvin for fallback atmosphere construction.
+    :param path_length_m: Vertical single-layer path length in metres; used only by ``atmosphere_mode="single"``.
+    :param pwv_mm: Optional precipitable-water-vapour override in millimetres; ``None`` derives water from GDAS/MIPAS or other atmosphere inputs.
+    :param relative_humidity_percent: Optional surface relative-humidity override in percent; ``None`` uses profile or FITS information.
+    :param mixing_ratios: Optional mapping of molecule name to volume mixing ratio; supplied entries override builder defaults.
+    :param continuum_order: Polynomial continuum degree per fitted segment: ``0`` constant, ``1`` linear, ``2`` quadratic, and so on.
+    :param solve_continuum_linear: ``True`` solves continuum coefficients exactly at each nonlinear step and requires ``loss="linear"``; ``False`` includes them in the nonlinear parameter vector.
+    :param lsf_sigma_pixels: The line-spread function (LSF) describes instrumental broadening of intrinsically narrow telluric lines; this is its initial/fixed Gaussian sigma in detector pixels, and ``0`` disables that component unless it is fitted.
+    :param lsf_box_width_pixels: A boxcar LSF component approximates finite pixel/slit integration; this is its initial/fixed width in detector pixels, and ``0`` disables it.
+    :param lsf_lorentz_fwhm_pixels: A Lorentzian LSF component represents extended instrumental wings; this is its initial/fixed full width at half maximum in detector pixels, and ``0`` disables it unless fitted.
+    :param lsf_variable_width: Instruments can have wavelength-dependent resolution; ``True`` scales all LSF widths with wavelength relative to ``lsf_reference_wavelength_micron``, while ``False`` keeps their pixel widths constant.
+    :param lsf_reference_wavelength_micron: Reference wavelength in microns for variable-width LSF scaling; ``None`` uses each segment's median wavelength.
+    :param lsf_kernel_width_fwhm: Half-support control for numerical LSF kernels in multiples of component FWHM; larger values retain farther wings but cost more.
+    :param lsf_molecfit_voigt: ``True`` uses Molecfit's synthetic Gaussian-plus-Lorentzian Voigt approximation; ``False`` convolves the configured components normally.
+    :param high_resolution_grid: ``True`` computes, convolves, and rebins an oversampled internal model; ``False`` evaluates directly at observed samples.
+    :param high_resolution_oversampling: Approximate internal samples per observed pixel when ``high_resolution_grid=True``.
+    :param high_resolution_margin_pixels: Extra internal-grid margin on each segment edge in observed-pixel units, reducing convolution edge effects.
+    :param high_resolution_rebin_mode: ``integrate`` averages pixel bins, ``center`` samples centres, ``sample_average`` averages enclosed samples, ``molecfit_overlap`` uses Molecfit-style overlap weights, and ``molecfit_average`` aliases sample averaging.
+    :param radiative_transfer_grid: ``auto`` uses a layer-resolved native wavenumber grid; ``model`` evaluates opacity directly on the model grid for lower cost and lower fidelity.
+    :param radiative_transfer_step_cm: Explicit native radiative-transfer spacing in inverse centimetres; ``None`` derives it from atmospheric layers and line widths.
+    :param radiative_transfer_max_points: Maximum native-grid samples before PyMolFit asks for segmentation or a larger explicit safety limit.
+    :param auto_segment: ``True`` splits broad spectra into shared-parameter segments automatically; ``False`` fits the input as one segment and may exceed grid limits.
+    :param segment_size: Maximum automatic segment width in microns; ``0.01`` equals 100 Angstrom.
+    :param line_cutoff_cm: Optional maximum Voigt-wing distance in inverse centimetres; ``None`` follows ``line_wing_mode`` defaults.
+    :param subtract_cutoff_profile: ``True`` subtracts the profile value at the cutoff before truncation; ``False`` leaves the chosen wing mode unchanged.
+    :param line_taper_cm: Cosine-taper width in inverse centimetres at a finite line cutoff; ``0`` disables an added taper.
+    :param line_wing_mode: ``full`` keeps all wings; ``hard_cutoff`` truncates; ``subtracted_cutoff`` edge-subtracts; ``tapered_cutoff`` tapers; ``lblrtm_subtracted`` uses fixed LBLRTM-style subtraction; ``lblrtm_dynamic`` uses dynamic per-line domains; ``lblrtm_table`` adds table-style accumulation; ``lblrtm_panel`` uses the source-parity panel/F4 treatment.
+    :param lblrtm_sample: LBLRTM ``SAMPLE`` control used to derive dynamic line domains; it must be positive.
+    :param lblrtm_alfal0: LBLRTM ``ALFAL0`` finite-domain control; ``0`` disables the corresponding finite ALFMAX cap.
+    :param lblrtm_avmass_amu: Representative atmospheric molecular mass in atomic mass units used for LBLRTM layer sampling.
+    :param lblrtm_hwf3: Outer LBLRTM Voigt F3 domain in line half-widths.
+    :param rayleigh: ``True`` includes the LBLRTM Rayleigh-scattering branch; ``False`` omits it.
+    :param rayleigh_xrayl: Multiplicative LBLRTM Rayleigh coefficient scale, normally ``1``.
+    :param n2_continuum: ``True`` includes LBLRTM N2 pure-rotation, fundamental, and first-overtone continuum branches; ``False`` omits them.
+    :param n2_continuum_xn2cn: Multiplicative LBLRTM N2-continuum coefficient scale, normally ``1``.
+    :param o2_continuum: ``True`` includes source-backed ground-based LBLRTM O2 continuum branches; ``False`` omits them.
+    :param o2_continuum_xo2cn: Multiplicative LBLRTM O2-continuum coefficient scale, normally ``1``.
+    :param line_margin_micron: Extra line-selection margin in microns around each modelled spectral interval.
+    :param min_transmission: Pixels with fitted atmospheric transmission below this fraction are masked in the corrected spectrum because division cannot recover reliable flux from nearly opaque regions; it must be strictly between ``0`` and ``1``.
+    :param fit_wavelength_shift: ``True`` fits one constant wavelength offset; ``False`` fixes the initial/header-derived offset.
+    :param fit_wavelength_polynomial: ``True`` fits a global wavelength-correction polynomial; ``False`` disables it. Do not combine it with ``fit_wavelength_shift``.
+    :param wavelength_polynomial_order: Degree of the global wavelength-correction polynomial in normalized wavelength coordinates.
+    :param fit_segment_wavelength_shifts: ``True`` fits an independent constant wavelength offset for every automatic segment, which is useful for echelle orders or detectors with separate wavelength solutions; it cannot be combined with either global wavelength-fit option.
+    :param fit_segment_wavelength_polynomial: ``True`` fits an independent wavelength-correction polynomial for every automatic segment; use this only when line residuals show within-segment wavelength distortion, and do not combine it with global or constant per-segment wavelength fitting.
+    :param segment_wavelength_polynomial_order: Degree of each independent segment wavelength polynomial when ``fit_segment_wavelength_polynomial=True``; ``0`` is a constant offset and ``1`` also permits a linear distortion.
+    :param initial_wavelength_shift: Initial constant wavelength offset in microns; ``None`` derives a suitable initial value from FITS spectral-frame metadata.
+    :param wavelength_shift_bounds: Inclusive lower and upper allowed constant shift in microns; the upper value must exceed the lower.
+    :param fit_lsf_sigma: ``True`` fits Gaussian LSF sigma from ``lsf_sigma_pixels`` within ``lsf_sigma_bounds``; ``False`` keeps it fixed.
+    :param lsf_sigma_bounds: Lower and upper Gaussian sigma bounds in pixels; values must be increasing and non-negative.
+    :param fit_lsf_box_width: ``True`` fits boxcar LSF width within ``lsf_box_width_bounds``; ``False`` keeps it fixed.
+    :param lsf_box_width_bounds: Lower and upper boxcar-width bounds in pixels; values must be increasing and non-negative.
+    :param fit_lsf_lorentz_fwhm: ``True`` fits Lorentzian FWHM within ``lsf_lorentz_fwhm_bounds``; ``False`` keeps it fixed.
+    :param lsf_lorentz_fwhm_bounds: Lower and upper Lorentzian FWHM bounds in pixels; values must be increasing and non-negative.
+    :param fit_ranges: Wavelength intervals whose observed telluric features constrain molecular columns, wavelength alignment, LSF, and continuum; supply ``((start, stop), ...)`` in microns and the declared input medium, or ``None`` to let every valid pixel influence those fitted parameters.
+    :param exclude_ranges: Wavelength intervals ignored only while estimating fit parameters, normally to protect stellar/circumstellar lines, detector defects, or saturated pixels; values are in microns/input medium and the final atmospheric correction is still evaluated there.
+    :param loss: SciPy least-squares loss: ``linear`` is ordinary squared residuals; ``soft_l1`` and ``huber`` are moderate robust losses; ``cauchy`` and ``arctan`` suppress outliers more strongly.
+    :param f_scale: Residual scale separating inliers from outliers for robust losses; it has no effect for ``loss="linear"``.
+    :param ftol: Positive relative cost-change tolerance for optimizer termination.
+    :param xtol: Positive relative parameter-step tolerance for optimizer termination.
+    :param gtol: Positive gradient-norm tolerance for optimizer termination.
+    :param estimate_uncertainties: ``True`` estimates local covariance and propagates transmission uncertainty; ``False`` skips this additional work.
+    :param product_path: Optional path for the full fit-product table containing model, transmission, masks, corrected flux, metadata, and provenance.
+    :param product_format: Astropy table writer format used for ``product_path``, for example ``ascii.ecsv`` or ``fits``.
+    :param plot_path: Optional diagnostic-plot output path; ``None`` does not save a plot.
+    :param show_plot: ``True`` opens/displays the diagnostic plot; ``False`` only saves it when ``plot_path`` is provided.
+    :return: ``TelluricFitResult`` containing the input, model, transmission, corrected spectrum, fitted parameters, diagnostics, and provenance.
+    """
 
     spectrum = load_spectrum(
         input_path,
@@ -468,9 +624,13 @@ def correct_file(
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
+        min_transmission=min_transmission,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
+        fit_segment_wavelength_shifts=fit_segment_wavelength_shifts,
+        fit_segment_wavelength_polynomial=fit_segment_wavelength_polynomial,
+        segment_wavelength_polynomial_order=segment_wavelength_polynomial_order,
         initial_wavelength_shift=initial_wavelength_shift,
         wavelength_shift_bounds=wavelength_shift_bounds,
         fit_lsf_sigma=fit_lsf_sigma,
@@ -578,9 +738,13 @@ def _correct_spectrum_workflow(
     o2_continuum: bool,
     o2_continuum_xo2cn: float,
     line_margin_micron: float,
+    min_transmission: float,
     fit_wavelength_shift: bool,
     fit_wavelength_polynomial: bool,
     wavelength_polynomial_order: int,
+    fit_segment_wavelength_shifts: bool,
+    fit_segment_wavelength_polynomial: bool,
+    segment_wavelength_polynomial_order: int,
     initial_wavelength_shift: float | None,
     wavelength_shift_bounds: tuple[float, float],
     fit_lsf_sigma: bool,
@@ -800,6 +964,7 @@ def _correct_spectrum_workflow(
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
+        min_transmission=min_transmission,
         atmosphere=resolved_atmosphere,
         partition_table=resolved_partition,
         h2o_continuum=resolved_h2o_continuum,
@@ -808,6 +973,9 @@ def _correct_spectrum_workflow(
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
+        fit_segment_wavelength_shifts=fit_segment_wavelength_shifts,
+        fit_segment_wavelength_polynomial=fit_segment_wavelength_polynomial,
+        segment_wavelength_polynomial_order=segment_wavelength_polynomial_order,
         initial_wavelength_shift=resolved_initial_wavelength_shift,
         wavelength_shift_bounds=wavelength_shift_bounds,
         fit_lsf_sigma=fit_lsf_sigma,
@@ -827,19 +995,29 @@ def _correct_spectrum_workflow(
     )
     if auto_segment and (not np.isfinite(segment_size) or segment_size <= 0):
         raise ValueError("segment_size must be a positive finite value in microns")
-    if not auto_segment or not resolved_high_resolution_grid:
+    per_segment_wavelength_fit = (
+        fit_segment_wavelength_shifts or fit_segment_wavelength_polynomial
+    )
+    if not auto_segment:
+        if per_segment_wavelength_fit:
+            raise ValueError(
+                "per-segment wavelength fitting requires auto_segment=True"
+            )
+        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
+    if not resolved_high_resolution_grid and not per_segment_wavelength_fit:
         return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
     segments = _split_spectrum(
         spectrum,
         segment_size=segment_size,
         minimum_points=continuum_order + 2,
     )
-    segments = _subdivide_segments_for_grid_limit(
-        segments,
-        config=fit_config,
-        minimum_points=continuum_order + 2,
-    )
-    if len(segments) == 1:
+    if resolved_high_resolution_grid:
+        segments = _subdivide_segments_for_grid_limit(
+            segments,
+            config=fit_config,
+            minimum_points=continuum_order + 2,
+        )
+    if len(segments) == 1 and not per_segment_wavelength_fit:
         return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
     active = tuple(
         _segment_has_fit_pixels(segment, fit_config)
@@ -904,16 +1082,35 @@ def _split_spectrum(
             "rows with invalid wavelength coordinates"
         )
 
-    span = float(wavelength[-1] - wavelength[0])
-    if span <= segment_size:
-        return (ordered,)
+    positive_steps = np.diff(wavelength)
+    finite_positive_steps = positive_steps[
+        np.isfinite(positive_steps) & (positive_steps > 0)
+    ]
+    representative_step = (
+        float(np.nanmedian(finite_positive_steps))
+        if finite_positive_steps.size
+        else np.inf
+    )
+    gap_stops = np.flatnonzero(positive_steps > 10.0 * representative_step) + 1
 
-    ratio = span / segment_size
-    ratio -= 1.0e-12 * max(1.0, abs(ratio))
-    segment_count = max(1, int(np.ceil(ratio)))
-    edges = np.linspace(wavelength[0], wavelength[-1], segment_count + 1)
-    stops = np.searchsorted(wavelength, edges[1:-1], side="left")
-    boundaries = np.concatenate(([0], stops, [wavelength.size]))
+    boundaries = [0]
+    for chunk_start, chunk_stop in zip(
+        np.concatenate(([0], gap_stops)),
+        np.concatenate((gap_stops, [wavelength.size])),
+        strict=True,
+    ):
+        chunk_wavelength = wavelength[chunk_start:chunk_stop]
+        span = float(chunk_wavelength[-1] - chunk_wavelength[0])
+        if span > segment_size:
+            ratio = span / segment_size
+            ratio -= 1.0e-12 * max(1.0, abs(ratio))
+            segment_count = max(1, int(np.ceil(ratio)))
+            edges = np.linspace(chunk_wavelength[0], chunk_wavelength[-1], segment_count + 1)
+            boundaries.extend(
+                np.searchsorted(wavelength, edges[1:-1], side="left").tolist()
+            )
+        boundaries.append(int(chunk_stop))
+    boundaries = np.asarray(boundaries, dtype=int)
     ranges = [
         [int(start), int(stop)]
         for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
@@ -1145,6 +1342,13 @@ def _stitch_segment_results(
             "segment_size_micron": float(segment_size),
             "segment_count": len(segment_results),
             "boundaries_micron": boundaries,
+            "wavelength_shifts_micron": [
+                float(item.wavelength_shift) for item in segment_results
+            ],
+            "wavelength_coefficients": [
+                np.asarray(item.wavelength_coefficients, dtype=float).tolist()
+                for item in segment_results
+            ],
         },
     }
     return TelluricFitResult(
@@ -1550,6 +1754,8 @@ def _spectral_frame_velocity_km_s(
             header,
             ("ESO DRS BERV", "HIERARCH ESO DRS BERV", "BERV", "BARYCORR"),
         )
+        if not np.isfinite(velocity):
+            velocity = _barycentric_velocity_from_header_km_s(header)
         return None if not np.isfinite(velocity) else ("BARYCENTRIC", float(velocity))
 
     heliocentric = specs in {"HELIOCEN", "HELIOCENT", "HELIOCENTRIC"}
@@ -1563,6 +1769,71 @@ def _spectral_frame_velocity_km_s(
         )
         return None if not np.isfinite(velocity) else ("HELIOCENTRIC", float(velocity))
     return None
+
+
+def _barycentric_velocity_from_header_km_s(
+    header: Mapping[str, object],
+) -> float:
+    """Reconstruct a missing BERV from standard observation metadata."""
+
+    ra_deg = _first_header_float(header, ("RA", "OBJRA"))
+    dec_deg = _first_header_float(header, ("DEC", "OBJDEC"))
+    longitude_deg = _first_header_float(
+        header,
+        (
+            "ESO TEL GEOLON",
+            "HIERARCH ESO TEL GEOLON",
+            "ESO TEL1 GEOLON",
+            "HIERARCH ESO TEL1 GEOLON",
+            "LONGITUD",
+            "OBSGEO-L",
+        ),
+    )
+    latitude_deg = _first_header_float(
+        header,
+        (
+            "ESO TEL GEOLAT",
+            "HIERARCH ESO TEL GEOLAT",
+            "ESO TEL1 GEOLAT",
+            "HIERARCH ESO TEL1 GEOLAT",
+            "LATITUDE",
+            "OBSGEO-B",
+        ),
+    )
+    altitude_m = _first_header_float(
+        header,
+        (
+            "ESO TEL GEOELEV",
+            "HIERARCH ESO TEL GEOELEV",
+            "ESO TEL1 GEOELEV",
+            "HIERARCH ESO TEL1 GEOELEV",
+            "ALTITUDE",
+            "OBSGEO-H",
+        ),
+    )
+    date_obs = str(header.get("DATE-OBS", "")).strip()
+    required = np.asarray(
+        (ra_deg, dec_deg, longitude_deg, latitude_deg, altitude_m),
+        dtype=float,
+    )
+    if not date_obs or not np.all(np.isfinite(required)):
+        return np.nan
+
+    try:
+        location = EarthLocation.from_geodetic(
+            longitude_deg * u.deg,
+            latitude_deg * u.deg,
+            altitude_m * u.m,
+        )
+        target = SkyCoord(ra_deg * u.deg, dec_deg * u.deg)
+        observation_time = Time(date_obs, format="isot", scale="utc")
+        correction = target.radial_velocity_correction(
+            obstime=observation_time,
+            location=location,
+        )
+    except (TypeError, ValueError):
+        return np.nan
+    return float(correction.to_value(u.km / u.s))
 
 
 def _load_fits_header_if_available(

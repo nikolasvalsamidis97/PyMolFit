@@ -14,10 +14,12 @@ from pymolfit import (
 )
 from pymolfit.physics import SPEED_OF_LIGHT_M_PER_S
 from pymolfit.workflow import (
+    _barycentric_velocity_from_header_km_s,
     _make_atmosphere,
     _ranges_to_observatory_vacuum,
     _resolve_initial_wavelength_shift,
     _resolve_line_list,
+    _split_spectrum,
     _spectrum_to_observatory_vacuum,
 )
 from pymolfit.fit import _shift_basis
@@ -84,6 +86,32 @@ def test_correct_arrays_uses_demo_workflow():
 
     assert result.success
     assert result.corrected.flux.shape == wavelength.shape
+
+
+def test_correct_arrays_exposes_minimum_transmission_mask():
+    wavelength = np.linspace(1.0, 1.01, 400)
+    line_list = LineList(
+        wavelength=np.array([1.005]),
+        strength=np.array([0.02]),
+        sigma=np.array([5.0e-5]),
+        gamma=np.array([2.0e-5]),
+        species=np.array(["H2O"]),
+    )
+    flux = transmission_model(wavelength, line_list)
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        min_transmission=0.5,
+    )
+
+    opaque = result.transmission < 0.5
+    assert np.any(opaque)
+    assert np.all(~result.corrected.valid[opaque])
+    assert np.all(np.isnan(result.corrected.flux[opaque]))
 
 
 def test_correct_arrays_accepts_native_radiative_transfer_controls():
@@ -197,6 +225,66 @@ def test_segmented_physical_result_matches_unsegmented_result(tmp_path):
         rtol=0.0,
         atol=2.0e-8,
     )
+
+
+def test_automatic_segmentation_splits_large_echelle_gaps():
+    wavelength = np.concatenate(
+        (
+            np.linspace(1.500, 1.506, 120),
+            np.linspace(1.508, 1.514, 120),
+        )
+    )
+    spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
+
+    segments = _split_spectrum(spectrum, segment_size=0.01)
+
+    assert len(segments) == 2
+    assert segments[0].wavelength[-1] == pytest.approx(1.506)
+    assert segments[1].wavelength[0] == pytest.approx(1.508)
+    assert all(np.ptp(segment.wavelength) < 0.01 for segment in segments)
+
+
+def test_correct_arrays_exposes_independent_segment_wavelength_shifts():
+    line_list = LineList(
+        wavelength=np.array([1.503, 1.513]),
+        strength=np.array([0.006, 0.005]),
+        sigma=np.full(2, 2.0e-5),
+        gamma=np.full(2, 1.0e-5),
+        species=np.array(["H2O", "H2O"]),
+    )
+    shifts = np.array([7.0e-5, -6.0e-5])
+    wavelength = np.concatenate(
+        (
+            np.linspace(1.500, 1.506, 240),
+            np.linspace(1.510, 1.516, 240),
+        )
+    )
+    shifted_line_list = LineList(
+        wavelength=line_list.wavelength + shifts,
+        strength=line_list.strength,
+        sigma=line_list.sigma,
+        gamma=line_list.gamma,
+        species=line_list.species,
+    )
+    flux = transmission_model(
+        wavelength,
+        shifted_line_list,
+        ModelConfig(species_scales={"H2O": 1.4}),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        auto_segment=True,
+        segment_size=0.02,
+        fit_segment_wavelength_shifts=True,
+        wavelength_shift_bounds=(-2.0e-4, 2.0e-4),
+    )
+
+    recovered = result.provenance["segmentation"]["wavelength_shifts_micron"]
+    np.testing.assert_allclose(recovered, shifts, atol=3.0e-5)
 
 
 def test_correct_arrays_exposes_global_wavelength_polynomial():
@@ -449,6 +537,30 @@ def test_workflow_infers_barycentric_berv_initial_wavelength_shift():
     np.testing.assert_allclose(shift, expected)
     assert _resolve_initial_wavelength_shift(spectrum, 1.2e-5, header) == 1.2e-5
     assert _resolve_initial_wavelength_shift(spectrum, None, {"SPECSYS": "TOPOCENT"}) == 0.0
+
+
+def test_workflow_reconstructs_missing_barycentric_velocity_from_fits_metadata():
+    header = {
+        "SPECSYS": "BARYCENT",
+        "DATE-OBS": "2021-09-13T02:18:06.238",
+        "RA": 311.29288,
+        "DEC": -31.34092,
+        "ESO TEL GEOLON": -70.7345,
+        "ESO TEL GEOLAT": -29.2584,
+        "ESO TEL GEOELEV": 2400.0,
+    }
+
+    velocity = _barycentric_velocity_from_header_km_s(header)
+
+    assert velocity == pytest.approx(-20.72, abs=0.03)
+    spectrum = Spectrum(wavelength=np.array([0.686, 0.688, 0.690]), flux=np.ones(3))
+    expected = np.nanmedian(spectrum.wavelength) * velocity / (
+        SPEED_OF_LIGHT_M_PER_S / 1000.0
+    )
+    np.testing.assert_allclose(
+        _resolve_initial_wavelength_shift(spectrum, None, header),
+        expected,
+    )
 
 
 def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():

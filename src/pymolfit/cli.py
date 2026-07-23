@@ -255,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument("--o2-continuum-xo2cn", type=float, default=1.0, help="LBLRTM O2 continuum scale factor")
     fit_parser.add_argument("--line-margin-micron", type=float, default=0.01, help="minimum extra wavelength margin for selected lines")
+    fit_parser.add_argument(
+        "--min-transmission",
+        type=float,
+        default=0.03,
+        help="mask corrected pixels whose fitted atmospheric transmission is below this fraction",
+    )
     fit_parser.add_argument("--fit-wavelength-shift", action="store_true", help="fit a constant wavelength shift")
     fit_parser.add_argument(
         "--fit-wavelength-polynomial",
@@ -658,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             o2_continuum=args.o2_continuum,
             o2_continuum_xo2cn=args.o2_continuum_xo2cn,
             line_margin_micron=args.line_margin_micron,
+            min_transmission=args.min_transmission,
             fit_wavelength_shift=args.fit_wavelength_shift,
             fit_wavelength_polynomial=args.fit_wavelength_polynomial,
             wavelength_polynomial_order=args.wavelength_polynomial_order,

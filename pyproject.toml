@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymolfit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Generic pure-Python telluric fitting and correction with source-audited radiative-transfer physics."
 readme = "README.md"
 license = { text = "Scientific/research use; see THIRD_PARTY_NOTICES.md for bundled AER data terms" }
@@ -64,6 +64,7 @@ license-files = ["THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.package-data]
 pymolfit = [
+    "py.typed",
     "data/*.npz",
     "data/profiles/gdas/*.fits",
     "data/profiles/mipas/*.fits",
