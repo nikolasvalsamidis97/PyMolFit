@@ -222,7 +222,12 @@ def plot_comparison(path: Path, old_result, new_result) -> None:
 def main() -> None:
     inputs = sorted(SOURCE_ROOT.glob("ADP_*/harps_nad_crop_air.fits"))
     if not inputs:
-        inputs = [PROJECT_ROOT / "tutorials" / "data" / "harps_nad_crop_air.fits"]
+        inputs = [
+            PROJECT_ROOT
+            / "local_tests"
+            / "reference_spectra"
+            / "harps_nad_crop_air.fits"
+        ]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []

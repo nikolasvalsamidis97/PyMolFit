@@ -4,11 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 import numpy as np
 from astropy.table import Table
-from scipy.optimize import least_squares
+from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import lil_matrix
 
 from .atmosphere import AtmosphereProfile
@@ -53,10 +53,15 @@ class FitConfig:
     continuum_prior_fractional_sigma: float = 0.05
     solve_continuum_linear: bool = False
     lsf_sigma_pixels: float = 0.0
+    initialize_lsf_sigma_grid: bool = False
+    lsf_sigma_grid_size: int = 7
     lsf_box_width_pixels: float = 0.0
     lsf_lorentz_fwhm_pixels: float = 0.0
     lsf_variable_width: bool = False
     lsf_reference_wavelength_micron: float | None = None
+    lsf_wavelength_exponent: float = 1.0
+    fit_lsf_wavelength_exponent: bool = False
+    lsf_wavelength_exponent_bounds: tuple[float, float] = (-2.0, 2.0)
     lsf_kernel_width_fwhm: float = 3.0
     lsf_molecfit_voigt: bool = False
     high_resolution_grid: bool = False
@@ -98,6 +103,7 @@ class FitConfig:
     segment_wavelength_polynomial_order: int = 1
     initial_wavelength_shift: float = 0.0
     wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4)
+    wavelength_shift_unit: Literal["micron", "pixel"] = "micron"
     fit_lsf_sigma: bool = False
     lsf_sigma_bounds: tuple[float, float] = (0.0, 5.0)
     fit_lsf_box_width: bool = False
@@ -130,6 +136,7 @@ class TelluricFitResult:
     lsf_sigma_pixels: float
     lsf_box_width_pixels: float
     lsf_lorentz_fwhm_pixels: float
+    lsf_wavelength_exponent: float
     continuum_coefficients: np.ndarray
     metrics: dict[str, float]
     success: bool
@@ -176,9 +183,15 @@ class TelluricFitResult:
                 "species_scales": json.dumps(self.species_scales, sort_keys=True),
                 "wavelength_shift_micron": float(self.wavelength_shift),
                 "wavelength_coefficients": json.dumps(self.wavelength_coefficients.tolist()),
+                "wavelength_coefficient_unit": str(
+                    self.provenance.get("fit_config", {})
+                    .get("fields", {})
+                    .get("wavelength_shift_unit", "micron")
+                ),
                 "lsf_sigma_pixels": float(self.lsf_sigma_pixels),
                 "lsf_box_width_pixels": float(self.lsf_box_width_pixels),
                 "lsf_lorentz_fwhm_pixels": float(self.lsf_lorentz_fwhm_pixels),
+                "lsf_wavelength_exponent": float(self.lsf_wavelength_exponent),
                 "continuum_coefficients": json.dumps(self.continuum_coefficients.tolist()),
                 "parameter_names": json.dumps(self.parameter_names),
                 "parameter_standard_errors": json.dumps(
@@ -213,6 +226,7 @@ class MultiTelluricFitResult:
     lsf_sigma_pixels: float
     lsf_box_width_pixels: float
     lsf_lorentz_fwhm_pixels: float
+    lsf_wavelength_exponent: float
     success: bool
     message: str
     cost: float
@@ -267,6 +281,74 @@ def _poly_design_over_bounds(
     return x, np.vstack([x**degree for degree in range(order + 1)]).T
 
 
+def _local_pixel_dispersion(
+    observed_wavelength: np.ndarray,
+    target_wavelength: np.ndarray,
+) -> np.ndarray:
+    """Return local wavelength-per-observed-pixel at target wavelengths."""
+
+    observed = np.asarray(observed_wavelength, dtype=float)
+    target = np.asarray(target_wavelength, dtype=float)
+    if observed.ndim != 1 or target.ndim != 1:
+        raise ValueError("wavelength arrays must be one-dimensional")
+    finite = np.isfinite(observed)
+    observed = np.sort(observed[finite])
+    if observed.size < 2:
+        raise ValueError("pixel wavelength shifts require at least two wavelengths")
+    observed = np.unique(observed)
+    if observed.size < 2:
+        raise ValueError("pixel wavelength shifts require distinct wavelengths")
+
+    steps = np.diff(observed)
+    positive_steps = steps[np.isfinite(steps) & (steps > 0)]
+    if positive_steps.size == 0:
+        raise ValueError("pixel wavelength shifts require increasing wavelengths")
+    representative_step = float(np.nanmedian(positive_steps))
+    gap_indices = np.flatnonzero(steps > 10.0 * representative_step) + 1
+    boundaries = np.concatenate(([0], gap_indices, [observed.size]))
+    dispersion = np.empty_like(observed)
+    for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
+        block = observed[start:stop]
+        if block.size == 1:
+            dispersion[start] = representative_step
+        else:
+            dispersion[start:stop] = np.gradient(block)
+    valid_dispersion = np.isfinite(dispersion) & (dispersion > 0)
+    fallback = (
+        float(np.nanmedian(dispersion[valid_dispersion]))
+        if np.any(valid_dispersion)
+        else representative_step
+    )
+    dispersion = np.where(valid_dispersion, dispersion, fallback)
+    return np.interp(
+        target,
+        observed,
+        dispersion,
+        left=float(dispersion[0]),
+        right=float(dispersion[-1]),
+    )
+
+
+def _wavelength_shift_design(
+    target_wavelength: np.ndarray,
+    order: int,
+    bounds: tuple[float, float],
+    *,
+    observed_wavelength: np.ndarray,
+    unit: str,
+) -> np.ndarray:
+    """Map wavelength-correction coefficients to additive micron shifts."""
+
+    _, design = _poly_design_over_bounds(target_wavelength, order, bounds)
+    normalized_unit = str(unit).strip().lower()
+    if normalized_unit == "micron":
+        return design
+    if normalized_unit != "pixel":
+        raise ValueError("wavelength_shift_unit must be 'micron' or 'pixel'")
+    dispersion = _local_pixel_dispersion(observed_wavelength, target_wavelength)
+    return design * dispersion[:, None]
+
+
 def _windows_mask(
     wavelength: np.ndarray,
     include: tuple[tuple[float, float], ...] | None,
@@ -309,6 +391,8 @@ def _segment_wavelength_polynomial_order(config: FitConfig) -> int | None:
 
 
 def _global_wavelength_polynomial_order(config: FitConfig) -> int | None:
+    if config.wavelength_shift_unit not in {"micron", "pixel"}:
+        raise ValueError("wavelength_shift_unit must be 'micron' or 'pixel'")
     if config.fit_wavelength_polynomial:
         if config.fit_wavelength_shift:
             raise ValueError(
@@ -346,6 +430,33 @@ def _validate_lsf_fit_config(config: FitConfig) -> None:
     ):
         if value < 0:
             raise ValueError(f"{name} must be non-negative")
+    if config.initialize_lsf_sigma_grid:
+        if not config.fit_lsf_sigma:
+            raise ValueError(
+                "initialize_lsf_sigma_grid requires fit_lsf_sigma=True"
+            )
+        if config.lsf_sigma_grid_size < 3:
+            raise ValueError("lsf_sigma_grid_size must be at least three")
+    if (
+        config.lsf_reference_wavelength_micron is not None
+        and (
+            not np.isfinite(config.lsf_reference_wavelength_micron)
+            or config.lsf_reference_wavelength_micron <= 0
+        )
+    ):
+        raise ValueError("lsf_reference_wavelength_micron must be positive")
+    if not np.isfinite(config.lsf_wavelength_exponent):
+        raise ValueError("lsf_wavelength_exponent must be finite")
+    if config.fit_lsf_wavelength_exponent:
+        if not config.lsf_variable_width:
+            raise ValueError(
+                "fit_lsf_wavelength_exponent requires lsf_variable_width=True"
+            )
+        lower, upper = config.lsf_wavelength_exponent_bounds
+        if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+            raise ValueError(
+                "lsf_wavelength_exponent_bounds must be finite and increasing"
+            )
 
 
 def _validate_optimizer_tolerances(config: FitConfig) -> None:
@@ -360,6 +471,36 @@ def _initial_lsf_width(value: float, bounds: tuple[float, float]) -> float:
         return float(value)
     midpoint = 0.5 * (lower + upper)
     return float(np.clip(midpoint, lower + np.finfo(float).eps, upper - np.finfo(float).eps))
+
+
+def _coarse_lsf_sigma_initialization(
+    residual: Callable[[np.ndarray], np.ndarray],
+    parameters: np.ndarray,
+    *,
+    parameter_index: int,
+    bounds: tuple[float, float],
+    grid_size: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    lower, upper = bounds
+    candidates = np.linspace(lower, upper, int(grid_size) + 2)[1:-1]
+    candidates = np.unique(
+        np.concatenate((candidates, [float(parameters[parameter_index])]))
+    )
+    costs = np.full(candidates.shape, np.inf, dtype=float)
+    for index, candidate in enumerate(candidates):
+        trial = parameters.copy()
+        trial[parameter_index] = candidate
+        values = np.asarray(residual(trial), dtype=float)
+        if np.all(np.isfinite(values)):
+            costs[index] = 0.5 * float(np.dot(values, values))
+    best_index = int(np.argmin(costs))
+    selected = parameters.copy()
+    selected[parameter_index] = candidates[best_index]
+    return selected, {
+        "candidate_count": int(candidates.size),
+        "selected_initial_sigma_pixels": float(candidates[best_index]),
+        "selected_initial_cost": float(costs[best_index]),
+    }
 
 
 def _components_for_selected_lines(
@@ -519,6 +660,24 @@ def _fit_metrics(flux: np.ndarray, model_flux: np.ndarray, continuum: np.ndarray
         "median_abs_residual": float(np.nanmedian(np.abs(residual))),
         "corrected_scatter": float(np.nanstd(normalized)),
     }
+
+
+def _evaluate_without_nonlinear_parameters(
+    residual: Callable[[np.ndarray], np.ndarray],
+    parameters: np.ndarray,
+) -> OptimizeResult:
+    """Return an exact least-squares result when no nonlinear variables remain."""
+
+    values = np.asarray(residual(parameters), dtype=float)
+    return OptimizeResult(
+        x=np.asarray(parameters, dtype=float),
+        fun=values,
+        jac=np.empty((values.size, 0), dtype=float),
+        cost=0.5 * float(np.dot(values, values)),
+        success=True,
+        message="No nonlinear parameters remained after the exact continuum solve.",
+        nfev=1,
+    )
 
 
 def _parameter_bound_status(
@@ -745,7 +904,16 @@ def _high_resolution_model_grid(
         reference = config.lsf_reference_wavelength_micron
         if reference is None:
             reference = float(np.nanmedian(finite_wavelength))
-        width_scale = float(np.nanmax(finite_wavelength) / reference)
+        wavelength_ratios = finite_wavelength / reference
+        exponents = (
+            config.lsf_wavelength_exponent_bounds
+            if config.fit_lsf_wavelength_exponent
+            else (config.lsf_wavelength_exponent,)
+        )
+        width_scale = max(
+            float(np.nanmax(wavelength_ratios**exponent))
+            for exponent in exponents
+        )
         gaussian_sigma *= width_scale
         box_width *= width_scale
         lorentz_fwhm *= width_scale
@@ -760,8 +928,18 @@ def _high_resolution_model_grid(
     observed = observed[np.isfinite(observed)]
     wavelength_step = float(np.nanmedian(np.diff(observed)))
     shift_margin = 0.0
-    if config.fit_wavelength_shift or config.fit_wavelength_polynomial:
-        shift_margin = max(abs(value) for value in config.wavelength_shift_bounds) / wavelength_step
+    if (
+        config.fit_wavelength_shift
+        or config.fit_wavelength_polynomial
+        or config.fit_segment_wavelength_shifts
+        or config.fit_segment_wavelength_polynomial
+    ):
+        maximum_shift = max(abs(value) for value in config.wavelength_shift_bounds)
+        shift_margin = (
+            maximum_shift
+            if config.wavelength_shift_unit == "pixel"
+            else maximum_shift / wavelength_step
+        )
     effective_margin = max(
         float(config.high_resolution_margin_pixels),
         kernel_margin + shift_margin + 1.0,
@@ -802,6 +980,7 @@ def _transmission_from_prepared_basis(
     lsf_sigma_pixels: float,
     lsf_box_width_pixels: float,
     lsf_lorentz_fwhm_pixels: float,
+    lsf_wavelength_exponent: float,
     basis_wavelength: np.ndarray,
     model_wavelength: np.ndarray,
     highres_pixels_per_observed_pixel: float,
@@ -822,6 +1001,7 @@ def _transmission_from_prepared_basis(
             highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
             lsf_variable_width=config.lsf_variable_width,
             lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+            lsf_wavelength_exponent=lsf_wavelength_exponent,
             lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
             lsf_molecfit_voigt=config.lsf_molecfit_voigt,
             rebin_mode=config.high_resolution_rebin_mode,
@@ -840,6 +1020,7 @@ def _transmission_from_prepared_basis(
         wavelength_micron=observed_wavelength,
         lsf_variable_width=config.lsf_variable_width,
         lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
         lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
         lsf_molecfit_voigt=config.lsf_molecfit_voigt,
     )
@@ -924,16 +1105,20 @@ def fit_tellurics(
     )
     wavelength_design_all = wavelength_design_fit = wavelength_design_basis = None
     if global_wavelength_order is not None:
-        _, wavelength_design_all = _poly_design_over_bounds(
+        wavelength_design_all = _wavelength_shift_design(
             spectrum.wavelength,
             global_wavelength_order,
             wavelength_bounds,
+            observed_wavelength=spectrum.wavelength,
+            unit=config.wavelength_shift_unit,
         )
         wavelength_design_fit = wavelength_design_all[valid]
-        _, wavelength_design_basis = _poly_design_over_bounds(
+        wavelength_design_basis = _wavelength_shift_design(
             basis_wavelength,
             global_wavelength_order,
             wavelength_bounds,
+            observed_wavelength=spectrum.wavelength,
+            unit=config.wavelength_shift_unit,
         )
 
     if config.atmosphere is not None:
@@ -1011,7 +1196,9 @@ def fit_tellurics(
         upper_parts.append(
             np.full(global_wavelength_order + 1, config.wavelength_shift_bounds[1])
         )
+    lsf_sigma_parameter_index = None
     if config.fit_lsf_sigma:
+        lsf_sigma_parameter_index = sum(part.size for part in p0_parts)
         p0_parts.append(np.array([_initial_lsf_width(config.lsf_sigma_pixels, config.lsf_sigma_bounds)], dtype=float))
         lower_parts.append(np.array([config.lsf_sigma_bounds[0]], dtype=float))
         upper_parts.append(np.array([config.lsf_sigma_bounds[1]], dtype=float))
@@ -1035,6 +1222,18 @@ def fit_tellurics(
         )
         lower_parts.append(np.array([config.lsf_lorentz_fwhm_bounds[0]], dtype=float))
         upper_parts.append(np.array([config.lsf_lorentz_fwhm_bounds[1]], dtype=float))
+    if config.fit_lsf_wavelength_exponent:
+        exponent_lower, exponent_upper = config.lsf_wavelength_exponent_bounds
+        initial_exponent = float(
+            np.clip(
+                config.lsf_wavelength_exponent,
+                np.nextafter(exponent_lower, exponent_upper),
+                np.nextafter(exponent_upper, exponent_lower),
+            )
+        )
+        p0_parts.append(np.array([initial_exponent], dtype=float))
+        lower_parts.append(np.array([exponent_lower], dtype=float))
+        upper_parts.append(np.array([exponent_upper], dtype=float))
 
     p0 = np.concatenate(p0_parts)
     lower = np.concatenate(lower_parts)
@@ -1079,6 +1278,12 @@ def fit_tellurics(
         lsf_lorentz_fwhm_pixels = (
             float(params[cursor]) if config.fit_lsf_lorentz_fwhm else config.lsf_lorentz_fwhm_pixels
         )
+        cursor += int(config.fit_lsf_lorentz_fwhm)
+        lsf_wavelength_exponent = (
+            float(params[cursor])
+            if config.fit_lsf_wavelength_exponent
+            else config.lsf_wavelength_exponent
+        )
         scales = _scales_from_params(fitted_species_names, fixed_species_scales, log_scales)
         if config.high_resolution_grid:
             transmission = _transmission_from_prepared_basis(
@@ -1092,6 +1297,7 @@ def fit_tellurics(
                 lsf_sigma_pixels=lsf_sigma_pixels,
                 lsf_box_width_pixels=lsf_box_width_pixels,
                 lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+                lsf_wavelength_exponent=lsf_wavelength_exponent,
                 basis_wavelength=basis_wavelength,
                 model_wavelength=model_wavelength,
                 highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
@@ -1110,6 +1316,7 @@ def fit_tellurics(
                 wavelength_micron=wavelength_fit,
                 lsf_variable_width=config.lsf_variable_width,
                 lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+                lsf_wavelength_exponent=lsf_wavelength_exponent,
                 lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
                 lsf_molecfit_voigt=config.lsf_molecfit_voigt,
             )
@@ -1123,18 +1330,33 @@ def fit_tellurics(
         continuum = design_fit @ continuum_coeff
         return (flux_fit - continuum * transmission) / sigma
 
-    fit = least_squares(
-        residual,
-        p0,
-        bounds=(lower, upper),
-        method="trf",
-        loss=config.loss,
-        f_scale=config.f_scale,
-        ftol=config.ftol,
-        xtol=config.xtol,
-        gtol=config.gtol,
-        max_nfev=config.max_nfev,
-    )
+    lsf_sigma_coarse_search = None
+    if config.initialize_lsf_sigma_grid:
+        if lsf_sigma_parameter_index is None:
+            raise RuntimeError("automatic LSF sigma parameter bookkeeping failed")
+        p0, lsf_sigma_coarse_search = _coarse_lsf_sigma_initialization(
+            residual,
+            p0,
+            parameter_index=lsf_sigma_parameter_index,
+            bounds=config.lsf_sigma_bounds,
+            grid_size=config.lsf_sigma_grid_size,
+        )
+
+    if p0.size == 0:
+        fit = _evaluate_without_nonlinear_parameters(residual, p0)
+    else:
+        fit = least_squares(
+            residual,
+            p0,
+            bounds=(lower, upper),
+            method="trf",
+            loss=config.loss,
+            f_scale=config.f_scale,
+            ftol=config.ftol,
+            xtol=config.xtol,
+            gtol=config.gtol,
+            max_nfev=config.max_nfev,
+        )
 
     log_scales = fit.x[: len(fitted_species_names)]
     continuum_start = len(fitted_species_names)
@@ -1162,6 +1384,12 @@ def fit_tellurics(
     lsf_lorentz_fwhm_pixels = (
         float(fit.x[cursor]) if config.fit_lsf_lorentz_fwhm else config.lsf_lorentz_fwhm_pixels
     )
+    cursor += int(config.fit_lsf_lorentz_fwhm)
+    lsf_wavelength_exponent = (
+        float(fit.x[cursor])
+        if config.fit_lsf_wavelength_exponent
+        else config.lsf_wavelength_exponent
+    )
     species_scales = _scales_from_params(fitted_species_names, fixed_species_scales, log_scales)
     transmission = _transmission_from_prepared_basis(
         spectrum.wavelength,
@@ -1174,6 +1402,7 @@ def fit_tellurics(
         lsf_sigma_pixels=lsf_sigma_pixels,
         lsf_box_width_pixels=lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
         basis_wavelength=basis_wavelength,
         model_wavelength=model_wavelength,
         highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
@@ -1199,10 +1428,18 @@ def fit_tellurics(
         parameter_cursor += config.continuum_order + 1
     if global_wavelength_order is not None:
         if config.fit_wavelength_shift:
-            parameter_names.append("wavelength_shift_micron")
+            parameter_names.append(
+                "wavelength_shift_pixels"
+                if config.wavelength_shift_unit == "pixel"
+                else "wavelength_shift_micron"
+            )
         else:
             parameter_names.extend(
-                f"wavelength_coefficient:{degree}"
+                (
+                    f"wavelength_pixel_coefficient:{degree}"
+                    if config.wavelength_shift_unit == "pixel"
+                    else f"wavelength_coefficient:{degree}"
+                )
                 for degree in range(global_wavelength_order + 1)
             )
         active_transmission_indices.extend(
@@ -1220,6 +1457,13 @@ def fit_tellurics(
     if config.fit_lsf_lorentz_fwhm:
         parameter_names.append("lsf_lorentz_fwhm_pixels")
         active_transmission_indices.append(parameter_cursor)
+        parameter_cursor += 1
+    if config.fit_lsf_wavelength_exponent:
+        parameter_names.append("lsf_wavelength_exponent")
+        active_transmission_indices.append(parameter_cursor)
+        parameter_cursor += 1
+    if parameter_cursor != fit.x.size:
+        raise RuntimeError("fit parameter bookkeeping is inconsistent")
 
     bound_status = _parameter_bound_status(parameter_names, fit.x, lower, upper)
 
@@ -1276,6 +1520,12 @@ def fit_tellurics(
                 if config.fit_lsf_lorentz_fwhm
                 else config.lsf_lorentz_fwhm_pixels
             )
+            local_cursor += int(config.fit_lsf_lorentz_fwhm)
+            local_exponent = (
+                float(parameters[local_cursor])
+                if config.fit_lsf_wavelength_exponent
+                else config.lsf_wavelength_exponent
+            )
             local_scales = _scales_from_params(
                 fitted_species_names,
                 fixed_species_scales,
@@ -1292,6 +1542,7 @@ def fit_tellurics(
                 lsf_sigma_pixels=local_sigma,
                 lsf_box_width_pixels=local_box,
                 lsf_lorentz_fwhm_pixels=local_lorentz,
+                lsf_wavelength_exponent=local_exponent,
                 basis_wavelength=basis_wavelength,
                 model_wavelength=model_wavelength,
                 highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
@@ -1322,6 +1573,11 @@ def fit_tellurics(
         config=config,
         fit_pixel_counts=(int(np.count_nonzero(valid)),),
     )
+    if lsf_sigma_coarse_search is not None:
+        provenance = {
+            **provenance,
+            "lsf_sigma_coarse_search": lsf_sigma_coarse_search,
+        }
 
     return TelluricFitResult(
         spectrum=spectrum,
@@ -1335,6 +1591,7 @@ def fit_tellurics(
         lsf_sigma_pixels=lsf_sigma_pixels,
         lsf_box_width_pixels=lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
         continuum_coefficients=continuum_coeff,
         metrics=metrics,
         success=bool(fit.success),
@@ -1388,6 +1645,7 @@ def _multi_fit_jacobian_sparsity(
     fit_lsf_sigma: bool,
     fit_lsf_box_width: bool,
     fit_lsf_lorentz_fwhm: bool,
+    fit_lsf_wavelength_exponent: bool,
     continuum_prior_weight: float,
 ) -> object | None:
     """Return the exact residual/parameter dependency pattern for segments."""
@@ -1428,7 +1686,12 @@ def _multi_fit_jacobian_sparsity(
             local_wavelength_columns.append(slice(column_cursor, column_cursor + block))
             column_cursor += block
 
-    for enabled in (fit_lsf_sigma, fit_lsf_box_width, fit_lsf_lorentz_fwhm):
+    for enabled in (
+        fit_lsf_sigma,
+        fit_lsf_box_width,
+        fit_lsf_lorentz_fwhm,
+        fit_lsf_wavelength_exponent,
+    ):
         if enabled:
             global_columns.append(column_cursor)
             column_cursor += 1
@@ -1476,7 +1739,12 @@ def _bounded_forward_steps(x: np.ndarray, lower: np.ndarray, upper: np.ndarray) 
     """Return stable two-point finite-difference steps inside parameter bounds."""
 
     x = np.asarray(x, dtype=float)
-    relative_step = np.sqrt(np.finfo(float).eps)
+    # The residual includes interpolation of shifted transmission profiles.
+    # A sqrt(eps) step can be numerically invisible for pixel-valued wavelength
+    # coefficients, especially in grouped multi-segment Jacobians. The
+    # cube-root scale is the standard balance when interpolation/truncation
+    # error is present and remains small relative to all fitted bounds.
+    relative_step = np.cbrt(np.finfo(float).eps)
     direction = np.where(x >= 0, 1.0, -1.0)
     step = relative_step * direction * np.maximum(1.0, np.abs(x))
     for index in range(x.size):
@@ -1688,24 +1956,38 @@ def _prepare_multi_fit_segment(
     if global_wavelength_order is not None:
         if global_wavelength_bounds is None:
             raise RuntimeError("global wavelength bounds were not prepared")
-        _, wavelength_shift_design_all = _poly_design_over_bounds(
+        wavelength_shift_design_all = _wavelength_shift_design(
             segment.wavelength,
             wavelength_shift_order,
             global_wavelength_bounds,
+            observed_wavelength=segment.wavelength,
+            unit=config.wavelength_shift_unit,
         )
-        _, wavelength_shift_design_basis = _poly_design_over_bounds(
+        wavelength_shift_design_basis = _wavelength_shift_design(
             basis_wavelength,
             wavelength_shift_order,
             global_wavelength_bounds,
+            observed_wavelength=segment.wavelength,
+            unit=config.wavelength_shift_unit,
         )
     else:
-        _, wavelength_shift_design_all = _poly_design(
+        local_bounds = (
+            float(np.nanmin(segment.wavelength)),
+            float(np.nanmax(segment.wavelength)),
+        )
+        wavelength_shift_design_all = _wavelength_shift_design(
             segment.wavelength,
             wavelength_shift_order,
+            local_bounds,
+            observed_wavelength=segment.wavelength,
+            unit=config.wavelength_shift_unit,
         )
-        _, wavelength_shift_design_basis = _poly_design(
+        wavelength_shift_design_basis = _wavelength_shift_design(
             basis_wavelength,
             wavelength_shift_order,
+            local_bounds,
+            observed_wavelength=segment.wavelength,
+            unit=config.wavelength_shift_unit,
         )
     wavelength_shift_design_fit = wavelength_shift_design_all[valid]
 
@@ -1939,7 +2221,9 @@ def fit_telluric_segments(
         upper_parts.append(
             np.full(len(prepared) * (segment_wavelength_order + 1), config.wavelength_shift_bounds[1])
         )
+    lsf_sigma_parameter_index = None
     if config.fit_lsf_sigma:
+        lsf_sigma_parameter_index = sum(part.size for part in p0_parts)
         p0_parts.append(np.array([_initial_lsf_width(config.lsf_sigma_pixels, config.lsf_sigma_bounds)], dtype=float))
         lower_parts.append(np.array([config.lsf_sigma_bounds[0]], dtype=float))
         upper_parts.append(np.array([config.lsf_sigma_bounds[1]], dtype=float))
@@ -1963,6 +2247,18 @@ def fit_telluric_segments(
         )
         lower_parts.append(np.array([config.lsf_lorentz_fwhm_bounds[0]], dtype=float))
         upper_parts.append(np.array([config.lsf_lorentz_fwhm_bounds[1]], dtype=float))
+    if config.fit_lsf_wavelength_exponent:
+        exponent_lower, exponent_upper = config.lsf_wavelength_exponent_bounds
+        initial_exponent = float(
+            np.clip(
+                config.lsf_wavelength_exponent,
+                np.nextafter(exponent_lower, exponent_upper),
+                np.nextafter(exponent_upper, exponent_lower),
+            )
+        )
+        p0_parts.append(np.array([initial_exponent], dtype=float))
+        lower_parts.append(np.array([exponent_lower], dtype=float))
+        upper_parts.append(np.array([exponent_upper], dtype=float))
 
     p0 = np.concatenate(p0_parts)
     lower = np.concatenate(lower_parts)
@@ -1982,6 +2278,7 @@ def fit_telluric_segments(
             fit_lsf_sigma=config.fit_lsf_sigma,
             fit_lsf_box_width=config.fit_lsf_box_width,
             fit_lsf_lorentz_fwhm=config.fit_lsf_lorentz_fwhm,
+            fit_lsf_wavelength_exponent=config.fit_lsf_wavelength_exponent,
             continuum_prior_weight=config.continuum_prior_weight,
         )
 
@@ -2017,6 +2314,12 @@ def fit_telluric_segments(
         lsf_lorentz_fwhm_pixels = (
             float(params[cursor]) if config.fit_lsf_lorentz_fwhm else config.lsf_lorentz_fwhm_pixels
         )
+        cursor += int(config.fit_lsf_lorentz_fwhm)
+        lsf_wavelength_exponent = (
+            float(params[cursor])
+            if config.fit_lsf_wavelength_exponent
+            else config.lsf_wavelength_exponent
+        )
         species_scales = _scales_from_params(
             fitted_species_names,
             fixed_species_scales,
@@ -2030,6 +2333,7 @@ def fit_telluric_segments(
             lsf_sigma_pixels,
             lsf_box_width_pixels,
             lsf_lorentz_fwhm_pixels,
+            lsf_wavelength_exponent,
         )
 
     def residual(params: np.ndarray) -> np.ndarray:
@@ -2041,6 +2345,7 @@ def fit_telluric_segments(
             lsf_sigma_pixels,
             lsf_box_width_pixels,
             lsf_lorentz_fwhm_pixels,
+            lsf_wavelength_exponent,
         ) = unpack(params)
         residuals = []
         for index, segment in enumerate(prepared):
@@ -2078,6 +2383,7 @@ def fit_telluric_segments(
                     lsf_sigma_pixels=lsf_sigma_pixels,
                     lsf_box_width_pixels=lsf_box_width_pixels,
                     lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+                    lsf_wavelength_exponent=lsf_wavelength_exponent,
                     basis_wavelength=segment.basis_wavelength,
                     model_wavelength=segment.model_wavelength,
                     highres_pixels_per_observed_pixel=segment.highres_pixels_per_observed_pixel,
@@ -2096,6 +2402,7 @@ def fit_telluric_segments(
                     lsf_sigma_pixels=lsf_sigma_pixels,
                     lsf_box_width_pixels=lsf_box_width_pixels,
                     lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+                    lsf_wavelength_exponent=lsf_wavelength_exponent,
                     basis_wavelength=segment.spectrum.wavelength[segment.valid],
                     model_wavelength=segment.spectrum.wavelength[segment.valid],
                     highres_pixels_per_observed_pixel=1.0,
@@ -2129,25 +2436,39 @@ def fit_telluric_segments(
                 )
         return np.concatenate(residuals)
 
-    jacobian = (
-        _grouped_dense_jacobian(residual, jacobian_sparsity, lower, upper)
-        if jacobian_sparsity is not None
-        else "2-point"
-    )
+    lsf_sigma_coarse_search = None
+    if config.initialize_lsf_sigma_grid:
+        if lsf_sigma_parameter_index is None:
+            raise RuntimeError("automatic LSF sigma parameter bookkeeping failed")
+        p0, lsf_sigma_coarse_search = _coarse_lsf_sigma_initialization(
+            residual,
+            p0,
+            parameter_index=lsf_sigma_parameter_index,
+            bounds=config.lsf_sigma_bounds,
+            grid_size=config.lsf_sigma_grid_size,
+        )
 
-    fit = least_squares(
-        residual,
-        p0,
-        bounds=(lower, upper),
-        method="trf",
-        loss=config.loss,
-        f_scale=config.f_scale,
-        ftol=config.ftol,
-        xtol=config.xtol,
-        gtol=config.gtol,
-        max_nfev=config.max_nfev,
-        jac=jacobian,
-    )
+    if p0.size == 0:
+        fit = _evaluate_without_nonlinear_parameters(residual, p0)
+    else:
+        jacobian = (
+            _grouped_dense_jacobian(residual, jacobian_sparsity, lower, upper)
+            if jacobian_sparsity is not None
+            else "2-point"
+        )
+        fit = least_squares(
+            residual,
+            p0,
+            bounds=(lower, upper),
+            method="trf",
+            loss=config.loss,
+            f_scale=config.f_scale,
+            ftol=config.ftol,
+            xtol=config.xtol,
+            gtol=config.gtol,
+            max_nfev=config.max_nfev,
+            jac=jacobian,
+        )
 
     (
         species_scales,
@@ -2157,6 +2478,7 @@ def fit_telluric_segments(
         lsf_sigma_pixels,
         lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent,
     ) = unpack(fit.x)
 
     parameter_names = [f"log_scale:{name}" for name in fitted_species_names]
@@ -2172,10 +2494,18 @@ def fit_telluric_segments(
             parameter_cursor += continuum_block
     if global_wavelength_order is not None:
         if config.fit_wavelength_shift:
-            parameter_names.append("wavelength_shift_micron")
+            parameter_names.append(
+                "wavelength_shift_pixels"
+                if config.wavelength_shift_unit == "pixel"
+                else "wavelength_shift_micron"
+            )
         else:
             parameter_names.extend(
-                f"wavelength_coefficient:{degree}"
+                (
+                    f"wavelength_pixel_coefficient:{degree}"
+                    if config.wavelength_shift_unit == "pixel"
+                    else f"wavelength_coefficient:{degree}"
+                )
                 for degree in range(global_wavelength_order + 1)
             )
         global_wavelength_indices = list(
@@ -2193,7 +2523,11 @@ def fit_telluric_segments(
                 )
             )
             parameter_names.extend(
-                f"segment:{segment_index}:wavelength_coefficient:{degree}"
+                (
+                    f"segment:{segment_index}:wavelength_pixel_coefficient:{degree}"
+                    if config.wavelength_shift_unit == "pixel"
+                    else f"segment:{segment_index}:wavelength_coefficient:{degree}"
+                )
                 for degree in range(segment_wavelength_order + 1)
             )
             segment_transmission_indices[segment_index].extend(local_indices)
@@ -2202,6 +2536,7 @@ def fit_telluric_segments(
         (config.fit_lsf_sigma, "lsf_sigma_pixels"),
         (config.fit_lsf_box_width, "lsf_box_width_pixels"),
         (config.fit_lsf_lorentz_fwhm, "lsf_lorentz_fwhm_pixels"),
+        (config.fit_lsf_wavelength_exponent, "lsf_wavelength_exponent"),
     ):
         if enabled:
             parameter_names.append(name)
@@ -2228,6 +2563,11 @@ def fit_telluric_segments(
         config=config,
         fit_pixel_counts=tuple(int(np.count_nonzero(segment.valid)) for segment in prepared),
     )
+    if lsf_sigma_coarse_search is not None:
+        provenance = {
+            **provenance,
+            "lsf_sigma_coarse_search": lsf_sigma_coarse_search,
+        }
 
     parameter_covariance = None
     parameter_standard_errors: dict[str, float] = {}
@@ -2291,6 +2631,7 @@ def fit_telluric_segments(
             lsf_sigma_pixels=lsf_sigma_pixels,
             lsf_box_width_pixels=lsf_box_width_pixels,
             lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+            lsf_wavelength_exponent=lsf_wavelength_exponent,
             basis_wavelength=segment.basis_wavelength,
             model_wavelength=segment.model_wavelength,
             highres_pixels_per_observed_pixel=segment.highres_pixels_per_observed_pixel,
@@ -2323,6 +2664,7 @@ def fit_telluric_segments(
                     local_lsf_sigma,
                     local_lsf_box,
                     local_lsf_lorentz,
+                    local_lsf_exponent,
                 ) = unpack(parameters)
                 if local_segment_coefficients is not None:
                     local_coefficients = local_segment_coefficients[index]
@@ -2359,6 +2701,7 @@ def fit_telluric_segments(
                     lsf_sigma_pixels=local_lsf_sigma,
                     lsf_box_width_pixels=local_lsf_box,
                     lsf_lorentz_fwhm_pixels=local_lsf_lorentz,
+                    lsf_wavelength_exponent=local_lsf_exponent,
                     basis_wavelength=segment.basis_wavelength,
                     model_wavelength=segment.model_wavelength,
                     highres_pixels_per_observed_pixel=segment.highres_pixels_per_observed_pixel,
@@ -2394,6 +2737,7 @@ def fit_telluric_segments(
                 lsf_sigma_pixels=lsf_sigma_pixels,
                 lsf_box_width_pixels=lsf_box_width_pixels,
                 lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+                lsf_wavelength_exponent=lsf_wavelength_exponent,
                 continuum_coefficients=continuum_coeff,
                 metrics=metrics,
                 success=bool(fit.success),
@@ -2420,6 +2764,7 @@ def fit_telluric_segments(
         lsf_sigma_pixels=lsf_sigma_pixels,
         lsf_box_width_pixels=lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
         success=bool(fit.success),
         message=str(fit.message),
         cost=float(fit.cost),
@@ -2490,6 +2835,7 @@ def _apply_multi_fit_to_segment(
         lsf_sigma_pixels=fit_result.lsf_sigma_pixels,
         lsf_box_width_pixels=fit_result.lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels=fit_result.lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent=fit_result.lsf_wavelength_exponent,
         basis_wavelength=prepared.basis_wavelength,
         model_wavelength=prepared.model_wavelength,
         highres_pixels_per_observed_pixel=prepared.highres_pixels_per_observed_pixel,
@@ -2525,6 +2871,7 @@ def _apply_multi_fit_to_segment(
         lsf_sigma_pixels=float(fit_result.lsf_sigma_pixels),
         lsf_box_width_pixels=float(fit_result.lsf_box_width_pixels),
         lsf_lorentz_fwhm_pixels=float(fit_result.lsf_lorentz_fwhm_pixels),
+        lsf_wavelength_exponent=float(fit_result.lsf_wavelength_exponent),
         continuum_coefficients=continuum_coefficients,
         metrics=_fit_metrics(prepared.spectrum.flux, model_flux, continuum),
         success=bool(fit_result.success),

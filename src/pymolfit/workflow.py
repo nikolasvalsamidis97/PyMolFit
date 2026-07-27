@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, Mapping
+import warnings
 
 import numpy as np
 import astropy.units as u
 from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.io import fits
 from astropy.time import Time
+from scipy.ndimage import percentile_filter
+from scipy.signal import find_peaks, peak_widths
 
 from .aer_data import AERCatalogArtifact, load_aer_line_window
 from .atmosphere import (
@@ -31,6 +35,7 @@ from .components import (
     line_wing_effective_cutoff_cm,
 )
 from .continuum import HitranCIATable, LBLRTMCO2Continuum, LBLRTMH2OContinuum, MTCKDH2OContinuum, TabulatedContinuum
+from .diagnostics import print_fit_summary
 from .fit import (
     FitConfig,
     MultiTelluricFitResult,
@@ -41,8 +46,14 @@ from .fit import (
     fit_telluric_segments,
     fit_tellurics,
 )
-from .io import infer_spectrum_format, load_spectrum, save_spectrum
+from .io import (
+    infer_spectrum_format,
+    load_spectrum,
+    save_corrected_txt,
+    save_fit_product_ecsv,
+)
 from .linelist import LineList
+from .observation import Observation
 from .partition import PartitionTable
 from .physics import (
     LBLRTM_DEFAULT_ALFAL0,
@@ -58,9 +69,37 @@ from .spectrum import Spectrum
 
 
 DEFAULT_SEGMENT_SIZE_MICRON = 0.01
+AUTO_LINEAR_CONTINUUM_MAX_NFEV = 100
+DEFAULT_LSF_SIGMA_BOUNDS = (0.0, 5.0)
+AUTO_LSF_SIGMA_FALLBACK_PIXELS = 2.0
+AUTO_LSF_SIGMA_FEATURE_MAX_PIXELS = 6.0
+AUTO_LSF_SIGMA_MAX_PIXELS = 50.0
+AUTO_LSF_LORENTZ_PILOT_WIDTH_MICRON = 0.0005
+AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS = 3
+AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS = 2
+AUTO_LSF_LORENTZ_MIN_PILOT_PIXELS = 30
+AUTO_LSF_LORENTZ_MIN_BIC_IMPROVEMENT = 10.0
+AUTO_LSF_LORENTZ_MIN_REGION_FRACTION = 0.6
+AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT = 1.0e-3
+AUTO_LSF_LORENTZ_MAX_PIXELS = 50.0
+AUTO_LSF_VARIABLE_EXPONENT_BOUNDS = (-2.0, 2.0)
+AUTO_LSF_VARIABLE_MIN_BIC_IMPROVEMENT = 6.0
+AUTO_LSF_VARIABLE_MIN_REGION_FRACTION = 0.6
+AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN = 0.02
+AUTO_WAVELENGTH_PILOT_WIDTH_MICRON = 0.002
+AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS = (-3.0, 3.0)
+AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT = 6.0
+AUTO_WAVELENGTH_MIN_REGION_FRACTION = 0.5
 
 InputSpectrumFormat = Literal["txt", "dat", "csv", "ascii", "ecsv", "fits", "fit", "fz"]
 WavelengthMedium = Literal["vacuum", "vac", "air"]
+OptionalWavelengthMedium = Literal["vacuum", "vac", "air", None]
+ContinuumSolveMode = bool | Literal["auto"]
+LSFSigmaInput = float | Literal["auto"]
+LSFLorentzInput = float | Literal["auto"]
+LSFFitMode = bool | Literal["auto"]
+LSFVariableWidthMode = bool | Literal["auto"]
+WavelengthFitMode = bool | Literal["auto"]
 AtmosphereMode = Literal["mipas_gdas", "mipas", "gdas", "single", "standard"]
 MIPASProfileName = Literal["equ", "std", "tro", "auto"]
 GDASMode = Literal["auto", "online", "cache", "average"]
@@ -90,8 +129,10 @@ def correct_arrays(
     flux: np.ndarray,
     *,
     uncertainty: np.ndarray | None = None,
+    mask: np.ndarray | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: WavelengthMedium = "vacuum",
+    observation: Observation | None = None,
     line_list: LineList | None = None,
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
@@ -134,11 +175,11 @@ def correct_arrays(
     relative_humidity_percent: float | None = None,
     mixing_ratios: Mapping[str, float] | None = None,
     continuum_order: int = 1,
-    solve_continuum_linear: bool = False,
-    lsf_sigma_pixels: float = 0.0,
+    solve_continuum_linear: ContinuumSolveMode = "auto",
+    lsf_sigma_pixels: LSFSigmaInput = "auto",
     lsf_box_width_pixels: float = 0.0,
-    lsf_lorentz_fwhm_pixels: float = 0.0,
-    lsf_variable_width: bool = False,
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput = "auto",
+    lsf_variable_width: LSFVariableWidthMode = "auto",
     lsf_reference_wavelength_micron: float | None = None,
     lsf_kernel_width_fwhm: float = 3.0,
     lsf_molecfit_voigt: bool = False,
@@ -167,20 +208,20 @@ def correct_arrays(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.03,
-    fit_wavelength_shift: bool = False,
+    fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
     fit_segment_wavelength_shifts: bool = False,
     fit_segment_wavelength_polynomial: bool = False,
     segment_wavelength_polynomial_order: int = 1,
     initial_wavelength_shift: float | None = None,
-    wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4),
-    fit_lsf_sigma: bool = False,
-    lsf_sigma_bounds: tuple[float, float] = (0.0, 5.0),
+    wavelength_shift_bounds: tuple[float, float] | None = None,
+    fit_lsf_sigma: LSFFitMode = "auto",
+    lsf_sigma_bounds: tuple[float, float] | None = None,
     fit_lsf_box_width: bool = False,
     lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0),
-    fit_lsf_lorentz_fwhm: bool = False,
-    lsf_lorentz_fwhm_bounds: tuple[float, float] = (0.0, 10.0),
+    fit_lsf_lorentz_fwhm: LSFFitMode = "auto",
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None,
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     loss: LeastSquaresLoss = "linear",
@@ -190,19 +231,32 @@ def correct_arrays(
     gtol: float = 1.0e-10,
     estimate_uncertainties: bool = False,
 ) -> TelluricFitResult:
-    """High-level telluric correction for arrays.
+    """High-level telluric correction for wavelength and flux arrays.
 
-    This is the notebook-friendly workflow: pass wavelength/flux arrays and,
-    optionally, a HITRAN `.par` or PyMolFit line list. The lower-level
-    `fit_tellurics` function remains available for full manual control.
+    ``observation`` supplies metadata that arrays lack, including observation
+    time/site for GDAS, resolving power for the automatic LSF, local weather,
+    and the wavelength velocity frame. Calls without an observation retain
+    the legacy behavior and treat the arrays as already being in the
+    observatory frame.
     """
 
+    atmosphere_header = (
+        None
+        if observation is None
+        else observation.to_header()
+    )
     spectrum = Spectrum(
         wavelength=wavelength,
         flux=flux,
         uncertainty=uncertainty,
+        mask=mask,
         wavelength_unit=wavelength_unit,
         wavelength_medium=wavelength_medium,
+        meta=(
+            {}
+            if observation is None
+            else {"observation": observation.to_header()}
+        ),
     )
     return _correct_spectrum_workflow(
         spectrum,
@@ -231,7 +285,7 @@ def correct_arrays(
         atmosphere=atmosphere,
         atmosphere_table=atmosphere_table,
         atmosphere_mode=atmosphere_mode,
-        atmosphere_header=None,
+        atmosphere_header=atmosphere_header,
         mipas_profile=mipas_profile,
         gdas_profile=gdas_profile,
         gdas_mode=gdas_mode,
@@ -245,7 +299,11 @@ def correct_arrays(
         pressure_atm=pressure_atm,
         temperature_k=temperature_k,
         path_length_m=path_length_m,
-        pwv_mm=pwv_mm,
+        pwv_mm=(
+            observation.pwv_mm
+            if pwv_mm is None and observation is not None
+            else pwv_mm
+        ),
         relative_humidity_percent=relative_humidity_percent,
         mixing_ratios=mixing_ratios,
         continuum_order=continuum_order,
@@ -316,7 +374,8 @@ def correct_file(
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
     wavelength_unit: str = "micron",
-    wavelength_medium: WavelengthMedium = "vacuum",
+    wavelength_medium: OptionalWavelengthMedium = None,
+    observation: Observation | None = None,
     line_list: LineList | None = None,
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
@@ -359,11 +418,11 @@ def correct_file(
     relative_humidity_percent: float | None = None,
     mixing_ratios: Mapping[str, float] | None = None,
     continuum_order: int = 1,
-    solve_continuum_linear: bool = False,
-    lsf_sigma_pixels: float = 0.0,
+    solve_continuum_linear: ContinuumSolveMode = "auto",
+    lsf_sigma_pixels: LSFSigmaInput = "auto",
     lsf_box_width_pixels: float = 0.0,
-    lsf_lorentz_fwhm_pixels: float = 0.0,
-    lsf_variable_width: bool = False,
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput = "auto",
+    lsf_variable_width: LSFVariableWidthMode = "auto",
     lsf_reference_wavelength_micron: float | None = None,
     lsf_kernel_width_fwhm: float = 3.0,
     lsf_molecfit_voigt: bool = False,
@@ -392,20 +451,20 @@ def correct_file(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.03,
-    fit_wavelength_shift: bool = False,
+    fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
     fit_segment_wavelength_shifts: bool = False,
     fit_segment_wavelength_polynomial: bool = False,
     segment_wavelength_polynomial_order: int = 1,
     initial_wavelength_shift: float | None = None,
-    wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4),
-    fit_lsf_sigma: bool = False,
-    lsf_sigma_bounds: tuple[float, float] = (0.0, 5.0),
+    wavelength_shift_bounds: tuple[float, float] | None = None,
+    fit_lsf_sigma: LSFFitMode = "auto",
+    lsf_sigma_bounds: tuple[float, float] | None = None,
     fit_lsf_box_width: bool = False,
     lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0),
-    fit_lsf_lorentz_fwhm: bool = False,
-    lsf_lorentz_fwhm_bounds: tuple[float, float] = (0.0, 10.0),
+    fit_lsf_lorentz_fwhm: LSFFitMode = "auto",
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None,
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     loss: LeastSquaresLoss = "linear",
@@ -432,7 +491,8 @@ def correct_file(
     :param flux_col: Flux column name or zero-based index; ``None`` uses recognized names or the second numeric column.
     :param uncertainty_col: Optional uncertainty column name or zero-based index; ``None`` performs an unweighted fit.
     :param wavelength_unit: Unit of input wavelengths, such as ``micron``/``um``, ``nm``, ``angstrom``/``aa``, or ``m``.
-    :param wavelength_medium: ``air`` declares standard-air wavelengths; ``vacuum`` or ``vac`` declares vacuum wavelengths. PyMolFit converts internally, rather than changing what the file contains.
+    :param wavelength_medium: ``air`` declares standard-air wavelengths; ``vacuum`` or ``vac`` declares vacuum wavelengths. ``None`` accepts only an unambiguous air/vacuum declaration in FITS metadata; otherwise PyMolFit stops before fitting and asks for an explicit value. ``SPECSYS`` alone is not sufficient because it describes the velocity frame, not the wavelength medium.
+    :param observation: Optional structured observing metadata. Explicit values override matching FITS-header values and can supply time/site, weather, resolving power, or spectral-frame information for text inputs.
     :param line_list: In-memory PyMolFit ``LineList``; use this instead of ``line_list_path`` or ``hitran_par``.
     :param line_list_path: Astropy-readable PyMolFit line-list table path; ``None`` leaves line-data resolution to another source.
     :param hitran_par: Path to a HITRAN (High-resolution Transmission Molecular Absorption Database) ``.par`` file containing molecular line positions, strengths, pressure broadening, and lower-state energies; ``None`` normally uses the managed AER catalogue.
@@ -475,12 +535,12 @@ def correct_file(
     :param relative_humidity_percent: Optional surface relative-humidity override in percent; ``None`` uses profile or FITS information.
     :param mixing_ratios: Optional mapping of molecule name to volume mixing ratio; supplied entries override builder defaults.
     :param continuum_order: Polynomial continuum degree per fitted segment: ``0`` constant, ``1`` linear, ``2`` quadratic, and so on.
-    :param solve_continuum_linear: ``True`` solves continuum coefficients exactly at each nonlinear step and requires ``loss="linear"``; ``False`` includes them in the nonlinear parameter vector.
-    :param lsf_sigma_pixels: The line-spread function (LSF) describes instrumental broadening of intrinsically narrow telluric lines; this is its initial/fixed Gaussian sigma in detector pixels, and ``0`` disables that component unless it is fitted.
+    :param solve_continuum_linear: ``"auto"`` uses the exact linear continuum solve when ``loss="linear"`` and falls back to nonlinear continuum fitting if that trial fails; robust losses such as ``soft_l1`` select nonlinear continuum fitting immediately. ``True`` always uses the linear solve and therefore requires ``loss="linear"``; ``False`` always includes continuum coefficients in the nonlinear parameter vector.
+    :param lsf_sigma_pixels: The line-spread function (LSF) describes instrumental broadening of intrinsically narrow telluric lines. ``"auto"`` first derives Gaussian sigma in detector pixels from FITS resolving-power metadata and wavelength sampling, or estimates narrow observed-feature widths when metadata is unavailable; a numeric value supplies the initial/fixed sigma directly, and ``0`` disables the Gaussian component unless it is fitted.
     :param lsf_box_width_pixels: A boxcar LSF component approximates finite pixel/slit integration; this is its initial/fixed width in detector pixels, and ``0`` disables it.
-    :param lsf_lorentz_fwhm_pixels: A Lorentzian LSF component represents extended instrumental wings; this is its initial/fixed full width at half maximum in detector pixels, and ``0`` disables it unless fitted.
-    :param lsf_variable_width: Instruments can have wavelength-dependent resolution; ``True`` scales all LSF widths with wavelength relative to ``lsf_reference_wavelength_micron``, while ``False`` keeps their pixel widths constant.
-    :param lsf_reference_wavelength_micron: Reference wavelength in microns for variable-width LSF scaling; ``None`` uses each segment's median wavelength.
+    :param lsf_lorentz_fwhm_pixels: A Lorentzian LSF component represents extended instrumental wings. ``"auto"`` compares Gaussian-only and Gaussian-plus-Lorentzian models on several telluric-rich pilot regions distributed over the spectrum; a numeric value supplies a fixed/initial full width at half maximum in detector pixels, and ``0`` disables the component unless explicitly fitted.
+    :param lsf_variable_width: Controls wavelength dependence of instrumental broadening. ``"auto"`` (default) compares a constant-width LSF with ``width(lambda) = width_ref * (lambda / lambda_ref)**alpha`` on distributed telluric-rich pilot regions and keeps the power law only when BIC and cross-region improvement support it. ``True`` preserves the fixed legacy rule ``alpha=1``; ``False`` keeps all LSF widths constant in detector pixels.
+    :param lsf_reference_wavelength_micron: Global reference wavelength ``lambda_ref`` in microns for the LSF width law. ``None`` uses the median wavelength of the complete input spectrum once, so separately processed orders share the same width definition.
     :param lsf_kernel_width_fwhm: Half-support control for numerical LSF kernels in multiples of component FWHM; larger values retain farther wings but cost more.
     :param lsf_molecfit_voigt: ``True`` uses Molecfit's synthetic Gaussian-plus-Lorentzian Voigt approximation; ``False`` convolves the configured components normally.
     :param high_resolution_grid: ``True`` computes, convolves, and rebins an oversampled internal model; ``False`` evaluates directly at observed samples.
@@ -508,24 +568,24 @@ def correct_file(
     :param o2_continuum_xo2cn: Multiplicative LBLRTM O2-continuum coefficient scale, normally ``1``.
     :param line_margin_micron: Extra line-selection margin in microns around each modelled spectral interval.
     :param min_transmission: Pixels with fitted atmospheric transmission below this fraction are masked in the corrected spectrum because division cannot recover reliable flux from nearly opaque regions; it must be strictly between ``0`` and ``1``.
-    :param fit_wavelength_shift: ``True`` fits one constant wavelength offset; ``False`` fixes the initial/header-derived offset.
+    :param fit_wavelength_shift: ``"auto"`` compares no residual correction, a constant detector-pixel offset, and a smooth linear pixel-offset trend on distributed telluric-rich pilot regions, selecting by penalized fit quality; ``True`` preserves the explicit legacy constant-micron fit and ``False`` disables automatic residual alignment. Explicit polynomial or per-segment wavelength options take precedence over ``"auto"``.
     :param fit_wavelength_polynomial: ``True`` fits a global wavelength-correction polynomial; ``False`` disables it. Do not combine it with ``fit_wavelength_shift``.
     :param wavelength_polynomial_order: Degree of the global wavelength-correction polynomial in normalized wavelength coordinates.
     :param fit_segment_wavelength_shifts: ``True`` fits an independent constant wavelength offset for every automatic segment, which is useful for echelle orders or detectors with separate wavelength solutions; it cannot be combined with either global wavelength-fit option.
     :param fit_segment_wavelength_polynomial: ``True`` fits an independent wavelength-correction polynomial for every automatic segment; use this only when line residuals show within-segment wavelength distortion, and do not combine it with global or constant per-segment wavelength fitting.
     :param segment_wavelength_polynomial_order: Degree of each independent segment wavelength polynomial when ``fit_segment_wavelength_polynomial=True``; ``0`` is a constant offset and ``1`` also permits a linear distortion.
     :param initial_wavelength_shift: Initial constant wavelength offset in microns; ``None`` derives a suitable initial value from FITS spectral-frame metadata.
-    :param wavelength_shift_bounds: Inclusive lower and upper allowed constant shift in microns; the upper value must exceed the lower.
-    :param fit_lsf_sigma: ``True`` fits Gaussian LSF sigma from ``lsf_sigma_pixels`` within ``lsf_sigma_bounds``; ``False`` keeps it fixed.
-    :param lsf_sigma_bounds: Lower and upper Gaussian sigma bounds in pixels; values must be increasing and non-negative.
+    :param wavelength_shift_bounds: Lower and upper coefficient bounds. ``None`` uses ``(-3, 3)`` detector pixels for automatic model selection or the legacy micron bounds for explicit wavelength models; supplied values are pixels in automatic mode and microns in explicit mode.
+    :param fit_lsf_sigma: ``"auto"`` refines an automatically estimated ``lsf_sigma_pixels`` when telluric lines are available but keeps an explicitly numeric sigma fixed; ``True`` always fits Gaussian sigma and ``False`` always keeps the resolved value fixed.
+    :param lsf_sigma_bounds: Optional lower and upper Gaussian sigma bounds in pixels. ``None`` generates broad non-negative bounds from the automatic estimate; explicit values must be increasing and non-negative.
     :param fit_lsf_box_width: ``True`` fits boxcar LSF width within ``lsf_box_width_bounds``; ``False`` keeps it fixed.
     :param lsf_box_width_bounds: Lower and upper boxcar-width bounds in pixels; values must be increasing and non-negative.
-    :param fit_lsf_lorentz_fwhm: ``True`` fits Lorentzian FWHM within ``lsf_lorentz_fwhm_bounds``; ``False`` keeps it fixed.
-    :param lsf_lorentz_fwhm_bounds: Lower and upper Lorentzian FWHM bounds in pixels; values must be increasing and non-negative.
+    :param fit_lsf_lorentz_fwhm: ``"auto"`` performs penalized pilot-model selection when ``lsf_lorentz_fwhm_pixels="auto"`` and otherwise keeps an explicit numeric width fixed; ``True`` forces Lorentzian fitting and ``False`` disables automatic fitting.
+    :param lsf_lorentz_fwhm_bounds: Optional lower and upper Lorentzian FWHM bounds in pixels. ``None`` generates broad non-negative bounds from the Gaussian width; explicit values must be increasing and non-negative.
     :param fit_ranges: Wavelength intervals whose observed telluric features constrain molecular columns, wavelength alignment, LSF, and continuum; supply ``((start, stop), ...)`` in microns and the declared input medium, or ``None`` to let every valid pixel influence those fitted parameters.
     :param exclude_ranges: Wavelength intervals ignored only while estimating fit parameters, normally to protect stellar/circumstellar lines, detector defects, or saturated pixels; values are in microns/input medium and the final atmospheric correction is still evaluated there.
-    :param loss: SciPy least-squares loss: ``linear`` is ordinary squared residuals; ``soft_l1`` and ``huber`` are moderate robust losses; ``cauchy`` and ``arctan`` suppress outliers more strongly.
-    :param f_scale: Residual scale separating inliers from outliers for robust losses; it has no effect for ``loss="linear"``.
+    :param loss: Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
+    :param f_scale: Residual scale separating normal points from downweighted outliers for robust losses; larger values treat more residuals as normal and smaller values reject deviations more aggressively. It has no effect for ``loss="linear"``.
     :param ftol: Positive relative cost-change tolerance for optimizer termination.
     :param xtol: Positive relative parameter-step tolerance for optimizer termination.
     :param gtol: Positive gradient-norm tolerance for optimizer termination.
@@ -537,6 +597,13 @@ def correct_file(
     :return: ``TelluricFitResult`` containing the input, model, transmission, corrected spectrum, fitted parameters, diagnostics, and provenance.
     """
 
+    atmosphere_header = _load_fits_header_if_available(input_path, input_format)
+    if observation is not None:
+        atmosphere_header = observation.to_header(atmosphere_header)
+    resolved_wavelength_medium = _resolve_wavelength_medium(
+        wavelength_medium,
+        atmosphere_header,
+    )
     spectrum = load_spectrum(
         input_path,
         format=input_format,
@@ -544,9 +611,8 @@ def correct_file(
         flux_col=flux_col,
         uncertainty_col=uncertainty_col,
         wavelength_unit=wavelength_unit,
-        wavelength_medium=wavelength_medium,
+        wavelength_medium=resolved_wavelength_medium,
     )
-    atmosphere_header = _load_fits_header_if_available(input_path, input_format)
     result = _correct_spectrum_workflow(
         spectrum,
         line_list=line_list,
@@ -588,7 +654,11 @@ def correct_file(
         pressure_atm=pressure_atm,
         temperature_k=temperature_k,
         path_length_m=path_length_m,
-        pwv_mm=pwv_mm,
+        pwv_mm=(
+            observation.pwv_mm
+            if pwv_mm is None and observation is not None
+            else pwv_mm
+        ),
         relative_humidity_percent=relative_humidity_percent,
         mixing_ratios=mixing_ratios,
         continuum_order=continuum_order,
@@ -649,10 +719,168 @@ def correct_file(
         estimate_uncertainties=estimate_uncertainties,
     )
 
+    return _finalize_correction(
+        result,
+        input_label=input_path,
+        output_path=output_path,
+        product_path=product_path,
+        product_format=product_format,
+        plot_path=plot_path,
+        show_plot=show_plot,
+    )
+
+
+def correct(
+    input_path: str | Path | None = None,
+    *,
+    wavelength: np.ndarray | None = None,
+    flux: np.ndarray | None = None,
+    uncertainty: np.ndarray | None = None,
+    mask: np.ndarray | None = None,
+    wavelength_unit: str = "micron",
+    wavelength_medium: OptionalWavelengthMedium = None,
+    observation: Observation | None = None,
+    output_path: str | Path | None = None,
+    product_path: str | Path | None = None,
+    product_format: str = "ascii.ecsv",
+    plot_path: str | Path | None = None,
+    show_plot: bool = False,
+    **fit_options: object,
+) -> TelluricFitResult:
+    """Correct either a spectrum file or wavelength/flux arrays.
+
+    Supply exactly one input route:
+
+    - ``input_path`` for FITS, text, CSV, or ECSV data; or
+    - both ``wavelength`` and ``flux`` plus an ``Observation``.
+
+    Array input must explicitly declare ``wavelength_medium`` and the
+    observation's ``wavelength_frame``. This prevents air/vacuum or
+    barycentric/topocentric assumptions from silently moving the telluric
+    model. ``fit_options`` accepts the scientific controls documented by
+    ``correct_file`` and ``correct_arrays``.
+
+    Existing ``correct_file`` and ``correct_arrays`` calls remain supported.
+
+    :param input_path: FITS, text, CSV, or ECSV spectrum path. Do not combine
+        this with ``wavelength`` or ``flux``.
+    :param wavelength: One-dimensional wavelength array. It must be paired
+        with ``flux``, ``observation``, and an explicit ``wavelength_medium``.
+    :param flux: One-dimensional flux array sampled at ``wavelength``.
+    :param uncertainty: Optional one-sigma flux uncertainty array for weighted
+        fitting and propagated corrected-flux uncertainty.
+    :param mask: Optional Boolean array; ``True`` values are valid fit pixels.
+    :param wavelength_unit: Unit of the input wavelengths, for example
+        ``"micron"``, ``"nm"``, or ``"angstrom"``.
+    :param wavelength_medium: ``"air"`` or ``"vacuum"``. A file may infer this
+        from unambiguous metadata; arrays must declare it explicitly.
+    :param observation: Structured observing metadata. It is required for
+        arrays and may override incomplete or incorrect file-header values.
+    :param output_path: Optional compact text output containing wavelength and
+        corrected flux.
+    :param product_path: Optional full fit-product output containing model,
+        transmission, masks, metadata, and provenance.
+    :param product_format: Astropy writer format for ``product_path``; the
+        default is portable ``"ascii.ecsv"``.
+    :param plot_path: Optional path for a saved diagnostic plot.
+    :param show_plot: Display the diagnostic plot when ``True``.
+    :param fit_options: Scientific controls accepted by ``correct_file`` and
+        ``correct_arrays``, including fit/exclusion ranges, atmosphere, line
+        catalogue, continuum, LSF, wavelength alignment, and optimizer options.
+    :return: Complete ``TelluricFitResult`` in memory.
+    """
+
+    has_path = input_path is not None
+    has_wavelength = wavelength is not None
+    has_flux = flux is not None
+    has_array_input = has_wavelength or has_flux
+
+    if has_path and has_array_input:
+        raise ValueError(
+            "provide either input_path or wavelength/flux arrays, not both"
+        )
+    if not has_path and not has_array_input:
+        raise ValueError(
+            "provide input_path or both wavelength and flux arrays"
+        )
+    if has_array_input and not (has_wavelength and has_flux):
+        raise ValueError(
+            "array input requires both wavelength and flux"
+        )
+
+    if has_path:
+        if uncertainty is not None or mask is not None:
+            raise ValueError(
+                "uncertainty and mask arrays cannot be combined with input_path; "
+                "load the file as arrays or identify its uncertainty column"
+            )
+        return correct_file(
+            input_path=input_path,
+            output_path=output_path,
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=wavelength_medium,
+            observation=observation,
+            product_path=product_path,
+            product_format=product_format,
+            plot_path=plot_path,
+            show_plot=show_plot,
+            **fit_options,
+        )
+
+    if observation is None:
+        raise ValueError(
+            "array input requires observation=Observation(...) so observing "
+            "metadata is explicit"
+        )
+    if observation.wavelength_frame is None:
+        raise ValueError(
+            "array input requires observation.wavelength_frame to be "
+            "'observatory', 'barycentric', or 'heliocentric'"
+        )
+    if wavelength_medium is None:
+        raise ValueError(
+            "array input requires wavelength_medium='air' or 'vacuum'"
+        )
+
+    result = correct_arrays(
+        wavelength=np.asarray(wavelength, dtype=float),
+        flux=np.asarray(flux, dtype=float),
+        uncertainty=uncertainty,
+        mask=mask,
+        wavelength_unit=wavelength_unit,
+        wavelength_medium=wavelength_medium,
+        observation=observation,
+        **fit_options,
+    )
+    return _finalize_correction(
+        result,
+        input_label="<wavelength/flux arrays>",
+        output_path=output_path,
+        product_path=product_path,
+        product_format=product_format,
+        plot_path=plot_path,
+        show_plot=show_plot,
+    )
+
+
+def _finalize_correction(
+    result: TelluricFitResult,
+    *,
+    input_label: str | Path,
+    output_path: str | Path | None,
+    product_path: str | Path | None,
+    product_format: str,
+    plot_path: str | Path | None,
+    show_plot: bool,
+) -> TelluricFitResult:
+    print_fit_summary(result, input_path=input_label)
     if output_path is not None:
-        save_spectrum(output_path, result.corrected)
+        save_corrected_txt(result, output_path)
     if product_path is not None:
-        result.write(product_path, format=product_format)
+        if product_format == "ascii.ecsv":
+            save_fit_product_ecsv(result, product_path)
+        else:
+            result.write(product_path, format=product_format)
     if plot_path is not None:
         plot_fit(result, path=plot_path, show=show_plot)
     elif show_plot:
@@ -706,11 +934,11 @@ def _correct_spectrum_workflow(
     relative_humidity_percent: float | None,
     mixing_ratios: Mapping[str, float] | None,
     continuum_order: int,
-    solve_continuum_linear: bool,
-    lsf_sigma_pixels: float,
+    solve_continuum_linear: ContinuumSolveMode,
+    lsf_sigma_pixels: LSFSigmaInput,
     lsf_box_width_pixels: float,
-    lsf_lorentz_fwhm_pixels: float,
-    lsf_variable_width: bool,
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput,
+    lsf_variable_width: LSFVariableWidthMode,
     lsf_reference_wavelength_micron: float | None,
     lsf_kernel_width_fwhm: float,
     lsf_molecfit_voigt: bool,
@@ -739,20 +967,20 @@ def _correct_spectrum_workflow(
     o2_continuum_xo2cn: float,
     line_margin_micron: float,
     min_transmission: float,
-    fit_wavelength_shift: bool,
+    fit_wavelength_shift: WavelengthFitMode,
     fit_wavelength_polynomial: bool,
     wavelength_polynomial_order: int,
     fit_segment_wavelength_shifts: bool,
     fit_segment_wavelength_polynomial: bool,
     segment_wavelength_polynomial_order: int,
     initial_wavelength_shift: float | None,
-    wavelength_shift_bounds: tuple[float, float],
-    fit_lsf_sigma: bool,
-    lsf_sigma_bounds: tuple[float, float],
+    wavelength_shift_bounds: tuple[float, float] | None,
+    fit_lsf_sigma: LSFFitMode,
+    lsf_sigma_bounds: tuple[float, float] | None,
     fit_lsf_box_width: bool,
     lsf_box_width_bounds: tuple[float, float],
-    fit_lsf_lorentz_fwhm: bool,
-    lsf_lorentz_fwhm_bounds: tuple[float, float],
+    fit_lsf_lorentz_fwhm: LSFFitMode,
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None,
     fit_ranges: tuple[tuple[float, float], ...] | None,
     exclude_ranges: tuple[tuple[float, float], ...] | None,
     loss: str,
@@ -817,6 +1045,73 @@ def _correct_spectrum_workflow(
         and resolved_line_list.wavenumber is not None
         and resolved_line_list.wavenumber.size > 0
     )
+    (
+        resolved_lsf_sigma_pixels,
+        resolved_fit_lsf_sigma,
+        resolved_lsf_sigma_bounds,
+        initialize_lsf_sigma_grid,
+        lsf_sigma_resolution,
+    ) = _resolve_lsf_sigma(
+        spectrum,
+        lsf_sigma_pixels=lsf_sigma_pixels,
+        fit_lsf_sigma=fit_lsf_sigma,
+        lsf_sigma_bounds=lsf_sigma_bounds,
+        fit_ranges=fit_ranges,
+        exclude_ranges=exclude_ranges,
+        atmosphere_header=atmosphere_header,
+        has_telluric_lines=resolved_line_list.wavelength.size > 0,
+    )
+    (
+        resolved_lsf_lorentz_fwhm_pixels,
+        resolved_fit_lsf_lorentz_fwhm,
+        resolved_lsf_lorentz_fwhm_bounds,
+        auto_select_lsf_lorentz,
+        lsf_lorentz_resolution,
+    ) = _resolve_lsf_lorentz(
+        lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        fit_lsf_lorentz_fwhm=fit_lsf_lorentz_fwhm,
+        lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
+        gaussian_sigma_pixels=resolved_lsf_sigma_pixels,
+        has_telluric_lines=resolved_line_list.wavelength.size > 0,
+    )
+    if lsf_variable_width != "auto" and not isinstance(lsf_variable_width, bool):
+        raise ValueError("lsf_variable_width must be 'auto', True, or False")
+    auto_select_lsf_variable_width = lsf_variable_width == "auto"
+    resolved_lsf_variable_width = bool(lsf_variable_width is True)
+    finite_wavelength = spectrum.to_unit("micron").wavelength
+    finite_wavelength = finite_wavelength[np.isfinite(finite_wavelength)]
+    if finite_wavelength.size == 0:
+        raise ValueError("LSF configuration requires at least one finite wavelength")
+    resolved_lsf_reference_wavelength_micron = (
+        float(np.nanmedian(finite_wavelength))
+        if lsf_reference_wavelength_micron is None
+        else float(lsf_reference_wavelength_micron)
+    )
+    if (
+        not np.isfinite(resolved_lsf_reference_wavelength_micron)
+        or resolved_lsf_reference_wavelength_micron <= 0
+    ):
+        raise ValueError("lsf_reference_wavelength_micron must be positive")
+    lsf_variable_width_resolution: dict[str, object] = {
+        "requested": (
+            "auto"
+            if auto_select_lsf_variable_width
+            else bool(lsf_variable_width)
+        ),
+        "reference_wavelength_micron": (
+            resolved_lsf_reference_wavelength_micron
+        ),
+        "exponent_bounds": list(AUTO_LSF_VARIABLE_EXPONENT_BOUNDS),
+        "selected_model": (
+            "pending_pilot_selection"
+            if auto_select_lsf_variable_width
+            else (
+                "fixed_power_law"
+                if resolved_lsf_variable_width
+                else "constant"
+            )
+        ),
+    }
     if components is None and has_physical_lines:
         line_species = set(resolved_line_list.species_names)
         if h2o_continuum is None and "H2O" in line_species:
@@ -930,16 +1225,81 @@ def _correct_spectrum_workflow(
     if rayleigh:
         fixed_component_scales["AIR"] = 1.0
 
+    if solve_continuum_linear != "auto" and not isinstance(
+        solve_continuum_linear,
+        bool,
+    ):
+        raise ValueError("solve_continuum_linear must be 'auto', True, or False")
+    automatic_continuum_solver = solve_continuum_linear == "auto"
+    use_linear_continuum = (
+        loss == "linear"
+        if automatic_continuum_solver
+        else bool(solve_continuum_linear)
+    )
+    if fit_wavelength_shift != "auto" and not isinstance(
+        fit_wavelength_shift,
+        bool,
+    ):
+        raise ValueError("fit_wavelength_shift must be 'auto', True, or False")
+    explicit_wavelength_model = bool(
+        fit_wavelength_polynomial
+        or fit_segment_wavelength_shifts
+        or fit_segment_wavelength_polynomial
+    )
+    if fit_wavelength_shift is True and explicit_wavelength_model:
+        raise ValueError(
+            "fit_wavelength_shift=True cannot be combined with another "
+            "wavelength-correction model"
+        )
+    auto_select_wavelength_model = bool(
+        fit_wavelength_shift == "auto" and not explicit_wavelength_model
+    )
+    resolved_fit_wavelength_shift = bool(fit_wavelength_shift is True)
+    if wavelength_shift_bounds is None:
+        resolved_wavelength_shift_bounds = (
+            AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
+            if auto_select_wavelength_model
+            else (-5.0e-4, 5.0e-4)
+        )
+    else:
+        resolved_wavelength_shift_bounds = tuple(
+            float(value) for value in wavelength_shift_bounds
+        )
+    if (
+        len(resolved_wavelength_shift_bounds) != 2
+        or not np.all(np.isfinite(resolved_wavelength_shift_bounds))
+        or resolved_wavelength_shift_bounds[1]
+        <= resolved_wavelength_shift_bounds[0]
+    ):
+        raise ValueError("wavelength_shift_bounds must be finite and increasing")
+    wavelength_shift_unit = (
+        "pixel" if auto_select_wavelength_model else "micron"
+    )
+    fit_initial_wavelength_shift = (
+        _micron_shift_to_pixel(
+            spectrum,
+            resolved_initial_wavelength_shift,
+        )
+        if auto_select_wavelength_model
+        else resolved_initial_wavelength_shift
+    )
     fit_config = FitConfig(
         airmass=fit_airmass,
         continuum_order=continuum_order,
         fixed_species_scales=fixed_component_scales or None,
-        solve_continuum_linear=solve_continuum_linear,
-        lsf_sigma_pixels=lsf_sigma_pixels,
+        solve_continuum_linear=use_linear_continuum,
+        lsf_sigma_pixels=resolved_lsf_sigma_pixels,
         lsf_box_width_pixels=lsf_box_width_pixels,
-        lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
-        lsf_variable_width=lsf_variable_width,
-        lsf_reference_wavelength_micron=lsf_reference_wavelength_micron,
+        lsf_lorentz_fwhm_pixels=resolved_lsf_lorentz_fwhm_pixels,
+        lsf_variable_width=resolved_lsf_variable_width,
+        lsf_reference_wavelength_micron=(
+            resolved_lsf_reference_wavelength_micron
+        ),
+        lsf_wavelength_exponent=(
+            1.0 if resolved_lsf_variable_width else 0.0
+        ),
+        fit_lsf_wavelength_exponent=False,
+        lsf_wavelength_exponent_bounds=AUTO_LSF_VARIABLE_EXPONENT_BOUNDS,
         lsf_kernel_width_fwhm=lsf_kernel_width_fwhm,
         lsf_molecfit_voigt=lsf_molecfit_voigt,
         high_resolution_grid=resolved_high_resolution_grid,
@@ -970,20 +1330,22 @@ def _correct_spectrum_workflow(
         h2o_continuum=resolved_h2o_continuum,
         h2o_continuum_foreign_closure=h2o_continuum_foreign_closure,
         components=resolved_components,
-        fit_wavelength_shift=fit_wavelength_shift,
+        fit_wavelength_shift=resolved_fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
         fit_segment_wavelength_shifts=fit_segment_wavelength_shifts,
         fit_segment_wavelength_polynomial=fit_segment_wavelength_polynomial,
         segment_wavelength_polynomial_order=segment_wavelength_polynomial_order,
-        initial_wavelength_shift=resolved_initial_wavelength_shift,
-        wavelength_shift_bounds=wavelength_shift_bounds,
-        fit_lsf_sigma=fit_lsf_sigma,
-        lsf_sigma_bounds=lsf_sigma_bounds,
+        initial_wavelength_shift=fit_initial_wavelength_shift,
+        wavelength_shift_bounds=resolved_wavelength_shift_bounds,
+        wavelength_shift_unit=wavelength_shift_unit,
+        fit_lsf_sigma=resolved_fit_lsf_sigma,
+        lsf_sigma_bounds=resolved_lsf_sigma_bounds,
+        initialize_lsf_sigma_grid=initialize_lsf_sigma_grid,
         fit_lsf_box_width=fit_lsf_box_width,
         lsf_box_width_bounds=lsf_box_width_bounds,
-        fit_lsf_lorentz_fwhm=fit_lsf_lorentz_fwhm,
-        lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
+        fit_lsf_lorentz_fwhm=resolved_fit_lsf_lorentz_fwhm,
+        lsf_lorentz_fwhm_bounds=resolved_lsf_lorentz_fwhm_bounds,
         fit_ranges=fit_ranges,
         exclude_ranges=exclude_ranges,
         loss=loss,
@@ -991,6 +1353,11 @@ def _correct_spectrum_workflow(
         ftol=ftol,
         xtol=xtol,
         gtol=gtol,
+        max_nfev=(
+            AUTO_LINEAR_CONTINUUM_MAX_NFEV
+            if automatic_continuum_solver and use_linear_continuum
+            else None
+        ),
         estimate_uncertainties=estimate_uncertainties,
     )
     if auto_segment and (not np.isfinite(segment_size) or segment_size <= 0):
@@ -998,64 +1365,1890 @@ def _correct_spectrum_workflow(
     per_segment_wavelength_fit = (
         fit_segment_wavelength_shifts or fit_segment_wavelength_polynomial
     )
-    if not auto_segment:
-        if per_segment_wavelength_fit:
-            raise ValueError(
-                "per-segment wavelength fitting requires auto_segment=True"
+
+    def run_fit(config: FitConfig) -> TelluricFitResult:
+        if not auto_segment:
+            if per_segment_wavelength_fit:
+                raise ValueError(
+                    "per-segment wavelength fitting requires auto_segment=True"
+                )
+            return fit_tellurics(
+                spectrum,
+                line_list=resolved_line_list,
+                config=config,
             )
-        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
-    if not resolved_high_resolution_grid and not per_segment_wavelength_fit:
-        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
-    segments = _split_spectrum(
-        spectrum,
-        segment_size=segment_size,
-        minimum_points=continuum_order + 2,
-    )
-    if resolved_high_resolution_grid:
-        segments = _subdivide_segments_for_grid_limit(
-            segments,
-            config=fit_config,
+        if not resolved_high_resolution_grid and not per_segment_wavelength_fit:
+            return fit_tellurics(
+                spectrum,
+                line_list=resolved_line_list,
+                config=config,
+            )
+        segments = _split_spectrum(
+            spectrum,
+            segment_size=segment_size,
             minimum_points=continuum_order + 2,
         )
-    if len(segments) == 1 and not per_segment_wavelength_fit:
-        return fit_tellurics(spectrum, line_list=resolved_line_list, config=fit_config)
-    active = tuple(
-        _segment_has_fit_pixels(segment, fit_config)
-        for segment in segments
-    )
-    active_segments = tuple(
-        segment for segment, is_active in zip(segments, active, strict=True) if is_active
-    )
-    if not active_segments:
-        raise ValueError("fit_ranges and exclude_ranges leave no segment with enough fit pixels")
-    full_wavelength_micron = spectrum.to_unit("micron").wavelength
-    full_bounds = (
-        float(np.nanmin(full_wavelength_micron)),
-        float(np.nanmax(full_wavelength_micron)),
-    )
-    multi_result = fit_telluric_segments(
-        active_segments,
-        line_list=resolved_line_list,
-        config=fit_config,
-        global_wavelength_bounds=full_bounds,
-    )
-    fitted_results = iter(multi_result.segment_results)
-    segment_results = tuple(
-        next(fitted_results)
-        if is_active
-        else _apply_multi_fit_to_segment(
-            segment,
+        if resolved_high_resolution_grid:
+            segments = _subdivide_segments_for_grid_limit(
+                segments,
+                config=config,
+                minimum_points=continuum_order + 2,
+            )
+        if len(segments) == 1 and not per_segment_wavelength_fit:
+            return fit_tellurics(
+                spectrum,
+                line_list=resolved_line_list,
+                config=config,
+            )
+        active = tuple(
+            _segment_has_fit_pixels(segment, config)
+            for segment in segments
+        )
+        active_segments = tuple(
+            segment
+            for segment, is_active in zip(segments, active, strict=True)
+            if is_active
+        )
+        if not active_segments:
+            raise ValueError(
+                "fit_ranges and exclude_ranges leave no segment with enough fit pixels"
+            )
+        full_wavelength_micron = spectrum.to_unit("micron").wavelength
+        full_bounds = (
+            float(np.nanmin(full_wavelength_micron)),
+            float(np.nanmax(full_wavelength_micron)),
+        )
+        multi_result = fit_telluric_segments(
+            active_segments,
             line_list=resolved_line_list,
-            config=fit_config,
-            fit_result=multi_result,
+            config=config,
             global_wavelength_bounds=full_bounds,
         )
-        for segment, is_active in zip(segments, active, strict=True)
+        fitted_results = iter(multi_result.segment_results)
+        segment_results = tuple(
+            next(fitted_results)
+            if is_active
+            else _apply_multi_fit_to_segment(
+                segment,
+                line_list=resolved_line_list,
+                config=config,
+                fit_result=multi_result,
+                global_wavelength_bounds=full_bounds,
+            )
+            for segment, is_active in zip(segments, active, strict=True)
+        )
+        return _stitch_segment_results(
+            multi_result,
+            segment_size=segment_size,
+            segment_results=segment_results,
+        )
+
+    wavelength_model_resolution: dict[str, object] = {
+        "requested": (
+            "auto"
+            if fit_wavelength_shift == "auto"
+            else bool(fit_wavelength_shift)
+        ),
+        "coefficient_unit": fit_config.wavelength_shift_unit,
+        "bounds": list(fit_config.wavelength_shift_bounds),
+        "selected_model": (
+            "pending_pilot_selection"
+            if auto_select_wavelength_model
+            else _configured_wavelength_model_name(fit_config)
+        ),
+    }
+    if auto_select_wavelength_model:
+        try:
+            fit_config, wavelength_model_resolution = (
+                _select_wavelength_model_from_pilots(
+                    spectrum,
+                    line_list=resolved_line_list,
+                    config=fit_config,
+                    segment_size=segment_size,
+                    resolution=wavelength_model_resolution,
+                )
+            )
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            fit_config = replace(
+                fit_config,
+                fit_wavelength_shift=False,
+                fit_wavelength_polynomial=False,
+                wavelength_shift_unit="pixel",
+            )
+            wavelength_model_resolution = {
+                **wavelength_model_resolution,
+                "selected_model": "none",
+                "selection_reason": "pilot_fit_error",
+                "pilot_error": str(exc),
+            }
+            warnings.warn(
+                "Automatic wavelength-alignment pilot fitting was not usable; "
+                "continuing without a fitted residual wavelength correction.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        wavelength_pilot_coarse_search = (
+            wavelength_model_resolution.get("none_model", {})
+            .get("coarse_search")
+        )
+        if wavelength_pilot_coarse_search is not None:
+            lsf_sigma_resolution = {
+                **lsf_sigma_resolution,
+                "coarse_search": wavelength_pilot_coarse_search,
+            }
+
+    if auto_select_lsf_variable_width:
+        try:
+            fit_config, lsf_variable_width_resolution = (
+                _select_lsf_variable_width_from_pilots(
+                    spectrum,
+                    line_list=resolved_line_list,
+                    config=fit_config,
+                    segment_size=segment_size,
+                    resolution=lsf_variable_width_resolution,
+                )
+            )
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            fit_config = replace(
+                fit_config,
+                lsf_variable_width=False,
+                fit_lsf_wavelength_exponent=False,
+                lsf_wavelength_exponent=0.0,
+            )
+            lsf_variable_width_resolution = {
+                **lsf_variable_width_resolution,
+                "selected_model": "constant",
+                "selection_reason": "pilot_fit_error",
+                "pilot_error": str(exc),
+            }
+            warnings.warn(
+                "Automatic wavelength-dependent LSF pilot fitting was not "
+                "usable; continuing with a constant-width LSF.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    if auto_select_lsf_lorentz:
+        try:
+            fit_config, lsf_lorentz_resolution = _select_lsf_lorentz_from_pilots(
+                spectrum,
+                line_list=resolved_line_list,
+                config=fit_config,
+                segment_size=segment_size,
+                resolution=lsf_lorentz_resolution,
+            )
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            lsf_lorentz_resolution = {
+                **lsf_lorentz_resolution,
+                "selected_model": "gaussian",
+                "selection_reason": "pilot_fit_error",
+                "pilot_error": str(exc),
+            }
+            warnings.warn(
+                "Automatic Lorentzian LSF pilot fitting was not usable; "
+                "continuing with a Gaussian-only LSF.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        pilot_coarse_search = (
+            lsf_lorentz_resolution.get("gaussian_model", {})
+            .get("coarse_search")
+        )
+        if pilot_coarse_search is not None:
+            lsf_sigma_resolution = {
+                **lsf_sigma_resolution,
+                "coarse_search": pilot_coarse_search,
+            }
+
+    initial_solver = "linear" if use_linear_continuum else "nonlinear"
+    initial_result = run_fit(fit_config)
+    attempts = [_continuum_solver_attempt(initial_solver, initial_result)]
+    selected_result = initial_result
+    selected_solver = initial_solver
+    fallback_reason = None
+
+    if automatic_continuum_solver and use_linear_continuum:
+        fallback_reason = _continuum_fit_problem(initial_result)
+        if fallback_reason is not None:
+            warnings.warn(
+                "The automatic linear continuum fit was not usable "
+                f"({fallback_reason}); retrying with nonlinear continuum fitting.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            fallback_config = replace(
+                fit_config,
+                solve_continuum_linear=False,
+                max_nfev=None,
+            )
+            selected_result = run_fit(fallback_config)
+            selected_solver = "nonlinear"
+            attempts.append(
+                _continuum_solver_attempt(selected_solver, selected_result)
+            )
+
+    selection_reason = None
+    if automatic_continuum_solver and not use_linear_continuum:
+        selection_reason = (
+            f"loss={loss!r} requires nonlinear continuum fitting"
+        )
+    selected_result = _with_continuum_solver_provenance(
+        selected_result,
+        requested=(
+            "auto"
+            if automatic_continuum_solver
+            else ("linear" if use_linear_continuum else "nonlinear")
+        ),
+        selected=selected_solver,
+        attempts=attempts,
+        fallback_reason=fallback_reason,
+        selection_reason=selection_reason,
     )
-    return _stitch_segment_results(
-        multi_result,
-        segment_size=segment_size,
-        segment_results=segment_results,
+    lsf_bound_status = selected_result.parameter_bound_status.get(
+        "lsf_sigma_pixels"
+    )
+    if lsf_sigma_resolution["requested"] == "auto" and lsf_bound_status is not None:
+        warnings.warn(
+            "The automatically fitted Gaussian LSF sigma reached its "
+            f"{lsf_bound_status} bound; inspect the fit or provide explicit bounds.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    selected_result = _with_lsf_sigma_provenance(
+        selected_result,
+        resolution=lsf_sigma_resolution,
+        bounds=resolved_lsf_sigma_bounds,
+        fit_enabled=resolved_fit_lsf_sigma,
+        bound_status=lsf_bound_status,
+    )
+    lsf_lorentz_bound_status = selected_result.parameter_bound_status.get(
+        "lsf_lorentz_fwhm_pixels"
+    )
+    if (
+        lsf_lorentz_resolution.get("selected_model") == "gaussian_lorentz"
+        and lsf_lorentz_bound_status is not None
+    ):
+        warnings.warn(
+            "The automatically selected Lorentzian LSF FWHM reached its "
+            f"{lsf_lorentz_bound_status} bound in the full fit; inspect the fit.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    selected_result = _with_lsf_lorentz_provenance(
+        selected_result,
+        resolution=lsf_lorentz_resolution,
+        bounds=resolved_lsf_lorentz_fwhm_bounds,
+        fit_enabled=fit_config.fit_lsf_lorentz_fwhm,
+        bound_status=lsf_lorentz_bound_status,
+    )
+    lsf_exponent_bound_status = selected_result.parameter_bound_status.get(
+        "lsf_wavelength_exponent"
+    )
+    if (
+        lsf_variable_width_resolution.get("selected_model") == "power_law"
+        and lsf_exponent_bound_status is not None
+    ):
+        warnings.warn(
+            "The automatically selected LSF wavelength exponent reached its "
+            f"{lsf_exponent_bound_status} bound in the full fit; inspect the fit.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    selected_result = _with_lsf_variable_width_provenance(
+        selected_result,
+        resolution=lsf_variable_width_resolution,
+        config=fit_config,
+        bound_status=lsf_exponent_bound_status,
+    )
+    wavelength_bound_status = {
+        parameter: status
+        for parameter, status in selected_result.parameter_bound_status.items()
+        if "wavelength_" in parameter
+    }
+    if auto_select_wavelength_model and wavelength_bound_status:
+        warnings.warn(
+            "The automatically selected wavelength model reached a coefficient "
+            "bound in the full fit; inspect the alignment or provide wider "
+            "pixel bounds.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return _with_wavelength_model_provenance(
+        selected_result,
+        resolution=wavelength_model_resolution,
+        config=fit_config,
+        bound_status=wavelength_bound_status,
+    )
+
+
+def _continuum_fit_problem(result: TelluricFitResult) -> str | None:
+    if not result.success:
+        return f"optimizer did not converge: {result.message}"
+    scalar_values = {
+        "cost": result.cost,
+        "wavelength shift": result.wavelength_shift,
+        "Gaussian LSF width": result.lsf_sigma_pixels,
+        "box LSF width": result.lsf_box_width_pixels,
+        "Lorentzian LSF width": result.lsf_lorentz_fwhm_pixels,
+        "LSF wavelength exponent": result.lsf_wavelength_exponent,
+    }
+    scalar_values.update(
+        {
+            f"{species} scale": scale
+            for species, scale in result.species_scales.items()
+        }
+    )
+    invalid = [
+        name
+        for name, value in scalar_values.items()
+        if not np.isfinite(value)
+    ]
+    if invalid:
+        return "non-finite fitted " + ", ".join(invalid)
+    nonpositive_scales = [
+        species
+        for species, scale in result.species_scales.items()
+        if scale <= 0
+    ]
+    if nonpositive_scales:
+        return "non-positive molecular scale for " + ", ".join(nonpositive_scales)
+    return None
+
+
+def _continuum_solver_attempt(
+    solver: str,
+    result: TelluricFitResult,
+) -> dict[str, object]:
+    return {
+        "solver": solver,
+        "success": bool(result.success),
+        "cost": float(result.cost),
+        "nfev": int(result.nfev),
+        "message": str(result.message),
+    }
+
+
+def _with_continuum_solver_provenance(
+    result: TelluricFitResult,
+    *,
+    requested: str,
+    selected: str,
+    attempts: list[dict[str, object]],
+    fallback_reason: str | None,
+    selection_reason: str | None,
+) -> TelluricFitResult:
+    details: dict[str, object] = {
+        "requested": requested,
+        "selected": selected,
+        "fallback_used": len(attempts) > 1,
+        "attempts": attempts,
+    }
+    if fallback_reason is not None:
+        details["fallback_reason"] = fallback_reason
+    if selection_reason is not None:
+        details["selection_reason"] = selection_reason
+    return replace(
+        result,
+        provenance={
+            **dict(result.provenance),
+            "continuum_solver": details,
+        },
+    )
+
+
+def _resolve_lsf_sigma(
+    spectrum: Spectrum,
+    *,
+    lsf_sigma_pixels: LSFSigmaInput,
+    fit_lsf_sigma: LSFFitMode,
+    lsf_sigma_bounds: tuple[float, float] | None,
+    fit_ranges: tuple[tuple[float, float], ...] | None,
+    exclude_ranges: tuple[tuple[float, float], ...] | None,
+    atmosphere_header: Mapping[str, object] | None,
+    has_telluric_lines: bool,
+) -> tuple[float, bool, tuple[float, float], bool, dict[str, object]]:
+    if fit_lsf_sigma != "auto" and not isinstance(fit_lsf_sigma, bool):
+        raise ValueError("fit_lsf_sigma must be 'auto', True, or False")
+
+    automatic_sigma = lsf_sigma_pixels == "auto"
+    if automatic_sigma:
+        resolution = _estimate_lsf_sigma_from_resolving_power(
+            spectrum,
+            atmosphere_header,
+        )
+        if resolution is None:
+            resolution = _estimate_lsf_sigma_from_spectral_features(
+                spectrum,
+                fit_ranges=fit_ranges,
+                exclude_ranges=exclude_ranges,
+            )
+        if resolution is None:
+            resolution = {
+                "requested": "auto",
+                "source": "generic_fallback",
+                "initial_sigma_pixels": AUTO_LSF_SIGMA_FALLBACK_PIXELS,
+            }
+        else:
+            resolution = {"requested": "auto", **resolution}
+        initial_sigma = float(resolution["initial_sigma_pixels"])
+    else:
+        try:
+            initial_sigma = float(lsf_sigma_pixels)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "lsf_sigma_pixels must be 'auto' or a non-negative number"
+            ) from exc
+        if not np.isfinite(initial_sigma) or initial_sigma < 0:
+            raise ValueError(
+                "lsf_sigma_pixels must be 'auto' or a non-negative number"
+            )
+        resolution = {
+            "requested": initial_sigma,
+            "source": "user",
+            "initial_sigma_pixels": initial_sigma,
+        }
+
+    if fit_lsf_sigma == "auto":
+        resolved_fit = bool(
+            automatic_sigma
+            and has_telluric_lines
+            and resolution["source"] != "generic_fallback"
+        )
+    else:
+        resolved_fit = bool(fit_lsf_sigma)
+
+    if automatic_sigma and not has_telluric_lines:
+        initial_sigma = 0.0
+        resolution = {
+            **resolution,
+            "source": "disabled_no_telluric_lines",
+            "initial_sigma_pixels": 0.0,
+        }
+    elif (
+        automatic_sigma
+        and resolution["source"] == "generic_fallback"
+        and fit_lsf_sigma is not True
+    ):
+        initial_sigma = 0.0
+        resolution = {
+            **resolution,
+            "source": "disabled_no_lsf_information",
+            "initial_sigma_pixels": 0.0,
+        }
+
+    if lsf_sigma_bounds is None:
+        if automatic_sigma:
+            upper = min(
+                AUTO_LSF_SIGMA_MAX_PIXELS,
+                max(6.0, 4.0 * max(initial_sigma, 1.0)),
+            )
+            resolved_bounds = (0.0, upper)
+        else:
+            resolved_bounds = DEFAULT_LSF_SIGMA_BOUNDS
+    else:
+        if len(lsf_sigma_bounds) != 2:
+            raise ValueError("lsf_sigma_bounds must contain two values")
+        resolved_bounds = (
+            float(lsf_sigma_bounds[0]),
+            float(lsf_sigma_bounds[1]),
+        )
+    if (
+        not np.all(np.isfinite(resolved_bounds))
+        or resolved_bounds[0] < 0
+        or resolved_bounds[1] <= resolved_bounds[0]
+    ):
+        raise ValueError(
+            "lsf_sigma_bounds must be finite, non-negative, and increasing"
+        )
+
+    initialize_grid = bool(
+        automatic_sigma
+        and resolved_fit
+        and resolution["source"] != "fits_resolving_power"
+    )
+    resolution = {
+        **resolution,
+        "fit_requested": (
+            "auto" if fit_lsf_sigma == "auto" else bool(fit_lsf_sigma)
+        ),
+    }
+    return (
+        initial_sigma,
+        resolved_fit,
+        resolved_bounds,
+        initialize_grid,
+        resolution,
+    )
+
+
+def _resolve_lsf_lorentz(
+    *,
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput,
+    fit_lsf_lorentz_fwhm: LSFFitMode,
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None,
+    gaussian_sigma_pixels: float,
+    has_telluric_lines: bool,
+) -> tuple[float, bool, tuple[float, float], bool, dict[str, object]]:
+    if (
+        fit_lsf_lorentz_fwhm != "auto"
+        and not isinstance(fit_lsf_lorentz_fwhm, bool)
+    ):
+        raise ValueError(
+            "fit_lsf_lorentz_fwhm must be 'auto', True, or False"
+        )
+
+    automatic_width = lsf_lorentz_fwhm_pixels == "auto"
+    if automatic_width:
+        initial_fwhm = 0.0
+        source = "automatic_pilot_selection"
+    else:
+        try:
+            initial_fwhm = float(lsf_lorentz_fwhm_pixels)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "lsf_lorentz_fwhm_pixels must be 'auto' or a non-negative number"
+            ) from exc
+        if not np.isfinite(initial_fwhm) or initial_fwhm < 0:
+            raise ValueError(
+                "lsf_lorentz_fwhm_pixels must be 'auto' or a non-negative number"
+            )
+        source = "user"
+
+    if lsf_lorentz_fwhm_bounds is None:
+        upper = min(
+            AUTO_LSF_LORENTZ_MAX_PIXELS,
+            max(6.0, 4.0 * max(float(gaussian_sigma_pixels), 1.0)),
+        )
+        resolved_bounds = (0.0, upper)
+    else:
+        if len(lsf_lorentz_fwhm_bounds) != 2:
+            raise ValueError("lsf_lorentz_fwhm_bounds must contain two values")
+        resolved_bounds = (
+            float(lsf_lorentz_fwhm_bounds[0]),
+            float(lsf_lorentz_fwhm_bounds[1]),
+        )
+    if (
+        not np.all(np.isfinite(resolved_bounds))
+        or resolved_bounds[0] < 0
+        or resolved_bounds[1] <= resolved_bounds[0]
+    ):
+        raise ValueError(
+            "lsf_lorentz_fwhm_bounds must be finite, non-negative, and increasing"
+        )
+
+    auto_select = bool(
+        automatic_width
+        and fit_lsf_lorentz_fwhm == "auto"
+        and has_telluric_lines
+    )
+    if fit_lsf_lorentz_fwhm == "auto":
+        resolved_fit = False
+    else:
+        resolved_fit = bool(fit_lsf_lorentz_fwhm)
+    if automatic_width and resolved_fit:
+        gaussian_fwhm = 2.354820045 * max(float(gaussian_sigma_pixels), 0.2)
+        initial_fwhm = float(
+            np.clip(
+                0.5 * gaussian_fwhm,
+                resolved_bounds[0] + 0.01 * np.diff(resolved_bounds)[0],
+                resolved_bounds[1] - 0.01 * np.diff(resolved_bounds)[0],
+            )
+        )
+        source = "automatic_initial_value_for_forced_fit"
+    elif automatic_width and not has_telluric_lines:
+        source = "disabled_no_telluric_lines"
+
+    resolution = {
+        "requested": (
+            "auto" if automatic_width else float(initial_fwhm)
+        ),
+        "fit_requested": (
+            "auto"
+            if fit_lsf_lorentz_fwhm == "auto"
+            else bool(fit_lsf_lorentz_fwhm)
+        ),
+        "source": source,
+        "selected_model": (
+            "pending_pilot_selection"
+            if auto_select
+            else (
+                "gaussian_lorentz"
+                if resolved_fit or initial_fwhm > 0
+                else "gaussian"
+            )
+        ),
+        "initial_fwhm_pixels": float(initial_fwhm),
+    }
+    return (
+        initial_fwhm,
+        resolved_fit,
+        resolved_bounds,
+        auto_select,
+        resolution,
+    )
+
+
+def _configured_wavelength_model_name(config: FitConfig) -> str:
+    if config.fit_segment_wavelength_polynomial:
+        return "per_segment_polynomial"
+    if config.fit_segment_wavelength_shifts:
+        return "per_segment_constant"
+    if config.fit_wavelength_polynomial:
+        return "linear_pixel_trend" if (
+            config.wavelength_shift_unit == "pixel"
+            and config.wavelength_polynomial_order == 1
+        ) else "global_polynomial"
+    if config.fit_wavelength_shift:
+        return (
+            "constant_pixel_shift"
+            if config.wavelength_shift_unit == "pixel"
+            else "constant_micron_shift"
+        )
+    return "none"
+
+
+def _wavelength_candidate_improvement(
+    simpler: Mapping[str, object],
+    candidate: Mapping[str, object],
+) -> tuple[float, float]:
+    simpler_rss = np.asarray(simpler["region_weighted_rss"], dtype=float)
+    candidate_rss = np.asarray(candidate["region_weighted_rss"], dtype=float)
+    informative = np.asarray(
+        simpler["region_max_absorption"],
+        dtype=float,
+    ) >= 0.01
+    relative = (
+        simpler_rss - candidate_rss
+    ) / np.maximum(simpler_rss, np.finfo(float).tiny)
+    improved_fraction = (
+        float(np.count_nonzero(informative & (relative > 0.0)))
+        / float(np.count_nonzero(informative))
+        if np.any(informative)
+        else 0.0
+    )
+    return (
+        float(simpler["bic"]) - float(candidate["bic"]),
+        improved_fraction,
+    )
+
+
+def _select_wavelength_model_from_pilots(
+    spectrum: Spectrum,
+    *,
+    line_list: LineList,
+    config: FitConfig,
+    segment_size: float,
+    resolution: Mapping[str, object],
+) -> tuple[FitConfig, dict[str, object]]:
+    pilot_width = AUTO_WAVELENGTH_PILOT_WIDTH_MICRON
+    if np.isfinite(segment_size) and segment_size > 0:
+        pilot_width = min(pilot_width, float(segment_size))
+    candidates = _split_spectrum(
+        spectrum,
+        segment_size=pilot_width,
+        minimum_points=config.continuum_order + 2,
+    )
+    if config.high_resolution_grid:
+        candidates = _subdivide_segments_for_grid_limit(
+            candidates,
+            config=config,
+            minimum_points=config.continuum_order + 2,
+        )
+    pilot_segments, pilot_records = _select_distributed_lsf_pilot_segments(
+        candidates,
+        source_spectrum=spectrum,
+        line_list=line_list,
+        config=config,
+    )
+    details: dict[str, object] = {
+        **dict(resolution),
+        "pilot_width_micron": float(pilot_width),
+        "pilot_region_count": len(pilot_segments),
+        "pilot_regions": pilot_records,
+        "minimum_bic_improvement": AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT,
+        "minimum_improved_region_fraction": AUTO_WAVELENGTH_MIN_REGION_FRACTION,
+    }
+    if not pilot_segments:
+        return replace(
+            config,
+            fit_wavelength_shift=False,
+            fit_wavelength_polynomial=False,
+            wavelength_shift_unit="pixel",
+        ), {
+            **details,
+            "selected_model": "none",
+            "selection_reason": "no_telluric_rich_pilot_regions",
+        }
+
+    full_wavelength = spectrum.to_unit("micron").wavelength
+    global_bounds = (
+        float(np.nanmin(full_wavelength)),
+        float(np.nanmax(full_wavelength)),
+    )
+    base_config = replace(
+        config,
+        fit_wavelength_shift=False,
+        fit_wavelength_polynomial=False,
+        fit_segment_wavelength_shifts=False,
+        fit_segment_wavelength_polynomial=False,
+        wavelength_shift_unit="pixel",
+        estimate_uncertainties=False,
+        use_jacobian_sparsity=False,
+    )
+    no_shift_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=base_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    no_shift_metrics = _lsf_pilot_model_metrics(no_shift_result)
+    details["none_model"] = no_shift_metrics
+    if not no_shift_result.success:
+        return base_config, {
+            **details,
+            "selected_model": "none",
+            "selection_reason": "baseline_pilot_fit_did_not_converge",
+        }
+
+    initial_pixel_shift = float(config.initial_wavelength_shift)
+    if abs(initial_pixel_shift) < 0.02:
+        initial_pixel_shift = 0.02 * (
+            config.wavelength_shift_bounds[1]
+            - config.wavelength_shift_bounds[0]
+        )
+    initial_pixel_shift = float(
+        np.clip(
+            initial_pixel_shift,
+            config.wavelength_shift_bounds[0],
+            config.wavelength_shift_bounds[1],
+        )
+    )
+    constant_config = replace(
+        base_config,
+        initial_species_scales=dict(no_shift_result.species_scales),
+        lsf_sigma_pixels=float(no_shift_result.lsf_sigma_pixels),
+        initialize_lsf_sigma_grid=False,
+        fit_wavelength_shift=True,
+        initial_wavelength_shift=initial_pixel_shift,
+    )
+    constant_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=constant_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    constant_metrics = _lsf_pilot_model_metrics(constant_result)
+    details["constant_pixel_model"] = {
+        **constant_metrics,
+        "coefficients_pixels": (
+            constant_result.segment_results[0]
+            .wavelength_coefficients.tolist()
+        ),
+    }
+
+    model_records: list[
+        tuple[str, FitConfig, MultiTelluricFitResult, dict[str, object]]
+    ] = [
+        ("none", base_config, no_shift_result, no_shift_metrics),
+    ]
+    if constant_result.success:
+        model_records.append(
+            (
+                "constant_pixel_shift",
+                constant_config,
+                constant_result,
+                constant_metrics,
+            )
+        )
+
+    if len(pilot_segments) >= 2:
+        linear_config = replace(
+            constant_config,
+            fit_wavelength_shift=False,
+            fit_wavelength_polynomial=True,
+            wavelength_polynomial_order=1,
+            initial_wavelength_shift=float(
+                constant_result.segment_results[0].wavelength_coefficients[0]
+                if constant_result.success
+                else config.initial_wavelength_shift
+            ),
+        )
+        linear_result = fit_telluric_segments(
+            pilot_segments,
+            line_list=line_list,
+            config=linear_config,
+            global_wavelength_bounds=global_bounds,
+        )
+        linear_metrics = _lsf_pilot_model_metrics(linear_result)
+        details["linear_pixel_trend_model"] = {
+            **linear_metrics,
+            "coefficients_pixels": (
+                linear_result.segment_results[0]
+                .wavelength_coefficients.tolist()
+            ),
+        }
+        if linear_result.success:
+            model_records.append(
+                (
+                    "linear_pixel_trend",
+                    linear_config,
+                    linear_result,
+                    linear_metrics,
+                )
+            )
+
+    selected_name, selected_config, selected_result, selected_metrics = (
+        model_records[0]
+    )
+    comparisons: list[dict[str, object]] = []
+    for name, candidate_config, candidate_result, candidate_metrics in model_records[1:]:
+        bic_improvement, improved_fraction = _wavelength_candidate_improvement(
+            selected_metrics,
+            candidate_metrics,
+        )
+        bound_status = {
+            parameter: status
+            for parameter, status in candidate_result.parameter_bound_status.items()
+            if "wavelength_" in parameter
+        }
+        accepted = bool(
+            bic_improvement >= AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT
+            and improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
+            and not bound_status
+        )
+        comparisons.append(
+            {
+                "from_model": selected_name,
+                "to_model": name,
+                "bic_improvement": bic_improvement,
+                "improved_region_fraction": improved_fraction,
+                "bound_status": bound_status,
+                "accepted": accepted,
+            }
+        )
+        if accepted:
+            selected_name = name
+            selected_config = candidate_config
+            selected_result = candidate_result
+            selected_metrics = candidate_metrics
+
+    selected_coefficients = (
+        selected_result.segment_results[0].wavelength_coefficients.tolist()
+        if selected_name != "none"
+        else [0.0]
+    )
+    selected_config = replace(
+        config,
+        fit_wavelength_shift=selected_name == "constant_pixel_shift",
+        fit_wavelength_polynomial=selected_name == "linear_pixel_trend",
+        wavelength_polynomial_order=1,
+        wavelength_shift_unit="pixel",
+        initial_wavelength_shift=float(selected_coefficients[0]),
+        initialize_lsf_sigma_grid=False,
+        lsf_sigma_pixels=float(selected_result.lsf_sigma_pixels),
+    )
+    return selected_config, {
+        **details,
+        "selected_model": selected_name,
+        "selection_reason": (
+            "penalized_distributed_pilot_evidence"
+            if selected_name != "none"
+            else "no_supported_wavelength_correction"
+        ),
+        "selected_coefficients_pixels": selected_coefficients,
+        "comparisons": comparisons,
+    }
+
+
+def _select_lsf_variable_width_from_pilots(
+    spectrum: Spectrum,
+    *,
+    line_list: LineList,
+    config: FitConfig,
+    segment_size: float,
+    resolution: Mapping[str, object],
+) -> tuple[FitConfig, dict[str, object]]:
+    pilot_width = AUTO_LSF_LORENTZ_PILOT_WIDTH_MICRON
+    if np.isfinite(segment_size) and segment_size > 0:
+        pilot_width = min(pilot_width, float(segment_size))
+    candidates = _split_spectrum(
+        spectrum,
+        segment_size=pilot_width,
+        minimum_points=config.continuum_order + 2,
+    )
+    if config.high_resolution_grid:
+        candidates = _subdivide_segments_for_grid_limit(
+            candidates,
+            config=config,
+            minimum_points=config.continuum_order + 2,
+        )
+    pilot_segments, pilot_records = _select_distributed_lsf_pilot_segments(
+        candidates,
+        source_spectrum=spectrum,
+        line_list=line_list,
+        config=config,
+    )
+    pilot_centers = np.asarray(
+        [
+            0.5 * (
+                float(record["lower_micron"])
+                + float(record["upper_micron"])
+            )
+            for record in pilot_records
+        ],
+        dtype=float,
+    )
+    log_wavelength_span = (
+        float(np.ptp(np.log(pilot_centers)))
+        if pilot_centers.size >= 2
+        else 0.0
+    )
+    details = {
+        **dict(resolution),
+        "pilot_width_micron": float(pilot_width),
+        "pilot_region_count": len(pilot_segments),
+        "pilot_regions": pilot_records,
+        "pilot_log_wavelength_span": log_wavelength_span,
+        "minimum_log_wavelength_span": (
+            AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN
+        ),
+        "minimum_bic_improvement": AUTO_LSF_VARIABLE_MIN_BIC_IMPROVEMENT,
+        "minimum_improved_region_fraction": (
+            AUTO_LSF_VARIABLE_MIN_REGION_FRACTION
+        ),
+    }
+    if len(pilot_segments) < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+        return replace(
+            config,
+            lsf_variable_width=False,
+            fit_lsf_wavelength_exponent=False,
+            lsf_wavelength_exponent=0.0,
+        ), {
+            **details,
+            "selected_model": "constant",
+            "selection_reason": "fewer_than_two_telluric_rich_pilot_regions",
+        }
+    if log_wavelength_span < AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN:
+        return replace(
+            config,
+            lsf_variable_width=False,
+            fit_lsf_wavelength_exponent=False,
+            lsf_wavelength_exponent=0.0,
+        ), {
+            **details,
+            "selected_model": "constant",
+            "selection_reason": "pilot_wavelength_span_too_narrow",
+        }
+
+    full_wavelength = spectrum.to_unit("micron").wavelength
+    global_bounds = (
+        float(np.nanmin(full_wavelength)),
+        float(np.nanmax(full_wavelength)),
+    )
+    constant_config = replace(
+        config,
+        lsf_variable_width=False,
+        fit_lsf_wavelength_exponent=False,
+        lsf_wavelength_exponent=0.0,
+        estimate_uncertainties=False,
+    )
+    constant_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=constant_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    constant_metrics = _lsf_pilot_model_metrics(constant_result)
+    details["constant_width_model"] = constant_metrics
+    if not constant_result.success:
+        return constant_config, {
+            **details,
+            "selected_model": "constant",
+            "selection_reason": "constant_width_pilot_fit_did_not_converge",
+        }
+
+    variable_config = replace(
+        constant_config,
+        initial_species_scales=dict(constant_result.species_scales),
+        lsf_sigma_pixels=float(constant_result.lsf_sigma_pixels),
+        lsf_box_width_pixels=float(constant_result.lsf_box_width_pixels),
+        lsf_lorentz_fwhm_pixels=float(
+            constant_result.lsf_lorentz_fwhm_pixels
+        ),
+        initialize_lsf_sigma_grid=False,
+        lsf_variable_width=True,
+        lsf_wavelength_exponent=1.0,
+        fit_lsf_wavelength_exponent=True,
+        lsf_wavelength_exponent_bounds=(
+            AUTO_LSF_VARIABLE_EXPONENT_BOUNDS
+        ),
+    )
+    variable_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=variable_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    variable_metrics = _lsf_pilot_model_metrics(variable_result)
+    details["power_law_width_model"] = variable_metrics
+    if not variable_result.success:
+        return replace(
+            config,
+            lsf_sigma_pixels=float(constant_result.lsf_sigma_pixels),
+            initialize_lsf_sigma_grid=False,
+            lsf_variable_width=False,
+            fit_lsf_wavelength_exponent=False,
+            lsf_wavelength_exponent=0.0,
+        ), {
+            **details,
+            "selected_model": "constant",
+            "selection_reason": "power_law_pilot_fit_did_not_converge",
+        }
+
+    constant_region_rss = np.asarray(
+        constant_metrics["region_weighted_rss"],
+        dtype=float,
+    )
+    variable_region_rss = np.asarray(
+        variable_metrics["region_weighted_rss"],
+        dtype=float,
+    )
+    informative = np.asarray(
+        constant_metrics["region_max_absorption"],
+        dtype=float,
+    ) >= 0.01
+    relative_improvement = (
+        constant_region_rss - variable_region_rss
+    ) / np.maximum(constant_region_rss, np.finfo(float).tiny)
+    improved = informative & (
+        relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT
+    )
+    informative_count = int(np.count_nonzero(informative))
+    improved_count = int(np.count_nonzero(improved))
+    improved_fraction = (
+        improved_count / informative_count if informative_count else 0.0
+    )
+    bic_improvement = float(
+        constant_metrics["bic"] - variable_metrics["bic"]
+    )
+    bound_status = variable_result.parameter_bound_status.get(
+        "lsf_wavelength_exponent"
+    )
+    details.update(
+        {
+            "bic_improvement": bic_improvement,
+            "informative_region_count": informative_count,
+            "improved_region_count": improved_count,
+            "improved_region_fraction": float(improved_fraction),
+            "region_relative_rss_improvement": (
+                relative_improvement.tolist()
+            ),
+            "pilot_wavelength_exponent": float(
+                variable_result.lsf_wavelength_exponent
+            ),
+        }
+    )
+    if bound_status is not None:
+        details["pilot_bound_status"] = bound_status
+
+    select_variable = bool(
+        informative_count >= AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS
+        and bic_improvement >= AUTO_LSF_VARIABLE_MIN_BIC_IMPROVEMENT
+        and improved_fraction >= AUTO_LSF_VARIABLE_MIN_REGION_FRACTION
+        and bound_status is None
+    )
+    if select_variable:
+        return replace(
+            config,
+            lsf_sigma_pixels=float(variable_result.lsf_sigma_pixels),
+            lsf_box_width_pixels=float(
+                variable_result.lsf_box_width_pixels
+            ),
+            lsf_lorentz_fwhm_pixels=float(
+                variable_result.lsf_lorentz_fwhm_pixels
+            ),
+            initialize_lsf_sigma_grid=False,
+            lsf_variable_width=True,
+            lsf_wavelength_exponent=float(
+                variable_result.lsf_wavelength_exponent
+            ),
+            fit_lsf_wavelength_exponent=True,
+            lsf_wavelength_exponent_bounds=(
+                AUTO_LSF_VARIABLE_EXPONENT_BOUNDS
+            ),
+        ), {
+            **details,
+            "selected_model": "power_law",
+            "selection_reason": "strong_distributed_pilot_evidence",
+        }
+
+    reasons = []
+    if informative_count < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+        reasons.append("too_few_informative_regions")
+    if bic_improvement < AUTO_LSF_VARIABLE_MIN_BIC_IMPROVEMENT:
+        reasons.append("insufficient_bic_improvement")
+    if improved_fraction < AUTO_LSF_VARIABLE_MIN_REGION_FRACTION:
+        reasons.append("improvement_not_consistent_across_regions")
+    if bound_status is not None:
+        reasons.append("wavelength_exponent_reached_bound")
+    return replace(
+        config,
+        lsf_sigma_pixels=float(constant_result.lsf_sigma_pixels),
+        lsf_box_width_pixels=float(constant_result.lsf_box_width_pixels),
+        lsf_lorentz_fwhm_pixels=float(
+            constant_result.lsf_lorentz_fwhm_pixels
+        ),
+        initialize_lsf_sigma_grid=False,
+        lsf_variable_width=False,
+        fit_lsf_wavelength_exponent=False,
+        lsf_wavelength_exponent=0.0,
+    ), {
+        **details,
+        "selected_model": "constant",
+        "selection_reason": ",".join(reasons),
+    }
+
+
+def _select_lsf_lorentz_from_pilots(
+    spectrum: Spectrum,
+    *,
+    line_list: LineList,
+    config: FitConfig,
+    segment_size: float,
+    resolution: Mapping[str, object],
+) -> tuple[FitConfig, dict[str, object]]:
+    pilot_width = AUTO_LSF_LORENTZ_PILOT_WIDTH_MICRON
+    if np.isfinite(segment_size) and segment_size > 0:
+        pilot_width = min(pilot_width, float(segment_size))
+    candidates = _split_spectrum(
+        spectrum,
+        segment_size=pilot_width,
+        minimum_points=config.continuum_order + 2,
+    )
+    if config.high_resolution_grid:
+        candidates = _subdivide_segments_for_grid_limit(
+            candidates,
+            config=config,
+            minimum_points=config.continuum_order + 2,
+        )
+    pilot_segments, pilot_records = _select_distributed_lsf_pilot_segments(
+        candidates,
+        source_spectrum=spectrum,
+        line_list=line_list,
+        config=config,
+    )
+    details = {
+        **dict(resolution),
+        "pilot_width_micron": float(pilot_width),
+        "pilot_region_count": len(pilot_segments),
+        "pilot_regions": pilot_records,
+        "minimum_bic_improvement": AUTO_LSF_LORENTZ_MIN_BIC_IMPROVEMENT,
+        "minimum_improved_region_fraction": AUTO_LSF_LORENTZ_MIN_REGION_FRACTION,
+    }
+    if len(pilot_segments) < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+        return config, {
+            **details,
+            "selected_model": "gaussian",
+            "selection_reason": "fewer_than_two_telluric_rich_pilot_regions",
+        }
+
+    full_wavelength = spectrum.to_unit("micron").wavelength
+    global_bounds = (
+        float(np.nanmin(full_wavelength)),
+        float(np.nanmax(full_wavelength)),
+    )
+    gaussian_config = replace(
+        config,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+        estimate_uncertainties=False,
+    )
+    gaussian_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=gaussian_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    gaussian_metrics = _lsf_pilot_model_metrics(gaussian_result)
+    details["gaussian_model"] = gaussian_metrics
+    if not gaussian_result.success:
+        return config, {
+            **details,
+            "selected_model": "gaussian",
+            "selection_reason": "gaussian_pilot_fit_did_not_converge",
+        }
+
+    lower, upper = config.lsf_lorentz_fwhm_bounds
+    gaussian_fwhm = 2.354820045 * max(
+        float(gaussian_result.lsf_sigma_pixels),
+        0.2,
+    )
+    interval = upper - lower
+    lorentz_initial = float(
+        np.clip(
+            0.5 * gaussian_fwhm,
+            lower + 0.01 * interval,
+            upper - 0.01 * interval,
+        )
+    )
+    lorentz_config = replace(
+        gaussian_config,
+        initial_species_scales=dict(gaussian_result.species_scales),
+        lsf_sigma_pixels=float(gaussian_result.lsf_sigma_pixels),
+        initialize_lsf_sigma_grid=False,
+        lsf_lorentz_fwhm_pixels=lorentz_initial,
+        fit_lsf_lorentz_fwhm=True,
+    )
+    lorentz_result = fit_telluric_segments(
+        pilot_segments,
+        line_list=line_list,
+        config=lorentz_config,
+        global_wavelength_bounds=global_bounds,
+    )
+    lorentz_metrics = _lsf_pilot_model_metrics(lorentz_result)
+    details["gaussian_lorentz_model"] = lorentz_metrics
+    if not lorentz_result.success:
+        return config, {
+            **details,
+            "selected_model": "gaussian",
+            "selection_reason": "gaussian_lorentz_pilot_fit_did_not_converge",
+        }
+
+    gaussian_region_rss = np.asarray(
+        gaussian_metrics["region_weighted_rss"],
+        dtype=float,
+    )
+    lorentz_region_rss = np.asarray(
+        lorentz_metrics["region_weighted_rss"],
+        dtype=float,
+    )
+    informative = np.asarray(
+        gaussian_metrics["region_max_absorption"],
+        dtype=float,
+    ) >= 0.01
+    relative_improvement = (
+        gaussian_region_rss - lorentz_region_rss
+    ) / np.maximum(gaussian_region_rss, np.finfo(float).tiny)
+    improved = informative & (
+        relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT
+    )
+    informative_count = int(np.count_nonzero(informative))
+    improved_count = int(np.count_nonzero(improved))
+    improved_fraction = (
+        improved_count / informative_count if informative_count else 0.0
+    )
+    bic_improvement = float(
+        gaussian_metrics["bic"] - lorentz_metrics["bic"]
+    )
+    bound_status = lorentz_result.parameter_bound_status.get(
+        "lsf_lorentz_fwhm_pixels"
+    )
+    details.update(
+        {
+            "bic_improvement": bic_improvement,
+            "informative_region_count": informative_count,
+            "improved_region_count": improved_count,
+            "improved_region_fraction": float(improved_fraction),
+            "region_relative_rss_improvement": relative_improvement.tolist(),
+            "pilot_lorentz_fwhm_pixels": float(
+                lorentz_result.lsf_lorentz_fwhm_pixels
+            ),
+        }
+    )
+    if bound_status is not None:
+        details["pilot_bound_status"] = bound_status
+
+    select_lorentz = bool(
+        informative_count >= AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS
+        and bic_improvement >= AUTO_LSF_LORENTZ_MIN_BIC_IMPROVEMENT
+        and improved_fraction >= AUTO_LSF_LORENTZ_MIN_REGION_FRACTION
+        and bound_status is None
+    )
+    if select_lorentz:
+        selected_config = replace(
+            config,
+            lsf_sigma_pixels=float(lorentz_result.lsf_sigma_pixels),
+            initialize_lsf_sigma_grid=False,
+            lsf_lorentz_fwhm_pixels=float(
+                lorentz_result.lsf_lorentz_fwhm_pixels
+            ),
+            fit_lsf_lorentz_fwhm=True,
+        )
+        return selected_config, {
+            **details,
+            "selected_model": "gaussian_lorentz",
+            "selection_reason": "strong_distributed_pilot_evidence",
+        }
+
+    reasons = []
+    if informative_count < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+        reasons.append("too_few_informative_regions")
+    if bic_improvement < AUTO_LSF_LORENTZ_MIN_BIC_IMPROVEMENT:
+        reasons.append("insufficient_bic_improvement")
+    if improved_fraction < AUTO_LSF_LORENTZ_MIN_REGION_FRACTION:
+        reasons.append("improvement_not_consistent_across_regions")
+    if bound_status is not None:
+        reasons.append("lorentz_width_reached_bound")
+    return config, {
+        **details,
+        "selected_model": "gaussian",
+        "selection_reason": ",".join(reasons),
+    }
+
+
+def _select_distributed_lsf_pilot_segments(
+    candidates: tuple[Spectrum, ...],
+    *,
+    source_spectrum: Spectrum,
+    line_list: LineList,
+    config: FitConfig,
+) -> tuple[tuple[Spectrum, ...], list[dict[str, object]]]:
+    finite_strengths = line_list.strength[
+        np.isfinite(line_list.strength) & (line_list.strength > 0)
+    ]
+    if finite_strengths.size == 0:
+        return (), []
+    strength_scale = float(np.nanmax(finite_strengths))
+    scored = []
+    for segment in candidates:
+        if not _segment_has_fit_pixels(segment, config):
+            continue
+        if _segment_fit_pixel_count(segment, config) < max(
+            AUTO_LSF_LORENTZ_MIN_PILOT_PIXELS,
+            config.continuum_order + 2,
+        ):
+            continue
+        wavelength = segment.to_unit("micron").wavelength
+        lower = float(np.nanmin(wavelength))
+        upper = float(np.nanmax(wavelength))
+        positive_steps = np.diff(np.sort(wavelength))
+        positive_steps = positive_steps[
+            np.isfinite(positive_steps) & (positive_steps > 0)
+        ]
+        half_pixel = (
+            0.5 * float(np.nanmedian(positive_steps))
+            if positive_steps.size
+            else 0.0
+        )
+        line_mask = (
+            np.isfinite(line_list.wavelength)
+            & (line_list.wavelength >= lower - half_pixel)
+            & (line_list.wavelength <= upper + half_pixel)
+            & np.isfinite(line_list.strength)
+            & (line_list.strength > 0)
+        )
+        if config.fit_ranges is not None:
+            line_mask &= np.any(
+                [
+                    (line_list.wavelength >= fit_lower)
+                    & (line_list.wavelength <= fit_upper)
+                    for fit_lower, fit_upper in config.fit_ranges
+                ],
+                axis=0,
+            )
+        if config.exclude_ranges is not None:
+            for exclude_lower, exclude_upper in config.exclude_ranges:
+                line_mask &= ~(
+                    (line_list.wavelength >= exclude_lower)
+                    & (line_list.wavelength <= exclude_upper)
+                )
+        line_count = int(np.count_nonzero(line_mask))
+        if line_count == 0:
+            continue
+        score = float(
+            np.sum(np.sqrt(line_list.strength[line_mask] / strength_scale))
+        )
+        line_weights = np.sqrt(
+            line_list.strength[line_mask] / strength_scale
+        )
+        line_center = float(
+            np.average(line_list.wavelength[line_mask], weights=line_weights)
+        )
+        scored.append(
+            {
+                "segment": segment,
+                "center": 0.5 * (lower + upper),
+                "line_center": line_center,
+                "lower": lower,
+                "upper": upper,
+                "line_count": line_count,
+                "line_score": score,
+            }
+        )
+    if not scored:
+        return (), []
+
+    scored.sort(key=lambda item: float(item["center"]))
+    centers = np.asarray([item["center"] for item in scored], dtype=float)
+    if np.allclose(centers[0], centers[-1]):
+        selected_indices = [int(np.argmax([item["line_score"] for item in scored]))]
+    else:
+        edges = np.linspace(
+            centers[0],
+            centers[-1],
+            AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS + 1,
+        )
+        selected_indices = []
+        for bin_index in range(AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS):
+            in_bin = np.flatnonzero(
+                (centers >= edges[bin_index])
+                & (
+                    (centers <= edges[bin_index + 1])
+                    if bin_index == AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS - 1
+                    else (centers < edges[bin_index + 1])
+                )
+            )
+            if in_bin.size:
+                local_scores = [
+                    float(scored[index]["line_score"])
+                    for index in in_bin
+                ]
+                selected_indices.append(
+                    int(in_bin[int(np.argmax(local_scores))])
+                )
+
+    if len(selected_indices) < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+        ranked = sorted(
+            range(len(scored)),
+            key=lambda index: float(scored[index]["line_score"]),
+            reverse=True,
+        )
+        for index in ranked:
+            if index not in selected_indices:
+                selected_indices.append(index)
+            if len(selected_indices) >= AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
+                break
+    selected_indices = sorted(set(selected_indices))
+    selected = [scored[index] for index in selected_indices]
+    segments = tuple(
+        _centered_spectrum_window(
+            source_spectrum,
+            center=float(item["line_center"]),
+            width=float(item["upper"]) - float(item["lower"]),
+        )
+        for item in selected
+    )
+    records = [
+        {
+            "lower_micron": float(np.nanmin(segment.wavelength)),
+            "upper_micron": float(np.nanmax(segment.wavelength)),
+            "line_count": int(item["line_count"]),
+            "line_score": float(item["line_score"]),
+        }
+        for item, segment in zip(selected, segments, strict=True)
+    ]
+    return segments, records
+
+
+def _centered_spectrum_window(
+    spectrum: Spectrum,
+    *,
+    center: float,
+    width: float,
+) -> Spectrum:
+    ordered = spectrum.to_unit("micron").sorted()
+    wavelength = ordered.wavelength
+    if wavelength.size < 2:
+        return ordered
+    steps = np.diff(wavelength)
+    positive = steps[np.isfinite(steps) & (steps > 0)]
+    representative_step = (
+        float(np.nanmedian(positive)) if positive.size else np.inf
+    )
+    gaps = np.flatnonzero(steps > 10.0 * representative_step) + 1
+    nearest = int(np.argmin(np.abs(wavelength - center)))
+    block_start_candidates = gaps[gaps <= nearest]
+    block_stop_candidates = gaps[gaps > nearest]
+    block_start = (
+        int(block_start_candidates[-1])
+        if block_start_candidates.size
+        else 0
+    )
+    block_stop = (
+        int(block_stop_candidates[0])
+        if block_stop_candidates.size
+        else wavelength.size
+    )
+    lower = center - 0.5 * width
+    upper = center + 0.5 * width
+    start = block_start + int(
+        np.searchsorted(
+            wavelength[block_start:block_stop],
+            lower,
+            side="left",
+        )
+    )
+    stop = block_start + int(
+        np.searchsorted(
+            wavelength[block_start:block_stop],
+            upper,
+            side="right",
+        )
+    )
+    start = min(max(start, block_start), block_stop - 1)
+    stop = min(max(stop, start + 1), block_stop)
+    return _slice_spectrum(ordered, start, stop)
+
+
+def _lsf_pilot_model_metrics(
+    result: MultiTelluricFitResult,
+) -> dict[str, object]:
+    region_rss = []
+    region_points = []
+    region_depth = []
+    for segment_result in result.segment_results:
+        fit_mask = (
+            segment_result.spectrum.valid
+            if segment_result.fit_mask is None
+            else np.asarray(segment_result.fit_mask, dtype=bool)
+        )
+        flux = segment_result.spectrum.flux[fit_mask]
+        model = segment_result.model_flux[fit_mask]
+        if segment_result.spectrum.uncertainty is None:
+            mean_flux = float(np.nanmean(np.abs(flux)))
+            sigma = np.full_like(
+                flux,
+                0.01 * mean_flux if mean_flux > 0 else 1.0,
+            )
+        else:
+            sigma = segment_result.spectrum.uncertainty[fit_mask]
+        residual = (flux - model) / sigma
+        finite = np.isfinite(residual)
+        rss = float(np.sum(np.square(residual[finite])))
+        region_rss.append(rss)
+        region_points.append(int(np.count_nonzero(finite)))
+        absorption = 1.0 - segment_result.transmission[fit_mask]
+        finite_absorption = absorption[np.isfinite(absorption)]
+        region_depth.append(
+            float(np.nanmax(finite_absorption))
+            if finite_absorption.size
+            else 0.0
+        )
+
+    weighted_rss = float(np.sum(region_rss))
+    point_count = int(np.sum(region_points))
+    parameter_count = len(result.parameter_names)
+    mean_square = weighted_rss / max(point_count, 1)
+    bic = (
+        point_count * np.log(max(mean_square, np.finfo(float).tiny))
+        + parameter_count * np.log(max(point_count, 2))
+    )
+    metrics = {
+        "success": bool(result.success),
+        "message": str(result.message),
+        "nfev": int(result.nfev),
+        "weighted_rss": weighted_rss,
+        "fit_pixel_count": point_count,
+        "parameter_count": parameter_count,
+        "bic": float(bic),
+        "region_weighted_rss": region_rss,
+        "region_fit_pixel_count": region_points,
+        "region_max_absorption": region_depth,
+        "lsf_sigma_pixels": float(result.lsf_sigma_pixels),
+        "lsf_lorentz_fwhm_pixels": float(result.lsf_lorentz_fwhm_pixels),
+        "lsf_wavelength_exponent": float(result.lsf_wavelength_exponent),
+    }
+    coarse_search = result.provenance.get("lsf_sigma_coarse_search")
+    if coarse_search is not None:
+        metrics["coarse_search"] = coarse_search
+    return metrics
+
+
+_RESOLVING_POWER_KEYS = (
+    "SPEC_RES",
+    "SPEC_RP",
+    "RESPOWER",
+    "RES_POWER",
+    "RPOWER",
+    "RESOLVING",
+    "ESO INS SPEC RES",
+    "ESO INS WLEN RESOL",
+    "ESO INS GRAT1 RESOL",
+    "ESO INS GRAT2 RESOL",
+)
+
+
+def _estimate_lsf_sigma_from_resolving_power(
+    spectrum: Spectrum,
+    header: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if header is None:
+        return None
+    normalized_keys = {
+        str(key).strip().upper().removeprefix("HIERARCH "): key
+        for key in header
+    }
+    resolving_power = None
+    source_key = None
+    for candidate in _RESOLVING_POWER_KEYS:
+        actual_key = normalized_keys.get(candidate)
+        if actual_key is None:
+            continue
+        try:
+            value = float(header[actual_key])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value) and 100.0 <= value <= 10_000_000.0:
+            resolving_power = value
+            source_key = str(actual_key)
+            break
+    if resolving_power is None:
+        return None
+
+    wavelength = spectrum.to_unit("micron").wavelength
+    wavelength = np.sort(wavelength[np.isfinite(wavelength)])
+    if wavelength.size < 2:
+        return None
+    spacing = np.diff(wavelength)
+    positive = spacing[np.isfinite(spacing) & (spacing > 0)]
+    if positive.size == 0:
+        return None
+    representative_spacing = float(np.nanmedian(positive))
+    midpoint = 0.5 * (wavelength[:-1] + wavelength[1:])
+    usable = (
+        np.isfinite(spacing)
+        & (spacing > 0)
+        & (spacing <= 10.0 * representative_spacing)
+    )
+    fwhm_pixels = midpoint[usable] / (resolving_power * spacing[usable])
+    fwhm_pixels = fwhm_pixels[
+        np.isfinite(fwhm_pixels)
+        & (fwhm_pixels >= 0.2)
+        & (fwhm_pixels <= 100.0)
+    ]
+    if fwhm_pixels.size == 0:
+        return None
+    sigma_pixels = float(np.nanmedian(fwhm_pixels) / 2.354820045)
+    if not np.isfinite(sigma_pixels) or sigma_pixels <= 0:
+        return None
+    return {
+        "source": "fits_resolving_power",
+        "header_keyword": source_key,
+        "resolving_power": float(resolving_power),
+        "initial_sigma_pixels": sigma_pixels,
+        "sampling_count": int(fwhm_pixels.size),
+    }
+
+
+def _estimate_lsf_sigma_from_spectral_features(
+    spectrum: Spectrum,
+    *,
+    fit_ranges: tuple[tuple[float, float], ...] | None,
+    exclude_ranges: tuple[tuple[float, float], ...] | None,
+) -> dict[str, object] | None:
+    ordered = spectrum.to_unit("micron").sorted()
+    wavelength = ordered.wavelength
+    flux = ordered.flux
+    usable = ordered.valid.copy()
+    if fit_ranges:
+        usable &= np.any(
+            [
+                (wavelength >= lower) & (wavelength <= upper)
+                for lower, upper in fit_ranges
+            ],
+            axis=0,
+        )
+    if exclude_ranges:
+        for lower, upper in exclude_ranges:
+            usable &= ~((wavelength >= lower) & (wavelength <= upper))
+
+    positive_steps = np.diff(wavelength)
+    finite_steps = positive_steps[
+        np.isfinite(positive_steps) & (positive_steps > 0)
+    ]
+    if finite_steps.size == 0:
+        return None
+    representative_step = float(np.nanmedian(finite_steps))
+    boundaries = np.concatenate(
+        (
+            [0],
+            np.flatnonzero(positive_steps > 10.0 * representative_step) + 1,
+            [wavelength.size],
+        )
+    )
+    widths = []
+    for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
+        local_usable = usable[start:stop]
+        if np.count_nonzero(local_usable) < 15:
+            continue
+        local_flux = np.asarray(flux[start:stop], dtype=float)
+        finite_flux = local_flux[local_usable]
+        scale = float(np.nanmedian(np.abs(finite_flux)))
+        if not np.isfinite(scale) or scale <= 0:
+            continue
+        filled = local_flux.copy()
+        filled[~local_usable] = float(np.nanmedian(finite_flux))
+        window = min(101, max(15, 2 * (filled.size // 20) + 1))
+        if window % 2 == 0:
+            window += 1
+        continuum = percentile_filter(
+            filled,
+            percentile=80.0,
+            size=window,
+            mode="nearest",
+        )
+        valid_continuum = np.isfinite(continuum) & (np.abs(continuum) > 1.0e-12 * scale)
+        normalized = np.ones_like(filled)
+        normalized[valid_continuum] = (
+            filled[valid_continuum] / continuum[valid_continuum]
+        )
+        absorption = 1.0 - normalized
+        differences = np.diff(normalized[local_usable])
+        noise = (
+            1.4826
+            * float(np.nanmedian(np.abs(differences - np.nanmedian(differences))))
+            / np.sqrt(2.0)
+            if differences.size
+            else 0.0
+        )
+        prominence = max(0.01, 4.0 * noise)
+        peaks, properties = find_peaks(
+            absorption,
+            height=max(0.015, 3.0 * noise),
+            prominence=prominence,
+            distance=2,
+        )
+        if peaks.size == 0:
+            continue
+        local_widths = peak_widths(
+            absorption,
+            peaks,
+            rel_height=0.5,
+        )[0]
+        valid_widths = (
+            np.isfinite(local_widths)
+            & (local_widths >= 0.8)
+            & (local_widths <= 30.0)
+            & (properties["prominences"] >= prominence)
+        )
+        widths.extend(local_widths[valid_widths].tolist())
+    if not widths:
+        return None
+    fwhm_pixels = float(np.nanpercentile(np.asarray(widths), 40.0))
+    sigma_pixels = fwhm_pixels / 2.354820045
+    if not np.isfinite(sigma_pixels) or sigma_pixels <= 0:
+        return None
+    return {
+        "source": "spectrum_features",
+        "initial_sigma_pixels": float(
+            np.clip(sigma_pixels, 0.2, AUTO_LSF_SIGMA_FEATURE_MAX_PIXELS)
+        ),
+        "feature_count": len(widths),
+        "feature_fwhm_pixels": fwhm_pixels,
+    }
+
+
+def _with_lsf_sigma_provenance(
+    result: TelluricFitResult,
+    *,
+    resolution: Mapping[str, object],
+    bounds: tuple[float, float],
+    fit_enabled: bool,
+    bound_status: str | None,
+) -> TelluricFitResult:
+    details = {
+        **dict(resolution),
+        "bounds_pixels": [float(bounds[0]), float(bounds[1])],
+        "fit_enabled": bool(fit_enabled),
+        "final_sigma_pixels": float(result.lsf_sigma_pixels),
+    }
+    if bound_status is not None:
+        details["bound_status"] = bound_status
+    coarse_search = result.provenance.get("lsf_sigma_coarse_search")
+    if coarse_search is not None:
+        details["coarse_search"] = coarse_search
+    return replace(
+        result,
+        provenance={
+            **dict(result.provenance),
+            "lsf_sigma": details,
+        },
+    )
+
+
+def _with_lsf_lorentz_provenance(
+    result: TelluricFitResult,
+    *,
+    resolution: Mapping[str, object],
+    bounds: tuple[float, float],
+    fit_enabled: bool,
+    bound_status: str | None,
+) -> TelluricFitResult:
+    details = {
+        **dict(resolution),
+        "bounds_pixels": [float(bounds[0]), float(bounds[1])],
+        "fit_enabled_in_full_fit": bool(fit_enabled),
+        "final_fwhm_pixels": float(result.lsf_lorentz_fwhm_pixels),
+    }
+    if bound_status is not None:
+        details["full_fit_bound_status"] = bound_status
+    return replace(
+        result,
+        provenance={
+            **dict(result.provenance),
+            "lsf_lorentz": details,
+        },
+    )
+
+
+def _with_lsf_variable_width_provenance(
+    result: TelluricFitResult,
+    *,
+    resolution: Mapping[str, object],
+    config: FitConfig,
+    bound_status: str | None,
+) -> TelluricFitResult:
+    details = {
+        **dict(resolution),
+        "selected_model": resolution.get(
+            "selected_model",
+            "power_law" if config.lsf_variable_width else "constant",
+        ),
+        "fit_enabled_in_full_fit": bool(
+            config.fit_lsf_wavelength_exponent
+        ),
+        "reference_wavelength_micron": float(
+            config.lsf_reference_wavelength_micron
+        ),
+        "final_wavelength_exponent": float(
+            result.lsf_wavelength_exponent
+        ),
+    }
+    if bound_status is not None:
+        details["full_fit_bound_status"] = bound_status
+    return replace(
+        result,
+        provenance={
+            **dict(result.provenance),
+            "lsf_variable_width": details,
+        },
+    )
+
+
+def _with_wavelength_model_provenance(
+    result: TelluricFitResult,
+    *,
+    resolution: Mapping[str, object],
+    config: FitConfig,
+    bound_status: Mapping[str, str],
+) -> TelluricFitResult:
+    details = {
+        **dict(resolution),
+        "selected_model": _configured_wavelength_model_name(config),
+        "coefficient_unit": config.wavelength_shift_unit,
+        "final_coefficients": np.asarray(
+            result.wavelength_coefficients,
+            dtype=float,
+        ).tolist(),
+        "final_median_shift_micron": float(result.wavelength_shift),
+        "full_fit_bound_status": dict(bound_status),
+    }
+    return replace(
+        result,
+        provenance={
+            **dict(result.provenance),
+            "wavelength_alignment": details,
+        },
     )
 
 
@@ -1207,6 +3400,13 @@ def _subdivide_segments_for_grid_limit(
 
 
 def _segment_has_fit_pixels(segment: Spectrum, config: FitConfig) -> bool:
+    return bool(
+        _segment_fit_pixel_count(segment, config)
+        >= config.continuum_order + 2
+    )
+
+
+def _segment_fit_pixel_count(segment: Spectrum, config: FitConfig) -> int:
     wavelength = segment.to_unit("micron").wavelength
     selected = segment.valid.copy()
     if config.fit_ranges is not None:
@@ -1217,7 +3417,7 @@ def _segment_has_fit_pixels(segment: Spectrum, config: FitConfig) -> bool:
     if config.exclude_ranges is not None:
         for lower, upper in config.exclude_ranges:
             selected &= ~((wavelength >= lower) & (wavelength <= upper))
-    return bool(np.count_nonzero(selected) >= config.continuum_order + 2)
+    return int(np.count_nonzero(selected))
 
 
 def _slice_spectrum(spectrum: Spectrum, start: int, stop: int) -> Spectrum:
@@ -1363,6 +3563,7 @@ def _stitch_segment_results(
         lsf_sigma_pixels=float(result.lsf_sigma_pixels),
         lsf_box_width_pixels=float(result.lsf_box_width_pixels),
         lsf_lorentz_fwhm_pixels=float(result.lsf_lorentz_fwhm_pixels),
+        lsf_wavelength_exponent=float(result.lsf_wavelength_exponent),
         continuum_coefficients=continuum_coefficients,
         metrics=_fit_metrics(spectrum.flux, model_flux, continuum),
         success=bool(result.success),
@@ -1673,6 +3874,18 @@ def _resolve_initial_wavelength_shift(
     return float(np.nanmedian(finite) * velocity_km_s / speed_of_light_km_s)
 
 
+def _micron_shift_to_pixel(
+    spectrum: Spectrum,
+    shift_micron: float,
+) -> float:
+    wavelength = np.sort(spectrum.to_unit("micron").wavelength)
+    steps = np.diff(wavelength)
+    positive = steps[np.isfinite(steps) & (steps > 0)]
+    if positive.size == 0:
+        return 0.0
+    return float(shift_micron / np.nanmedian(positive))
+
+
 def _spectrum_to_observatory_vacuum(
     spectrum: Spectrum,
     header: Mapping[str, object] | None,
@@ -1853,6 +4066,85 @@ def _load_fits_header_if_available(
             return header
     except Exception:
         return None
+
+
+def _resolve_wavelength_medium(
+    wavelength_medium: str | None,
+    header: Mapping[str, object] | None,
+) -> str:
+    if wavelength_medium is not None:
+        return wavelength_medium
+
+    inferred = _infer_wavelength_medium_from_header(header)
+    if inferred is not None:
+        return inferred
+
+    raise ValueError(
+        "PyMolFit stopped the correction because wavelength_medium was not "
+        "provided and no reliable air/vacuum wavelength convention was found "
+        "in the FITS metadata. Pass wavelength_medium='air' or "
+        "wavelength_medium='vacuum'. SPECSYS is not sufficient because it "
+        "describes the velocity reference frame, not whether wavelengths are "
+        "in air or vacuum."
+    )
+
+
+def _infer_wavelength_medium_from_header(
+    header: Mapping[str, object] | None,
+) -> str | None:
+    """Return an unambiguous air/vacuum declaration from FITS metadata."""
+
+    if header is None:
+        return None
+
+    declarations: set[str] = set()
+    explicit_keys = {
+        "AIRORVAC",
+        "AIRVAC",
+        "WAVEMED",
+        "WAVE_MED",
+        "WAVEMEDIUM",
+        "PYMOLFIT WAVE",
+        "GENMOLFIT WAVE",
+        "VACUUM",
+    }
+    for raw_key, value in header.items():
+        key = str(raw_key).strip().upper()
+        if key.startswith("HIERARCH "):
+            key = key.removeprefix("HIERARCH ").strip()
+
+        if key in explicit_keys:
+            if key == "VACUUM":
+                text = str(value).strip().lower()
+                if value is True or text in {"1", "true", "t", "yes", "y"}:
+                    declarations.add("vacuum")
+                    continue
+                if value is False or text in {"0", "false", "f", "no", "n"}:
+                    declarations.add("air")
+                    continue
+            text = str(value).strip().lower()
+            tokens = {
+                token
+                for token in text.replace("-", " ").replace("_", " ").replace("/", " ").split()
+            }
+            if "vacuum" in tokens or "vac" in tokens:
+                declarations.add("vacuum")
+            if "air" in tokens:
+                declarations.add("air")
+
+        if key.startswith("CTYPE") or key.startswith("TCTYP"):
+            spectral_code = str(value).strip().upper().split("-", 1)[0]
+            if spectral_code == "AWAV":
+                declarations.add("air")
+            elif spectral_code == "WAVE":
+                declarations.add("vacuum")
+
+    if len(declarations) > 1:
+        raise ValueError(
+            "conflicting FITS metadata declares both air and vacuum wavelength "
+            "conventions; pass wavelength_medium='air' or 'vacuum' explicitly"
+        )
+    return next(iter(declarations), None)
 
 
 def _resolve_partition_table(partition_table: PartitionTable | str | Path | None) -> PartitionTable | None:

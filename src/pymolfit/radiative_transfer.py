@@ -35,6 +35,7 @@ class PhysicalModelConfig:
     lsf_lorentz_fwhm_pixels: float = 0.0
     lsf_variable_width: bool = False
     lsf_reference_wavelength_micron: float | None = None
+    lsf_wavelength_exponent: float = 1.0
     lsf_kernel_width_fwhm: float = 3.0
     lsf_molecfit_voigt: bool = False
     chunk_size: int = 0
@@ -245,6 +246,7 @@ def physical_transmission_model(
         wavelength_micron=wavelength_micron,
         lsf_variable_width=config.lsf_variable_width,
         lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+        lsf_wavelength_exponent=config.lsf_wavelength_exponent,
         lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
         lsf_molecfit_voigt=config.lsf_molecfit_voigt,
     )

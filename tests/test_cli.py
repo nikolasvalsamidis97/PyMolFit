@@ -50,6 +50,8 @@ def test_cli_fit_writes_corrected_and_product(tmp_path):
             str(input_path),
             str(output_path),
             "--demo-lines",
+            "--wavelength-medium",
+            "vacuum",
             "--continuum-order",
             "0",
             "--product",
@@ -91,6 +93,133 @@ def test_cli_exposes_native_radiative_transfer_controls():
     assert args.auto_segment is False
     assert args.segment_size == 0.005
     assert args.lblrtm_avmass_amu == 35.5
+
+
+def test_cli_continuum_solver_defaults_to_auto_and_accepts_overrides():
+    parser = build_parser()
+    automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
+    linear = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--solve-continuum-linear"]
+    )
+    nonlinear = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--no-solve-continuum-linear"]
+    )
+
+    assert automatic.solve_continuum_linear == "auto"
+    assert linear.solve_continuum_linear is True
+    assert nonlinear.solve_continuum_linear is False
+
+
+def test_cli_lsf_sigma_defaults_to_auto_and_accepts_overrides():
+    parser = build_parser()
+    automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
+    fixed = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--lsf-sigma-pixels", "1.75"]
+    )
+    forced_fit = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--fit-lsf-sigma"]
+    )
+    disabled_fit = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--no-fit-lsf-sigma"]
+    )
+    bounded = parser.parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--lsf-sigma-bounds",
+            "0.2",
+            "8.0",
+        ]
+    )
+
+    assert automatic.lsf_sigma_pixels == "auto"
+    assert automatic.fit_lsf_sigma == "auto"
+    assert automatic.lsf_sigma_bounds is None
+    assert fixed.lsf_sigma_pixels == 1.75
+    assert forced_fit.fit_lsf_sigma is True
+    assert disabled_fit.fit_lsf_sigma is False
+    assert bounded.lsf_sigma_bounds == [0.2, 8.0]
+
+
+def test_cli_lsf_lorentz_defaults_to_auto_and_accepts_overrides():
+    parser = build_parser()
+    automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
+    fixed = parser.parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--lsf-lorentz-fwhm-pixels",
+            "0.75",
+        ]
+    )
+    forced_fit = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--fit-lsf-lorentz-fwhm"]
+    )
+    disabled_fit = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--no-fit-lsf-lorentz-fwhm"]
+    )
+    bounded = parser.parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--lsf-lorentz-fwhm-bounds",
+            "0.1",
+            "7.0",
+        ]
+    )
+
+    assert automatic.lsf_lorentz_fwhm_pixels == "auto"
+    assert automatic.fit_lsf_lorentz_fwhm == "auto"
+    assert automatic.lsf_lorentz_fwhm_bounds is None
+    assert fixed.lsf_lorentz_fwhm_pixels == 0.75
+    assert forced_fit.fit_lsf_lorentz_fwhm is True
+    assert disabled_fit.fit_lsf_lorentz_fwhm is False
+    assert bounded.lsf_lorentz_fwhm_bounds == [0.1, 7.0]
+
+
+def test_cli_lsf_variable_width_defaults_to_auto_and_accepts_overrides():
+    parser = build_parser()
+    automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
+    forced = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--lsf-variable-width"]
+    )
+    disabled = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--no-lsf-variable-width"]
+    )
+
+    assert automatic.lsf_variable_width == "auto"
+    assert forced.lsf_variable_width is True
+    assert disabled.lsf_variable_width is False
+
+
+def test_cli_wavelength_alignment_defaults_to_auto_and_accepts_overrides():
+    parser = build_parser()
+    automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
+    forced = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--fit-wavelength-shift"]
+    )
+    disabled = parser.parse_args(
+        ["fit", "input.txt", "output.txt", "--no-fit-wavelength-shift"]
+    )
+    bounded = parser.parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--wavelength-shift-bounds",
+            "-2.0",
+            "2.0",
+        ]
+    )
+
+    assert automatic.fit_wavelength_shift == "auto"
+    assert automatic.wavelength_shift_bounds is None
+    assert forced.fit_wavelength_shift is True
+    assert disabled.fit_wavelength_shift is False
+    assert bounded.wavelength_shift_bounds == [-2.0, 2.0]
 
 
 def test_cli_refuses_implicit_synthetic_line_data(tmp_path):
@@ -222,6 +351,8 @@ def test_cli_hitran_filter_respects_wavelength_unit(tmp_path):
             str(output_path),
             "--wavelength-unit",
             "nm",
+            "--wavelength-medium",
+            "vacuum",
             "--hitran-par",
             str(hitran_path),
             "--continuum-order",

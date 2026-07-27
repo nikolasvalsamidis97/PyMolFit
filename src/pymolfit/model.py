@@ -29,6 +29,7 @@ class ModelConfig:
     lsf_lorentz_fwhm_pixels: float = 0.0
     lsf_variable_width: bool = False
     lsf_reference_wavelength_micron: float | None = None
+    lsf_wavelength_exponent: float = 1.0
     lsf_kernel_width_fwhm: float = 3.0
     lsf_molecfit_voigt: bool = False
     high_resolution_grid: bool = False
@@ -105,6 +106,7 @@ def transmission_from_basis(
     lsf_lorentz_fwhm_pixels: float = 0.0,
     lsf_variable_width: bool = False,
     lsf_reference_wavelength_micron: float | None = None,
+    lsf_wavelength_exponent: float = 1.0,
     lsf_kernel_width_fwhm: float = 3.0,
     lsf_molecfit_voigt: bool = False,
 ) -> np.ndarray:
@@ -128,6 +130,7 @@ def transmission_from_basis(
         wavelength_micron=wavelength_micron,
         variable_width=lsf_variable_width,
         reference_wavelength_micron=lsf_reference_wavelength_micron,
+        wavelength_exponent=lsf_wavelength_exponent,
         kernel_width_fwhm=lsf_kernel_width_fwhm,
         molecfit_voigt=lsf_molecfit_voigt,
     )
@@ -340,6 +343,7 @@ def transmission_from_high_resolution_basis(
     highres_pixels_per_observed_pixel: float,
     lsf_variable_width: bool = False,
     lsf_reference_wavelength_micron: float | None = None,
+    lsf_wavelength_exponent: float = 1.0,
     lsf_kernel_width_fwhm: float = 3.0,
     lsf_molecfit_voigt: bool = False,
     rebin_mode: str = "integrate",
@@ -389,6 +393,7 @@ def transmission_from_high_resolution_basis(
                 wavelength_micron=observed,
                 variable_width=lsf_variable_width,
                 reference_wavelength_micron=lsf_reference_wavelength_micron,
+                wavelength_exponent=lsf_wavelength_exponent,
                 kernel_width_fwhm=lsf_kernel_width_fwhm,
                 molecfit_voigt=lsf_molecfit_voigt,
             ),
@@ -418,6 +423,7 @@ def transmission_from_high_resolution_basis(
         wavelength_micron=model_wavelength,
         variable_width=lsf_variable_width,
         reference_wavelength_micron=lsf_reference_wavelength_micron,
+        wavelength_exponent=lsf_wavelength_exponent,
         kernel_width_fwhm=lsf_kernel_width_fwhm,
         molecfit_voigt=lsf_molecfit_voigt,
     )
@@ -881,6 +887,7 @@ def convolve_lsf(
     wavelength_micron: np.ndarray | None = None,
     variable_width: bool = False,
     reference_wavelength_micron: float | None = None,
+    wavelength_exponent: float = 1.0,
     kernel_width_fwhm: float = 3.0,
     molecfit_voigt: bool = False,
 ) -> np.ndarray:
@@ -901,6 +908,7 @@ def convolve_lsf(
             lorentz_fwhm_pixels=lorentz_fwhm_pixels,
             wavelength_micron=wavelength_micron,
             reference_wavelength_micron=reference_wavelength_micron,
+            wavelength_exponent=wavelength_exponent,
             kernel_width_fwhm=kernel_width_fwhm,
             molecfit_voigt=molecfit_voigt,
         )
@@ -953,6 +961,7 @@ def _convolve_variable_lsf(
     lorentz_fwhm_pixels: float,
     wavelength_micron: np.ndarray | None,
     reference_wavelength_micron: float | None,
+    wavelength_exponent: float,
     kernel_width_fwhm: float,
     molecfit_voigt: bool,
 ) -> np.ndarray:
@@ -965,18 +974,28 @@ def _convolve_variable_lsf(
         reference_wavelength_micron = float(np.nanmedian(wavelength))
     if not np.isfinite(reference_wavelength_micron) or reference_wavelength_micron <= 0:
         raise ValueError("reference_wavelength_micron must be positive")
+    if not np.isfinite(wavelength_exponent):
+        raise ValueError("wavelength_exponent must be finite")
 
     output = values.copy()
     finite = np.isfinite(wavelength)
     if not np.any(finite):
         return output
-    scale_values = wavelength[finite] / reference_wavelength_micron
+    scale_values = (
+        wavelength[finite] / reference_wavelength_micron
+    ) ** wavelength_exponent
     log_step = np.log1p(_LSF_RELATIVE_WIDTH_STEP)
     scale_keys = np.rint(np.log(scale_values) / log_step).astype(int)
     finite_pixels = np.nonzero(finite)[0]
     for key in np.unique(scale_keys):
         group = finite_pixels[scale_keys == key]
-        scale = float(np.nanmedian(wavelength[group]) / reference_wavelength_micron)
+        scale = float(
+            (
+                np.nanmedian(wavelength[group])
+                / reference_wavelength_micron
+            )
+            ** wavelength_exponent
+        )
         kernel = _composite_lsf_kernel(
             gaussian_sigma_pixels=gaussian_sigma_pixels * scale,
             box_width_pixels=box_width_pixels * scale,
@@ -1161,6 +1180,7 @@ def transmission_model(
             highres_pixels_per_observed_pixel=pixels_per_observed,
             lsf_variable_width=config.lsf_variable_width,
             lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+            lsf_wavelength_exponent=config.lsf_wavelength_exponent,
             lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
             lsf_molecfit_voigt=config.lsf_molecfit_voigt,
             rebin_mode=config.high_resolution_rebin_mode,
@@ -1181,6 +1201,7 @@ def transmission_model(
         wavelength_micron=wavelength,
         lsf_variable_width=config.lsf_variable_width,
         lsf_reference_wavelength_micron=config.lsf_reference_wavelength_micron,
+        lsf_wavelength_exponent=config.lsf_wavelength_exponent,
         lsf_kernel_width_fwhm=config.lsf_kernel_width_fwhm,
         lsf_molecfit_voigt=config.lsf_molecfit_voigt,
     )

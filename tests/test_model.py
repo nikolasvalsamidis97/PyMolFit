@@ -85,6 +85,29 @@ def test_variable_lsf_requires_wavelength_and_matches_constant_at_reference():
     np.testing.assert_allclose(variable, constant)
 
 
+def test_zero_wavelength_exponent_is_identical_to_constant_width_lsf():
+    values = np.zeros(201)
+    values[[35, 100, 165]] = [0.4, 1.0, 0.7]
+    wavelength = np.linspace(1.0, 2.0, values.size)
+
+    constant = convolve_lsf(
+        values,
+        gaussian_sigma_pixels=1.4,
+        lorentz_fwhm_pixels=0.6,
+    )
+    zero_exponent = convolve_lsf(
+        values,
+        gaussian_sigma_pixels=1.4,
+        lorentz_fwhm_pixels=0.6,
+        wavelength_micron=wavelength,
+        variable_width=True,
+        reference_wavelength_micron=1.5,
+        wavelength_exponent=0.0,
+    )
+
+    np.testing.assert_allclose(zero_exponent, constant)
+
+
 def test_molecfit_voigt_lsf_mode_is_flux_conserving_and_distinct():
     delta = np.zeros(101)
     delta[50] = 1.0

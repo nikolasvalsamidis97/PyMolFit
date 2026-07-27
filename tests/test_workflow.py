@@ -1,21 +1,32 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
+from astropy.io import fits
 from astropy.table import Table
 
+import pymolfit.workflow as workflow_module
 from pymolfit import (
     LineList,
     ModelConfig,
+    Observation,
     Spectrum,
     air_to_vacuum_wavelength,
+    correct,
     correct_arrays,
     correct_file,
+    save_corrected_txt,
+    save_fit_product_ecsv,
     transmission_model,
     vacuum_to_air_wavelength,
 )
 from pymolfit.physics import SPEED_OF_LIGHT_M_PER_S
 from pymolfit.workflow import (
     _barycentric_velocity_from_header_km_s,
+    _estimate_lsf_sigma_from_resolving_power,
+    _estimate_lsf_sigma_from_spectral_features,
     _make_atmosphere,
+    _infer_wavelength_medium_from_header,
     _ranges_to_observatory_vacuum,
     _resolve_initial_wavelength_shift,
     _resolve_line_list,
@@ -88,6 +99,403 @@ def test_correct_arrays_uses_demo_workflow():
     assert result.corrected.flux.shape == wavelength.shape
 
 
+def test_correct_arrays_automatically_uses_linear_continuum_for_linear_loss():
+    wavelength = np.linspace(2.31, 2.36, 400)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.3}),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=1,
+        high_resolution_grid=False,
+        auto_segment=False,
+    )
+
+    details = result.provenance["continuum_solver"]
+    assert result.success
+    assert details["requested"] == "auto"
+    assert details["selected"] == "linear"
+    assert details["fallback_used"] is False
+    assert [attempt["solver"] for attempt in details["attempts"]] == ["linear"]
+
+
+def test_correct_arrays_auto_continuum_falls_back_after_failed_linear_fit(
+    monkeypatch,
+):
+    wavelength = np.linspace(2.31, 2.36, 400)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.3}),
+    )
+    real_fit = workflow_module.fit_tellurics
+    attempted_configs = []
+
+    def fail_linear_fit(spectrum, *, line_list, config):
+        attempted_configs.append(config)
+        result = real_fit(spectrum, line_list=line_list, config=config)
+        if config.solve_continuum_linear:
+            return replace(
+                result,
+                success=False,
+                message="forced linear non-convergence",
+            )
+        return result
+
+    monkeypatch.setattr(workflow_module, "fit_tellurics", fail_linear_fit)
+
+    with pytest.warns(RuntimeWarning, match="retrying with nonlinear"):
+        result = correct_arrays(
+            wavelength,
+            flux,
+            line_list=line_list,
+            continuum_order=1,
+            high_resolution_grid=False,
+            auto_segment=False,
+        )
+
+    details = result.provenance["continuum_solver"]
+    assert result.success
+    assert [config.solve_continuum_linear for config in attempted_configs] == [
+        True,
+        False,
+    ]
+    assert attempted_configs[0].max_nfev == 100
+    assert attempted_configs[1].max_nfev is None
+    assert details["selected"] == "nonlinear"
+    assert details["fallback_used"] is True
+    assert "forced linear non-convergence" in details["fallback_reason"]
+    assert [attempt["solver"] for attempt in details["attempts"]] == [
+        "linear",
+        "nonlinear",
+    ]
+
+
+def test_correct_arrays_auto_continuum_uses_nonlinear_for_robust_loss():
+    wavelength = np.linspace(2.31, 2.36, 400)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.3}),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=1,
+        loss="soft_l1",
+        high_resolution_grid=False,
+        auto_segment=False,
+    )
+
+    details = result.provenance["continuum_solver"]
+    assert result.success
+    assert details["requested"] == "auto"
+    assert details["selected"] == "nonlinear"
+    assert details["fallback_used"] is False
+    assert "soft_l1" in details["selection_reason"]
+
+
+def test_lsf_sigma_estimate_uses_resolving_power_and_spectrum_sampling():
+    wavelength = np.linspace(0.500, 0.501, 1001)
+    spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
+
+    estimate = _estimate_lsf_sigma_from_resolving_power(
+        spectrum,
+        {"SPEC_RES": 100_000.0},
+    )
+
+    assert estimate is not None
+    assert estimate["source"] == "fits_resolving_power"
+    assert estimate["header_keyword"] == "SPEC_RES"
+    assert estimate["resolving_power"] == 100_000.0
+    assert estimate["initial_sigma_pixels"] == pytest.approx(
+        0.5005 / 100_000.0 / 1.0e-6 / 2.354820045,
+        rel=2.0e-3,
+    )
+
+
+def test_lsf_sigma_estimate_uses_narrow_spectral_features_without_metadata():
+    pixel = np.arange(600.0)
+    wavelength = 0.600 + pixel * 1.0e-6
+    flux = np.ones(pixel.size)
+    for center in (100.0, 250.0, 430.0):
+        flux -= 0.25 * np.exp(-0.5 * ((pixel - center) / 2.0) ** 2)
+
+    estimate = _estimate_lsf_sigma_from_spectral_features(
+        Spectrum(wavelength=wavelength, flux=flux),
+        fit_ranges=None,
+        exclude_ranges=None,
+    )
+
+    assert estimate is not None
+    assert estimate["source"] == "spectrum_features"
+    assert estimate["feature_count"] == 3
+    assert estimate["initial_sigma_pixels"] == pytest.approx(2.0, abs=0.15)
+
+
+def test_correct_arrays_automatically_estimates_and_refines_lsf_sigma():
+    wavelength = np.linspace(2.32, 2.34, 2000)
+    line_list = LineList(
+        wavelength=np.array([2.326, 2.331, 2.336]),
+        strength=np.array([0.004, 0.005, 0.004]),
+        sigma=np.full(3, 2.0e-5),
+        gamma=np.full(3, 1.0e-5),
+        species=np.array(["H2O", "H2O", "H2O"]),
+    )
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(
+            species_scales={"H2O": 1.0},
+            lsf_sigma_pixels=2.0,
+        ),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        auto_segment=False,
+    )
+
+    details = result.provenance["lsf_sigma"]
+    assert result.success
+    assert result.lsf_sigma_pixels == pytest.approx(2.0, abs=0.15)
+    assert details["requested"] == "auto"
+    assert details["fit_enabled"] is True
+    assert details["source"] == "spectrum_features"
+    assert details["coarse_search"]["candidate_count"] >= 7
+
+
+def test_correct_arrays_keeps_explicit_lsf_sigma_fixed_by_default():
+    wavelength = np.linspace(2.31, 2.36, 300)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    flux = transmission_model(wavelength, line_list)
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        lsf_sigma_pixels=1.25,
+        continuum_order=0,
+        auto_segment=False,
+    )
+
+    details = result.provenance["lsf_sigma"]
+    assert result.lsf_sigma_pixels == pytest.approx(1.25)
+    assert details["source"] == "user"
+    assert details["fit_requested"] == "auto"
+    assert details["fit_enabled"] is False
+
+
+def test_correct_arrays_disables_auto_lsf_without_metadata_or_features():
+    wavelength = np.linspace(2.31, 2.36, 300)
+
+    result = correct_arrays(
+        wavelength,
+        np.ones_like(wavelength),
+        line_list=LineList.demo_near_ir(),
+        continuum_order=0,
+        auto_segment=False,
+    )
+
+    details = result.provenance["lsf_sigma"]
+    assert result.lsf_sigma_pixels == 0.0
+    assert details["source"] == "disabled_no_lsf_information"
+    assert details["fit_enabled"] is False
+
+
+def _distributed_lsf_test_spectrum(lorentz_fwhm_pixels):
+    rng = np.random.default_rng(42)
+    wavelength = np.linspace(2.30, 2.35, 10_000)
+    centers = np.array(
+        [
+            2.303,
+            2.306,
+            2.313,
+            2.316,
+            2.323,
+            2.326,
+            2.333,
+            2.336,
+            2.343,
+            2.346,
+        ]
+    )
+    line_list = LineList(
+        wavelength=centers,
+        strength=np.full(centers.size, 3.0e-6),
+        sigma=np.full(centers.size, 5.0e-7),
+        gamma=np.full(centers.size, 1.0e-7),
+        species=np.full(centers.size, "H2O"),
+    )
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(
+            species_scales={"H2O": 1.0},
+            lsf_sigma_pixels=1.4,
+            lsf_lorentz_fwhm_pixels=lorentz_fwhm_pixels,
+        ),
+    )
+    flux += rng.normal(0.0, 1.0e-4, wavelength.size)
+    return wavelength, flux, line_list
+
+
+def test_automatic_lsf_pilots_keep_gaussian_model_without_wings():
+    wavelength, flux, line_list = _distributed_lsf_test_spectrum(0.0)
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        lsf_sigma_pixels=1.2,
+        fit_lsf_sigma=True,
+        lsf_sigma_bounds=(0.2, 6.0),
+    )
+
+    details = result.provenance["lsf_lorentz"]
+    assert result.success
+    assert details["pilot_region_count"] >= 2
+    assert details["selected_model"] == "gaussian"
+    assert result.lsf_lorentz_fwhm_pixels == 0.0
+
+
+def test_automatic_lsf_pilots_select_consistent_lorentzian_wings():
+    wavelength, flux, line_list = _distributed_lsf_test_spectrum(3.0)
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        lsf_sigma_pixels=1.2,
+        fit_lsf_sigma=True,
+        lsf_sigma_bounds=(0.2, 6.0),
+    )
+
+    details = result.provenance["lsf_lorentz"]
+    assert result.success
+    assert details["pilot_region_count"] >= 2
+    assert details["selected_model"] == "gaussian_lorentz"
+    assert details["bic_improvement"] >= 10.0
+    assert details["improved_region_fraction"] >= 0.6
+    assert result.lsf_lorentz_fwhm_pixels > 0.0
+
+
+@pytest.mark.parametrize(
+    ("true_exponent", "expected_model"),
+    ((0.0, "constant"), (1.25, "power_law")),
+)
+def test_automatic_lsf_variable_width_selects_supported_model(
+    true_exponent,
+    expected_model,
+):
+    centers = np.array([1.0, 1.5, 2.0])
+    line_list = LineList(
+        wavelength=centers,
+        strength=np.full(centers.size, 0.03),
+        sigma=np.full(centers.size, 1.0e-5),
+        gamma=np.full(centers.size, 5.0e-6),
+        species=np.full(centers.size, "H2O"),
+    )
+    wavelength_parts = []
+    flux_parts = []
+    for center in centers:
+        wavelength = np.linspace(center - 0.0015, center + 0.0015, 600)
+        species_names, basis = optical_depth_basis(wavelength, line_list)
+        flux = transmission_from_basis(
+            species_names,
+            basis,
+            species_scales={"H2O": 1.0},
+            lsf_sigma_pixels=2.5,
+            wavelength_micron=wavelength,
+            lsf_variable_width=true_exponent != 0.0,
+            lsf_reference_wavelength_micron=1.5,
+            lsf_wavelength_exponent=true_exponent,
+        )
+        wavelength_parts.append(wavelength)
+        flux_parts.append(flux)
+    wavelength = np.concatenate(wavelength_parts)
+    flux = np.concatenate(flux_parts)
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        uncertainty=np.full(wavelength.size, 0.002),
+        line_list=line_list,
+        physical=False,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        lsf_sigma_pixels=2.5,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+        lsf_variable_width="auto",
+        fit_wavelength_shift=False,
+        high_resolution_grid=False,
+        auto_segment=False,
+    )
+
+    details = result.provenance["lsf_variable_width"]
+    assert details["selected_model"] == expected_model
+    assert details["reference_wavelength_micron"] == pytest.approx(1.5)
+    if true_exponent == 0.0:
+        assert result.lsf_wavelength_exponent == 0.0
+        assert details["bic_improvement"] < 6.0
+    else:
+        assert details["bic_improvement"] >= 6.0
+        assert details["improved_region_fraction"] >= 0.6
+        assert result.lsf_wavelength_exponent == pytest.approx(
+            true_exponent,
+            abs=0.04,
+        )
+
+
+def test_correct_arrays_rejects_unknown_continuum_solver_mode():
+    wavelength = np.linspace(2.31, 2.36, 100)
+
+    with pytest.raises(
+        ValueError,
+        match="solve_continuum_linear must be 'auto', True, or False",
+    ):
+        correct_arrays(
+            wavelength,
+            np.ones_like(wavelength),
+            line_list=LineList.demo_near_ir(),
+            solve_continuum_linear="sometimes",
+        )
+
+
+def test_correct_arrays_rejects_unknown_lsf_variable_width_mode():
+    wavelength = np.linspace(2.31, 2.36, 100)
+
+    with pytest.raises(
+        ValueError,
+        match="lsf_variable_width must be 'auto', True, or False",
+    ):
+        correct_arrays(
+            wavelength,
+            np.ones_like(wavelength),
+            line_list=LineList.demo_near_ir(),
+            lsf_variable_width="sometimes",
+        )
+
+
 def test_correct_arrays_exposes_minimum_transmission_mask():
     wavelength = np.linspace(1.0, 1.01, 400)
     line_list = LineList(
@@ -144,6 +552,7 @@ def test_correct_file_automatically_segments_native_grid_and_stitches_output(tmp
     with pytest.raises(ValueError, match="exceeding max_points"):
         correct_file(
             input_path,
+            wavelength_medium="vacuum",
             hitran_par=hitran_path,
             hitran_species=("H2O",),
             mixing_ratios={"H2O": 1.0e-5},
@@ -157,6 +566,7 @@ def test_correct_file_automatically_segments_native_grid_and_stitches_output(tmp
     result = correct_file(
         input_path,
         output_path,
+        wavelength_medium="vacuum",
         hitran_par=hitran_path,
         hitran_species=("H2O",),
         mixing_ratios={"H2O": 1.0e-5},
@@ -312,6 +722,113 @@ def test_correct_arrays_exposes_global_wavelength_polynomial():
     np.testing.assert_allclose(result.wavelength_coefficients, coefficients, atol=1.0e-5)
 
 
+def test_correct_arrays_auto_selects_wavelength_dependent_pixel_shift():
+    pixel = np.arange(6000, dtype=float)
+    wavelength = 2.30 + 6.0e-6 * pixel + 3.0e-10 * pixel**2
+    line_list = LineList(
+        wavelength=np.array(
+            [2.303, 2.308, 2.315, 2.322, 2.329, 2.337, 2.345]
+        ),
+        strength=np.array([0.006, 0.008, 0.005, 0.009, 0.007, 0.008, 0.006]),
+        sigma=np.full(7, 1.2e-5),
+        gamma=np.full(7, 6.0e-6),
+        species=np.full(7, "H2O"),
+    )
+    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(
+        wavelength
+    )
+    true_coefficients = np.array([0.25, 1.15])
+    species_names, basis = optical_depth_basis(wavelength, line_list)
+    flux = transmission_from_basis(
+        species_names,
+        _shift_basis(
+            wavelength,
+            basis,
+            (true_coefficients[0] + true_coefficients[1] * x)
+            * np.gradient(wavelength),
+        ),
+        species_scales={"H2O": 1.2},
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        auto_segment=False,
+        high_resolution_grid=False,
+        lsf_sigma_pixels=0.0,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+    )
+
+    alignment = result.provenance["wavelength_alignment"]
+    assert result.success
+    assert alignment["selected_model"] == "linear_pixel_trend"
+    assert alignment["coefficient_unit"] == "pixel"
+    np.testing.assert_allclose(
+        result.wavelength_coefficients,
+        true_coefficients,
+        atol=0.15,
+    )
+
+
+@pytest.mark.parametrize(
+    ("true_pixel_shift", "expected_model"),
+    [
+        (0.0, "none"),
+        (1.2, "constant_pixel_shift"),
+        (-1.2, "constant_pixel_shift"),
+    ],
+)
+def test_correct_arrays_auto_selects_simplest_supported_wavelength_model(
+    true_pixel_shift,
+    expected_model,
+):
+    pixel = np.arange(4000, dtype=float)
+    wavelength = 2.30 + 9.0e-6 * pixel + 4.0e-10 * pixel**2
+    line_list = LineList(
+        wavelength=np.array([2.304, 2.312, 2.320, 2.328, 2.336]),
+        strength=np.array([0.006, 0.008, 0.005, 0.009, 0.007]),
+        sigma=np.full(5, 1.2e-5),
+        gamma=np.full(5, 6.0e-6),
+        species=np.full(5, "H2O"),
+    )
+    species_names, basis = optical_depth_basis(wavelength, line_list)
+    flux = transmission_from_basis(
+        species_names,
+        _shift_basis(
+            wavelength,
+            basis,
+            true_pixel_shift * np.gradient(wavelength),
+        ),
+        species_scales={"H2O": 1.2},
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        auto_segment=False,
+        high_resolution_grid=False,
+        lsf_sigma_pixels=0.0,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+    )
+
+    alignment = result.provenance["wavelength_alignment"]
+    assert alignment["selected_model"] == expected_model
+    if true_pixel_shift:
+        np.testing.assert_allclose(
+            result.wavelength_coefficients,
+            [true_pixel_shift],
+            atol=0.12,
+        )
+
+
 def test_correct_file_writes_outputs(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 300)
     flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
@@ -323,6 +840,7 @@ def test_correct_file_writes_outputs(tmp_path):
     result = correct_file(
         input_path,
         output_path,
+        wavelength_medium="vacuum",
         demo_line_list=True,
         continuum_order=0,
         product_path=product_path,
@@ -333,13 +851,45 @@ def test_correct_file_writes_outputs(tmp_path):
     assert product_path.exists()
 
 
+def test_standalone_result_writers_save_txt_and_ecsv(tmp_path):
+    wavelength = np.linspace(2.31, 2.36, 300)
+    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=LineList.demo_near_ir(),
+        continuum_order=0,
+    )
+    txt_path = tmp_path / "corrected_spectrum.txt"
+    ecsv_path = tmp_path / "fit_product.ecsv"
+
+    assert save_corrected_txt(result, txt_path) == txt_path
+    assert save_fit_product_ecsv(result, ecsv_path) == ecsv_path
+
+    corrected = np.loadtxt(txt_path)
+    product = Table.read(ecsv_path, format="ascii.ecsv")
+    np.testing.assert_allclose(corrected[:, 0], result.corrected.wavelength)
+    np.testing.assert_allclose(corrected[:, 1], result.corrected.flux)
+    assert {
+        "wavelength",
+        "flux",
+        "model_flux",
+        "continuum",
+        "transmission",
+        "corrected_flux",
+        "input_mask",
+        "corrected_mask",
+    } <= set(product.colnames)
+    assert product.meta["fit_success"] is True
+
+
 def test_correct_file_refuses_implicit_synthetic_line_data(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 20)
     input_path = tmp_path / "spectrum.txt"
     np.savetxt(input_path, np.column_stack([wavelength, np.ones_like(wavelength)]))
 
     with pytest.raises(ValueError, match="no molecular line data supplied"):
-        correct_file(input_path, aer_catalog=None)
+        correct_file(input_path, wavelength_medium="vacuum", aer_catalog=None)
 
 
 def test_correct_file_with_hitran_nm_input(tmp_path):
@@ -355,6 +905,7 @@ def test_correct_file_with_hitran_nm_input(tmp_path):
         input_path,
         output_path,
         wavelength_unit="nm",
+        wavelength_medium="vacuum",
         hitran_par=hitran_path,
         mixing_ratios={"H2O": 1.0e-5},
         allow_default_observatory=True,
@@ -451,6 +1002,7 @@ def test_correct_file_uses_atmosphere_table(tmp_path):
     result = correct_file(
         input_path,
         output_path,
+        wavelength_medium="vacuum",
         hitran_par=hitran_path,
         atmosphere_table=atmosphere_path,
         continuum_order=0,
@@ -458,6 +1010,68 @@ def test_correct_file_uses_atmosphere_table(tmp_path):
 
     assert result.success
     assert output_path.exists()
+
+
+def test_correct_file_stops_when_wavelength_medium_is_unknown(tmp_path):
+    input_path = tmp_path / "spectrum.txt"
+    wavelength = np.linspace(2.31, 2.36, 20)
+    np.savetxt(input_path, np.column_stack([wavelength, np.ones_like(wavelength)]))
+
+    with pytest.raises(
+        ValueError,
+        match="stopped the correction because wavelength_medium was not provided",
+    ):
+        correct_file(input_path, demo_line_list=True, continuum_order=0)
+
+
+@pytest.mark.parametrize(
+    ("ctype", "expected_medium"),
+    (("AWAV", "air"), ("AWAV-TAB", "air"), ("WAVE", "vacuum"), ("WAVE-TAB", "vacuum")),
+)
+def test_fits_wcs_infers_wavelength_medium(ctype, expected_medium):
+    assert _infer_wavelength_medium_from_header({"CTYPE1": ctype}) == expected_medium
+
+
+def test_explicit_fits_metadata_infers_wavelength_medium():
+    assert (
+        _infer_wavelength_medium_from_header({"PYMOLFIT WAVE": "air micron"})
+        == "air"
+    )
+    assert _infer_wavelength_medium_from_header({"VACUUM": True}) == "vacuum"
+    assert _infer_wavelength_medium_from_header({"VACUUM": False}) == "air"
+    assert _infer_wavelength_medium_from_header({"SPECSYS": "BARYCENT"}) is None
+
+
+def test_conflicting_fits_wavelength_medium_is_rejected():
+    with pytest.raises(ValueError, match="conflicting FITS metadata"):
+        _infer_wavelength_medium_from_header(
+            {"CTYPE1": "AWAV", "WAVEMED": "vacuum"}
+        )
+
+
+@pytest.mark.parametrize("ctype", ("AWAV", "WAVE"))
+def test_correct_file_uses_fits_wavelength_medium_when_omitted(tmp_path, ctype):
+    input_path = tmp_path / f"spectrum_{ctype.lower()}.fits"
+    wavelength = np.linspace(2.31, 2.36, 300)
+    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    primary = fits.PrimaryHDU()
+    primary.header["CTYPE1"] = ctype
+    spectrum_hdu = fits.BinTableHDU.from_columns(
+        [
+            fits.Column(name="wavelength", format="D", unit="um", array=wavelength),
+            fits.Column(name="flux", format="D", array=flux),
+        ]
+    )
+    fits.HDUList([primary, spectrum_hdu]).writeto(input_path)
+
+    result = correct_file(input_path, demo_line_list=True, continuum_order=0)
+
+    expected = (
+        air_to_vacuum_wavelength(wavelength)
+        if ctype == "AWAV"
+        else wavelength
+    )
+    np.testing.assert_allclose(result.spectrum.wavelength, expected)
 
 
 def test_workflow_preslants_internal_atmosphere_once():
@@ -604,3 +1218,155 @@ def test_workflow_converts_documented_heliocentric_product_to_observatory_frame(
     np.testing.assert_allclose(converted.wavelength, spectrum.wavelength / factor)
     assert converted.meta["original_spectral_frame"] == "HELIOCENTRIC"
     assert converted.meta["observatory_frame_velocity_km_s"] == header["HELIOVEL"]
+
+
+def test_unified_correct_rejects_ambiguous_input_routes():
+    wavelength = np.linspace(2.31, 2.36, 40)
+    flux = np.ones_like(wavelength)
+    observation = Observation(wavelength_frame="observatory")
+
+    with pytest.raises(ValueError, match="provide input_path"):
+        correct()
+    with pytest.raises(ValueError, match="not both"):
+        correct(
+            input_path="spectrum.fits",
+            wavelength=wavelength,
+            flux=flux,
+            observation=observation,
+            wavelength_medium="vacuum",
+        )
+    with pytest.raises(ValueError, match="both wavelength and flux"):
+        correct(wavelength=wavelength, observation=observation)
+    with pytest.raises(ValueError, match="requires observation"):
+        correct(
+            wavelength=wavelength,
+            flux=flux,
+            wavelength_medium="vacuum",
+        )
+    with pytest.raises(ValueError, match="wavelength_frame"):
+        correct(
+            wavelength=wavelength,
+            flux=flux,
+            wavelength_medium="vacuum",
+            observation=Observation(),
+        )
+    with pytest.raises(ValueError, match="requires wavelength_medium"):
+        correct(
+            wavelength=wavelength,
+            flux=flux,
+            observation=observation,
+        )
+
+
+def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_path):
+    input_path = tmp_path / "spectrum.txt"
+    wavelength = np.linspace(2.31, 2.36, 500)
+    line_list = LineList.demo_near_ir()
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.2, "O2": 0.8}),
+    )
+    np.savetxt(input_path, np.column_stack((wavelength, flux)))
+    observation = Observation(
+        time="2021-09-13T02:18:06.238",
+        latitude_deg=-29.2584,
+        longitude_deg=-70.7345,
+        altitude_m=2400.0,
+        airmass=1.2,
+        resolving_power=100_000.0,
+        wavelength_frame="barycentric",
+        frame_velocity_km_s=-7.5,
+        instrument="TEST",
+    )
+    options = {
+        "line_list": line_list,
+        "physical": False,
+        "continuum_order": 0,
+        "solve_continuum_linear": True,
+        "lsf_sigma_pixels": 0.0,
+        "fit_lsf_sigma": False,
+        "lsf_lorentz_fwhm_pixels": 0.0,
+        "fit_lsf_lorentz_fwhm": False,
+        "lsf_variable_width": False,
+        "high_resolution_grid": False,
+        "fit_wavelength_shift": False,
+        "auto_segment": False,
+    }
+
+    file_result = correct(
+        input_path=input_path,
+        wavelength_medium="vacuum",
+        observation=observation,
+        **options,
+    )
+    array_result = correct(
+        wavelength=wavelength,
+        flux=flux,
+        wavelength_medium="vacuum",
+        observation=observation,
+        **options,
+    )
+
+    np.testing.assert_allclose(
+        file_result.spectrum.wavelength,
+        array_result.spectrum.wavelength,
+        rtol=0.0,
+        atol=1.0e-15,
+    )
+    np.testing.assert_allclose(
+        file_result.model_flux,
+        array_result.model_flux,
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        file_result.transmission,
+        array_result.transmission,
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        file_result.corrected.flux,
+        array_result.corrected.flux,
+        rtol=0.0,
+        atol=1.0e-12,
+        equal_nan=True,
+    )
+    assert file_result.spectrum.meta["original_spectral_frame"] == "BARYCENTRIC"
+    assert array_result.spectrum.meta["original_spectral_frame"] == "BARYCENTRIC"
+
+
+def test_unified_correct_arrays_preserves_mask_and_writes_products(tmp_path):
+    wavelength = np.linspace(2.31, 2.36, 120)
+    flux = np.ones_like(wavelength)
+    mask = np.ones_like(wavelength, dtype=bool)
+    mask[[3, 17]] = False
+    output_path = tmp_path / "corrected.txt"
+    product_path = tmp_path / "fit_product.ecsv"
+
+    result = correct(
+        wavelength=wavelength,
+        flux=flux,
+        mask=mask,
+        wavelength_medium="vacuum",
+        observation=Observation(wavelength_frame="observatory"),
+        output_path=output_path,
+        product_path=product_path,
+        demo_line_list=True,
+        physical=False,
+        continuum_order=0,
+        lsf_sigma_pixels=0.0,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+        lsf_variable_width=False,
+        high_resolution_grid=False,
+        fit_wavelength_shift=False,
+        auto_segment=False,
+    )
+
+    assert result.success
+    np.testing.assert_array_equal(result.spectrum.mask, mask)
+    assert output_path.exists()
+    assert product_path.exists()

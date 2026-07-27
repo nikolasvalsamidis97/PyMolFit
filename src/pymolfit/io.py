@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.io import fits
@@ -9,6 +10,9 @@ from astropy.table import Table
 
 from .spectrum import Spectrum
 from .provenance import file_sha256
+
+if TYPE_CHECKING:
+    from .fit import TelluricFitResult
 
 WAVELENGTH_COLUMNS = (
     "wavelength",
@@ -97,6 +101,50 @@ def save_spectrum(path: str | Path, spectrum: Spectrum) -> None:
         header += " uncertainty"
     data = np.column_stack(columns)
     np.savetxt(path, data, header=header)
+
+
+def save_corrected_txt(result: TelluricFitResult, path: str | Path) -> Path:
+    """Save only the corrected spectrum as a compact plain-text file.
+
+    This output is intended for simple plotting or use in software that only
+    needs the final corrected spectrum. It contains wavelength and corrected
+    flux columns, plus corrected uncertainty when one is available. It does
+    not contain the fitted atmospheric transmission, continuum, masks,
+    parameters, or provenance; use :func:`save_fit_product_ecsv` when those
+    details must be retained. Saving does not rerun or modify the fit, and an
+    existing file at ``path`` is overwritten.
+
+    :param result: Completed PyMolFit telluric-fit result returned by
+        ``correct_file`` or ``correct_arrays``.
+    :param path: Destination filename, conventionally ending in ``.txt``.
+    :return: The destination path that was written.
+    """
+
+    destination = Path(path)
+    save_spectrum(destination, result.corrected)
+    return destination
+
+
+def save_fit_product_ecsv(result: TelluricFitResult, path: str | Path) -> Path:
+    """Save the complete reproducible PyMolFit result as an ECSV table.
+
+    ECSV is Astropy's Enhanced Character-Separated Values format. The saved
+    table includes input and corrected flux, fitted transmission, continuum,
+    model flux, available uncertainties, fit/input/correction masks, fitted
+    parameters, wavelength units and medium, diagnostics, and provenance.
+    Choose this output when the fit must be inspected, reproduced, or passed
+    to another Astropy workflow. Saving does not rerun or modify the fit, and
+    an existing file at ``path`` is overwritten.
+
+    :param result: Completed PyMolFit telluric-fit result returned by
+        ``correct_file`` or ``correct_arrays``.
+    :param path: Destination filename, conventionally ending in ``.ecsv``.
+    :return: The destination path that was written.
+    """
+
+    destination = Path(path)
+    result.write(destination, format="ascii.ecsv")
+    return destination
 
 
 def _load_ascii(

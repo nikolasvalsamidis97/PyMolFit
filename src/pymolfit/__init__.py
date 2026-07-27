@@ -46,7 +46,12 @@ from .continuum import (
     radiation_term_cm,
     radiation_term_interval_cm,
 )
-from .diagnostics import correction_summary, residual_by_window
+from .diagnostics import (
+    correction_summary,
+    format_fit_summary,
+    print_fit_summary,
+    residual_by_window,
+)
 from .fit import (
     FitConfig,
     MultiTelluricFitResult,
@@ -60,7 +65,12 @@ from .hitran import (
     read_aer_line_file,
     read_hitran_par,
 )
-from .io import load_spectrum, save_spectrum
+from .io import (
+    load_spectrum,
+    save_corrected_txt,
+    save_fit_product_ecsv,
+    save_spectrum,
+)
 from .linelist import LineList
 from .line_data import (
     HitranAcquisitionError,
@@ -87,6 +97,7 @@ from .model import (
     transmission_from_high_resolution_basis,
     transmission_model,
 )
+from .observation import Observation, WavelengthFrame
 from .partition import IsotopologueMetadata, PartitionTable
 from .plotting import plot_fit
 from .physics import (
@@ -125,7 +136,7 @@ from .validation import (
     compare_spectra,
     cross_validate_telluric_segments,
 )
-from .workflow import correct_arrays, correct_file
+from .workflow import correct, correct_arrays, correct_file
 
 __all__ = [
     "__version__",
@@ -167,6 +178,7 @@ __all__ = [
     "N2RototranslationalContinuumAbsorption",
     "O2CIAAbsorption",
     "O2ContinuumAbsorption",
+    "Observation",
     "PairCIAAbsorption",
     "PhysicalModelConfig",
     "PartitionTable",
@@ -181,15 +193,20 @@ __all__ = [
     "TabulatedContinuumAbsorption",
     "TelluricFitResult",
     "ValidationCheck",
+    "WavelengthFrame",
     "air_to_vacuum_wavelength",
     "correct_spectrum",
+    "correct",
     "correct_arrays",
     "correct_file",
+    "save_corrected_txt",
+    "save_fit_product_ecsv",
     "cache_hitran_par",
     "combine_optical_depth_components",
     "compare_spectra",
     "cross_validate_telluric_segments",
     "correction_summary",
+    "format_fit_summary",
     "cubic_interpolate_regular",
     "fit_tellurics",
     "fit_tellurics_with_systematics",
@@ -222,6 +239,7 @@ __all__ = [
     "physical_optical_depth_basis",
     "physical_transmission_model",
     "plot_fit",
+    "print_fit_summary",
     "pressure_shift_wavenumber",
     "prepare_piecewise_constant_rebin",
     "prepare_sample_average_rebin",

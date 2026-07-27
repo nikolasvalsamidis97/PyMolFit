@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
-
 from .aer_data import AERDataError, aer_catalog_status, install_aer_catalog
 from .io import load_spectrum
 from .linelist import LineList
@@ -12,6 +10,15 @@ from .line_data import HitranAcquisitionError, cache_hitran_par, fetch_hitran_li
 from .physics import LBLRTM_DEFAULT_AVMASS_AMU
 from .validation import compare_spectra
 from .workflow import DEFAULT_SEGMENT_SIZE_MICRON, correct_file
+
+
+def _auto_or_float(value: str) -> str | float:
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected 'auto' or a number") from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,28 +119,56 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--wavelength-medium",
         choices=["vacuum", "air"],
-        default="vacuum",
-        help="whether input wavelengths are vacuum or standard-air wavelengths",
+        default=None,
+        help=(
+            "whether input wavelengths are vacuum or standard-air wavelengths; "
+            "when omitted, require an unambiguous declaration in FITS metadata"
+        ),
     )
     fit_parser.add_argument("--airmass", type=float, default=1.0)
     fit_parser.add_argument("--continuum-order", type=int, default=1)
     fit_parser.add_argument(
         "--solve-continuum-linear",
-        action="store_true",
-        help="solve polynomial continuum coefficients exactly at each nonlinear step",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "use the exact linear continuum solver; the default auto mode "
+            "falls back to nonlinear fitting when necessary"
+        ),
     )
-    fit_parser.add_argument("--lsf-sigma-pixels", type=float, default=0.0)
+    fit_parser.add_argument(
+        "--lsf-sigma-pixels",
+        type=_auto_or_float,
+        default="auto",
+        help="Gaussian LSF sigma in pixels, or auto to estimate and refine it",
+    )
     fit_parser.add_argument("--lsf-box-width-pixels", type=float, default=0.0)
-    fit_parser.add_argument("--lsf-lorentz-fwhm-pixels", type=float, default=0.0)
+    fit_parser.add_argument(
+        "--lsf-lorentz-fwhm-pixels",
+        type=_auto_or_float,
+        default="auto",
+        help=(
+            "Lorentzian LSF FWHM in pixels, or auto to compare Gaussian and "
+            "Gaussian-plus-Lorentzian models on distributed pilot regions"
+        ),
+    )
     fit_parser.add_argument(
         "--lsf-variable-width",
-        action="store_true",
-        help="scale LSF widths by wavelength/reference wavelength",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "automatically compare constant and wavelength-dependent LSF "
+            "widths (default); use --lsf-variable-width for a fixed linear "
+            "scaling or --no-lsf-variable-width for constant pixel widths"
+        ),
     )
     fit_parser.add_argument(
         "--lsf-reference-wavelength-micron",
         type=float,
-        help="reference wavelength for --lsf-variable-width; defaults to segment median",
+        help=(
+            "global reference wavelength for variable LSF scaling; defaults "
+            "to the full spectrum median"
+        ),
     )
     fit_parser.add_argument(
         "--lsf-kernel-width-fwhm",
@@ -261,7 +296,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.03,
         help="mask corrected pixels whose fitted atmospheric transmission is below this fraction",
     )
-    fit_parser.add_argument("--fit-wavelength-shift", action="store_true", help="fit a constant wavelength shift")
+    fit_parser.add_argument(
+        "--fit-wavelength-shift",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "fit residual wavelength alignment; the default auto mode compares "
+            "no shift, a constant detector-pixel shift, and a linear pixel-shift "
+            "trend; the positive flag forces the legacy constant-micron model "
+            "and the negative flag disables alignment fitting"
+        ),
+    )
     fit_parser.add_argument(
         "--fit-wavelength-polynomial",
         action="store_true",
@@ -274,17 +319,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="order of --fit-wavelength-polynomial in a normalized global coordinate",
     )
     fit_parser.add_argument("--initial-wavelength-shift", type=float, default=0.0)
-    fit_parser.add_argument("--wavelength-shift-bounds", nargs=2, type=float, default=(-5.0e-4, 5.0e-4))
-    fit_parser.add_argument("--fit-lsf-sigma", action="store_true", help="fit Gaussian LSF sigma in pixels")
-    fit_parser.add_argument("--lsf-sigma-bounds", nargs=2, type=float, default=(0.0, 5.0))
+    fit_parser.add_argument(
+        "--wavelength-shift-bounds",
+        nargs=2,
+        type=float,
+        help=(
+            "coefficient bounds; defaults to +/-3 detector pixels in auto "
+            "mode and legacy micron bounds for explicit modes"
+        ),
+    )
+    fit_parser.add_argument(
+        "--fit-lsf-sigma",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "refine Gaussian LSF sigma; auto refines automatically estimated "
+            "values and keeps explicit numeric values fixed"
+        ),
+    )
+    fit_parser.add_argument(
+        "--lsf-sigma-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        help="optional lower and upper Gaussian LSF sigma bounds in pixels",
+    )
     fit_parser.add_argument("--fit-lsf-box-width", action="store_true", help="fit boxcar LSF width in pixels")
     fit_parser.add_argument("--lsf-box-width-bounds", nargs=2, type=float, default=(0.0, 10.0))
-    fit_parser.add_argument("--fit-lsf-lorentz-fwhm", action="store_true", help="fit Lorentzian LSF FWHM in pixels")
-    fit_parser.add_argument("--lsf-lorentz-fwhm-bounds", nargs=2, type=float, default=(0.0, 10.0))
+    fit_parser.add_argument(
+        "--fit-lsf-lorentz-fwhm",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "fit Lorentzian LSF FWHM; auto uses distributed pilot-model "
+            "selection for an automatic width"
+        ),
+    )
+    fit_parser.add_argument(
+        "--lsf-lorentz-fwhm-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        help="optional lower and upper Lorentzian LSF FWHM bounds in pixels",
+    )
     fit_parser.add_argument("--fit-range", action="append", default=[], metavar="START:STOP")
     fit_parser.add_argument("--exclude-range", action="append", default=[], metavar="START:STOP")
-    fit_parser.add_argument("--loss", default="linear", help="scipy least_squares loss, e.g. linear or soft_l1")
-    fit_parser.add_argument("--f-scale", type=float, default=1.0)
+    fit_parser.add_argument(
+        "--loss",
+        choices=["linear", "soft_l1", "huber", "cauchy", "arctan"],
+        default="linear",
+        help=(
+            "linear for clean, well-masked spectra; soft_l1 for mostly clean "
+            "spectra containing a limited number of outliers"
+        ),
+    )
+    fit_parser.add_argument(
+        "--f-scale",
+        type=float,
+        default=1.0,
+        help="inlier/outlier residual scale for robust losses; ignored by linear loss",
+    )
     fit_parser.add_argument("--ftol", type=float, default=1.0e-10, help="relative cost convergence tolerance")
     fit_parser.add_argument("--xtol", type=float, default=1.0e-10, help="relative parameter convergence tolerance")
     fit_parser.add_argument("--gtol", type=float, default=1.0e-10, help="gradient convergence tolerance")
@@ -532,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "fit":
-        if args.fit_wavelength_shift and args.fit_wavelength_polynomial:
+        if args.fit_wavelength_shift is True and args.fit_wavelength_polynomial:
             parser.error(
                 "use either --fit-wavelength-shift or --fit-wavelength-polynomial, not both"
             )
@@ -572,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
-        result = correct_file(
+        correct_file(
             args.input,
             args.output,
             input_format=args.format,
@@ -669,13 +763,25 @@ def main(argv: list[str] | None = None) -> int:
             fit_wavelength_polynomial=args.fit_wavelength_polynomial,
             wavelength_polynomial_order=args.wavelength_polynomial_order,
             initial_wavelength_shift=args.initial_wavelength_shift,
-            wavelength_shift_bounds=tuple(args.wavelength_shift_bounds),
+            wavelength_shift_bounds=(
+                None
+                if args.wavelength_shift_bounds is None
+                else tuple(args.wavelength_shift_bounds)
+            ),
             fit_lsf_sigma=args.fit_lsf_sigma,
-            lsf_sigma_bounds=tuple(args.lsf_sigma_bounds),
+            lsf_sigma_bounds=(
+                None
+                if args.lsf_sigma_bounds is None
+                else tuple(args.lsf_sigma_bounds)
+            ),
             fit_lsf_box_width=args.fit_lsf_box_width,
             lsf_box_width_bounds=tuple(args.lsf_box_width_bounds),
             fit_lsf_lorentz_fwhm=args.fit_lsf_lorentz_fwhm,
-            lsf_lorentz_fwhm_bounds=tuple(args.lsf_lorentz_fwhm_bounds),
+            lsf_lorentz_fwhm_bounds=(
+                None
+                if args.lsf_lorentz_fwhm_bounds is None
+                else tuple(args.lsf_lorentz_fwhm_bounds)
+            ),
             fit_ranges=fit_ranges,
             exclude_ranges=exclude_ranges,
             loss=args.loss,
@@ -688,21 +794,6 @@ def main(argv: list[str] | None = None) -> int:
             product_format=args.product_format,
             plot_path=args.plot,
         )
-        print(f"success: {result.success}")
-        print(f"cost: {result.cost:.6g}")
-        print(f"wavelength shift: {result.wavelength_shift:.6g} micron")
-        print(f"lsf sigma: {result.lsf_sigma_pixels:.6g} pixels")
-        print(f"lsf box width: {result.lsf_box_width_pixels:.6g} pixels")
-        print(f"lsf lorentz fwhm: {result.lsf_lorentz_fwhm_pixels:.6g} pixels")
-        print("species scales:")
-        for name, scale in result.species_scales.items():
-            error = result.species_scale_uncertainties.get(name)
-            suffix = "" if error is None else f" +/- {error:.3g}"
-            print(f"  {name}: {scale:.6g}{suffix}")
-        print(f"median transmission: {np.nanmedian(result.transmission):.6g}")
-        print("metrics:")
-        for name, value in result.metrics.items():
-            print(f"  {name}: {value:.6g}")
         return 0
 
     if args.command == "convert-hitran":

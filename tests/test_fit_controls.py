@@ -24,6 +24,20 @@ def test_optimizer_tolerances_match_molecfit_defaults():
     assert config.gtol == 1.0e-10
 
 
+def test_fitting_lsf_wavelength_exponent_requires_variable_width():
+    wavelength = np.linspace(2.31, 2.36, 100)
+
+    with pytest.raises(
+        ValueError,
+        match="requires lsf_variable_width=True",
+    ):
+        fit_tellurics(
+            Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength)),
+            line_list=LineList.demo_near_ir(),
+            config=FitConfig(fit_lsf_wavelength_exponent=True),
+        )
+
+
 def _shifted_demo_line_list(shift_micron):
     base = LineList.demo_near_ir()
     return LineList(
@@ -73,6 +87,213 @@ def test_fit_recovers_wavelength_shift():
 
     assert result.success
     assert abs(result.wavelength_shift - true_shift) < 4.0e-5
+
+
+def test_fit_recovers_constant_detector_pixel_shift_on_variable_dispersion():
+    pixel = np.arange(1200, dtype=float)
+    wavelength = 2.30 + 2.0e-5 * pixel + 4.0e-9 * pixel**2
+    line_list = LineList(
+        wavelength=np.array([2.306, 2.316, 2.326]),
+        strength=np.array([0.006, 0.008, 0.005]),
+        sigma=np.full(3, 1.5e-5),
+        gamma=np.full(3, 8.0e-6),
+        species=np.full(3, "H2O"),
+    )
+    true_pixel_shift = 1.35
+    local_dispersion = np.gradient(wavelength)
+    species_names, basis = optical_depth_basis(wavelength, line_list)
+    flux = transmission_from_basis(
+        species_names,
+        _shift_basis(
+            wavelength,
+            basis,
+            true_pixel_shift * local_dispersion,
+        ),
+        species_scales={"H2O": 1.2},
+    )
+
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=flux),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            fit_wavelength_shift=True,
+            wavelength_shift_unit="pixel",
+            wavelength_shift_bounds=(-3.0, 3.0),
+        ),
+    )
+
+    assert result.success
+    assert result.parameter_names.count("wavelength_shift_pixels") == 1
+    assert result.to_table().meta["wavelength_coefficient_unit"] == "pixel"
+    np.testing.assert_allclose(
+        result.wavelength_coefficients,
+        [true_pixel_shift],
+        atol=0.12,
+    )
+    np.testing.assert_allclose(
+        result.wavelength_shift,
+        np.median(true_pixel_shift * local_dispersion),
+        rtol=0.08,
+    )
+
+
+def test_fit_recovers_wavelength_dependent_detector_pixel_shift():
+    pixel = np.arange(1600, dtype=float)
+    wavelength = 2.30 + 1.8e-5 * pixel + 3.0e-9 * pixel**2
+    line_list = LineList(
+        wavelength=np.array([2.304, 2.310, 2.320, 2.330, 2.340]),
+        strength=np.array([0.006, 0.008, 0.005, 0.007, 0.006]),
+        sigma=np.full(5, 1.3e-5),
+        gamma=np.full(5, 7.0e-6),
+        species=np.full(5, "H2O"),
+    )
+    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(
+        wavelength
+    )
+    true_coefficients = np.array([0.4, 1.1])
+    pixel_shift = true_coefficients[0] + true_coefficients[1] * x
+    species_names, basis = optical_depth_basis(wavelength, line_list)
+    flux = transmission_from_basis(
+        species_names,
+        _shift_basis(
+            wavelength,
+            basis,
+            pixel_shift * np.gradient(wavelength),
+        ),
+        species_scales={"H2O": 1.3},
+    )
+
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=flux),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            fit_wavelength_polynomial=True,
+            wavelength_polynomial_order=1,
+            wavelength_shift_unit="pixel",
+            wavelength_shift_bounds=(-3.0, 3.0),
+        ),
+    )
+
+    assert result.success
+    assert "wavelength_pixel_coefficient:1" in result.parameter_names
+    np.testing.assert_allclose(
+        result.wavelength_coefficients,
+        true_coefficients,
+        atol=0.15,
+    )
+
+
+def test_multi_segment_fit_recovers_shared_detector_pixel_shift_with_sparse_jacobian():
+    line_list = LineList(
+        wavelength=np.array([2.304, 2.310, 2.330, 2.336]),
+        strength=np.array([0.006, 0.008, 0.007, 0.006]),
+        sigma=np.full(4, 1.3e-5),
+        gamma=np.full(4, 7.0e-6),
+        species=np.full(4, "H2O"),
+    )
+    true_pixel_shift = -1.1
+    spectra = []
+    for lower, upper in ((2.300, 2.314), (2.326, 2.340)):
+        pixel = np.arange(900, dtype=float)
+        wavelength = lower + (upper - lower) * (pixel / pixel[-1]) ** 1.02
+        species_names, basis = optical_depth_basis(wavelength, line_list)
+        flux = transmission_from_basis(
+            species_names,
+            _shift_basis(
+                wavelength,
+                basis,
+                true_pixel_shift * np.gradient(wavelength),
+            ),
+            species_scales={"H2O": 1.2},
+        )
+        spectra.append(Spectrum(wavelength=wavelength, flux=flux))
+
+    result = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            fit_wavelength_shift=True,
+            wavelength_shift_unit="pixel",
+            initial_wavelength_shift=0.1,
+            wavelength_shift_bounds=(-3.0, 3.0),
+            use_jacobian_sparsity=True,
+        ),
+        global_wavelength_bounds=(2.300, 2.340),
+    )
+
+    assert result.success
+    np.testing.assert_allclose(
+        result.segment_results[0].wavelength_coefficients,
+        [true_pixel_shift],
+        atol=0.15,
+    )
+
+
+def test_multi_segment_fit_recovers_lsf_wavelength_exponent():
+    centers = np.array([1.0, 1.5, 2.0])
+    line_list = LineList(
+        wavelength=centers,
+        strength=np.full(centers.size, 0.03),
+        sigma=np.full(centers.size, 1.0e-5),
+        gamma=np.full(centers.size, 5.0e-6),
+        species=np.full(centers.size, "H2O"),
+    )
+    reference_wavelength = 1.5
+    true_exponent = 1.25
+    spectra = []
+    for center in centers:
+        wavelength = np.linspace(center - 0.0015, center + 0.0015, 600)
+        species_names, basis = optical_depth_basis(wavelength, line_list)
+        flux = transmission_from_basis(
+            species_names,
+            basis,
+            species_scales={"H2O": 1.0},
+            lsf_sigma_pixels=2.5,
+            wavelength_micron=wavelength,
+            lsf_variable_width=True,
+            lsf_reference_wavelength_micron=reference_wavelength,
+            lsf_wavelength_exponent=true_exponent,
+        )
+        spectra.append(
+            Spectrum(
+                wavelength=wavelength,
+                flux=flux,
+                uncertainty=np.full(wavelength.size, 0.002),
+            )
+        )
+
+    result = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            solve_continuum_linear=True,
+            fixed_species_scales={"H2O": 1.0},
+            lsf_sigma_pixels=2.5,
+            lsf_variable_width=True,
+            lsf_reference_wavelength_micron=reference_wavelength,
+            lsf_wavelength_exponent=0.8,
+            fit_lsf_wavelength_exponent=True,
+            lsf_wavelength_exponent_bounds=(-2.0, 2.0),
+        ),
+    )
+
+    assert result.success
+    assert result.parameter_names == ("lsf_wavelength_exponent",)
+    np.testing.assert_allclose(
+        result.lsf_wavelength_exponent,
+        true_exponent,
+        atol=0.03,
+    )
+    assert (
+        result.segment_results[0].to_table().meta[
+            "lsf_wavelength_exponent"
+        ]
+        == pytest.approx(true_exponent, abs=0.03)
+    )
 
 
 def test_fit_lsf_sigma_and_writes_product_table(tmp_path):

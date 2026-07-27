@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymolfit"
-version = "0.3.0"
-description = "Generic pure-Python telluric fitting and correction with source-audited radiative-transfer physics."
+version = "0.4.0"
+description = "Independent pure-Python telluric correction based on the ESO Molecfit workflow."
 readme = "README.md"
-license = { text = "Scientific/research use; see THIRD_PARTY_NOTICES.md for bundled AER data terms" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.10"
 keywords = [
     "astronomy",
@@ -58,9 +59,6 @@ Repository = "https://github.com/nikolasvalsamidis97/PyMolFit.git"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools]
-license-files = ["THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.package-data]
 pymolfit = [
