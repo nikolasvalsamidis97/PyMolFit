@@ -29,7 +29,8 @@ def _demo_result():
 
 
 def test_format_fit_summary_reports_effective_configuration():
-    report = format_fit_summary(_demo_result(), input_path="spectrum.fits")
+    result = _demo_result()
+    report = format_fit_summary(result, input_path="spectrum.fits")
 
     assert report.startswith("PyMolFit effective fit configuration")
     assert "input: spectrum.fits" in report
@@ -40,7 +41,24 @@ def test_format_fit_summary_reports_effective_configuration():
     assert "Gaussian LSF sigma: 0 pixels (source=user, fitted=no" in report
     assert "wavelength alignment: none" in report
     assert "line wings: lblrtm_panel" in report
+    assert "radiative-transfer airmass: 1" in report
     assert "success: yes" in report
+    assert "residual alignment: median=" in report
+    assert "fit_quality" in result.provenance
+
+
+def test_format_fit_summary_distinguishes_profile_and_multiplier_airmass():
+    result = _demo_result()
+    result.provenance["atmosphere_metadata"] = {"airmass": 1.23926543209877}
+
+    report = format_fit_summary(result)
+
+    assert (
+        "observation airmass: 1.2392654 "
+        "(incorporated into atmospheric layer path lengths)"
+    ) in report
+    assert "additional opacity airmass multiplier: 1" in report
+    assert "airmass used by fit" not in report
 
 
 def test_correct_file_always_prints_effective_configuration(tmp_path, capsys):

@@ -238,6 +238,50 @@ def test_mipas_gdas_from_fits_header_reads_metadata():
     np.testing.assert_allclose(profile.layers[0].temperature_k, 281.15, rtol=0.01)
 
 
+def test_mipas_gdas_reads_numbered_espresso_telescope_metadata():
+    header = {
+        "TELESCOP": "ESO-VLT-U1",
+        "MJD-OBS": 60548.0,
+        "MJD-END": 60548.2,
+        "NCOMBINE": 20,
+        "ESO OBS AIRM": 2.2,
+        "ESO QC AIRM AVG": 1.24,
+        "ESO TEL1 AIRM START": 2.19,
+        "ESO TEL1 AIRM END": 2.28,
+        "ESO TEL1 GEOELEV": 2648.0,
+        "ESO TEL1 GEOLAT": -24.6276,
+        "ESO TEL1 GEOLON": -70.4051,
+        "ESO TEL1 AMBI PRES START": 745.9,
+        "ESO TEL1 AMBI TEMP": 12.49,
+        "ESO TEL1 AMBI RHUM": 8.0,
+        "ESO TEL2 GEOELEV": 2646.0,
+        "ESO TEL2 GEOLAT": -24.6274,
+        "ESO TEL2 GEOLON": -70.4049,
+        "ESO TEL2 AMBI PRES START": 746.1,
+        "ESO TEL2 AMBI TEMP": 12.51,
+        "ESO TEL2 AMBI RHUM": 10.0,
+    }
+
+    profile = AtmosphereProfile.from_fits_header_mipas_gdas(
+        header,
+        gdas_mode="average",
+    )
+
+    assert profile.metadata["observatory_site"] == "Paranal"
+    assert profile.metadata["observatory_coordinate_source"] == "fits_header"
+    np.testing.assert_allclose(profile.metadata["latitude_deg"], -24.6275)
+    np.testing.assert_allclose(profile.metadata["longitude_deg"], -70.405)
+    np.testing.assert_allclose(profile.metadata["observatory_altitude_m"], 2647.0)
+    np.testing.assert_allclose(profile.metadata["airmass"], 1.24)
+    np.testing.assert_allclose(
+        profile.metadata["pressure_at_observatory_atm"],
+        746.0 / 1013.25,
+    )
+    np.testing.assert_allclose(profile.metadata["temperature_at_observatory_k"], 285.65)
+    np.testing.assert_allclose(profile.metadata["relative_humidity_percent"], 9.0)
+    assert profile.metadata["observation_time_utc"] == "2024-08-26T02:24:00.000"
+
+
 def test_gdas_time_uses_eso_utc_seconds_like_molecfit():
     header = {
         "MJD-OBS": 57849.00350496,
@@ -249,6 +293,20 @@ def test_gdas_time_uses_eso_utc_seconds_like_molecfit():
 
     assert resolved is not None
     assert resolved.isot == "2017-04-06T00:04:58.000"
+
+
+def test_gdas_time_uses_midpoint_for_combined_spectrum():
+    header = {
+        "MJD-OBS": 60548.0,
+        "MJD-END": 60548.2,
+        "NCOMBINE": 20,
+        "UTC": 275.0,
+    }
+
+    resolved = _header_gdas_observation_time(header)
+
+    assert resolved is not None
+    assert resolved.isot == "2024-08-26T02:24:00.000"
 
 
 def test_mipas_gdas_reads_legacy_keck_time_site_and_weather_metadata():

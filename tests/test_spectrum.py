@@ -36,3 +36,16 @@ def test_correct_spectrum_rejects_negative_transmission_uncertainty():
             np.ones(2),
             transmission_uncertainty=np.array([0.01, -0.01]),
         )
+
+
+def test_spectrum_sorting_preserves_physical_groups():
+    spectrum = Spectrum(
+        wavelength=np.array([2.4, 2.1, 2.3, 2.2]),
+        flux=np.arange(4.0),
+        group_id=np.array([2, 1, 2, 1]),
+    )
+
+    ordered = spectrum.sorted()
+
+    np.testing.assert_array_equal(ordered.wavelength, [2.1, 2.2, 2.3, 2.4])
+    np.testing.assert_array_equal(ordered.group_id, [1, 1, 2, 2])

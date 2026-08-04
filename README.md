@@ -18,7 +18,7 @@ python -m pip install pymolfit
 Install plotting support for the tutorial notebooks:
 
 ```bash
-python -m pip install "pymolfit[plot]" ipympl
+python -m pip install "pymolfit[interactive]"
 ```
 
 PyMolFit supports Python 3.10 and newer.
@@ -43,6 +43,12 @@ Use `wavelength_medium="vacuum"` for vacuum wavelengths. The argument may be
 omitted only when the FITS metadata declares the wavelength medium
 unambiguously.
 
+For table-based echelle products, PyMolFit uses common order/detector columns
+to preserve real physical groups and common quality columns such as `QUAL` or
+`DQ` to exclude flagged pixels. Wide orders may be divided into smaller
+radiative-transfer chunks for memory control, but those chunks continue to
+share one smooth wavelength-alignment model for their physical order.
+
 Results remain in memory unless an output is requested:
 
 ```python
@@ -54,6 +60,9 @@ save_fit_product_ecsv(result, "fit_product.ecsv")
 
 The text file contains a compact corrected spectrum. The ECSV product also
 contains the fitted transmission, model, masks, metadata, and provenance.
+The printed fit summary reports the resolved atmosphere and line data,
+numerical chunks versus physical groups, fitted parameters, masked-pixel
+counts, and residual line-alignment diagnostics.
 
 ## Correct Wavelength And Flux Arrays
 
@@ -87,6 +96,60 @@ result = correct(
 `wavelength_frame` separately states their velocity reference frame. Supported
 frames are `observatory`, `barycentric`, and `heliocentric`.
 
+## Select Fitting Regions Interactively
+
+PyMolFit can save fit and exclusion windows without manually copying
+wavelength values from a plot:
+
+```python
+from pymolfit import load_spectrum, select_telluric_regions
+
+spectrum = load_spectrum(
+    "spectrum.fits",
+    wavelength_medium="air",
+)
+
+selector = select_telluric_regions(
+    spectrum,
+    output_path="telluric_regions.ecsv",
+)
+```
+
+Candidate telluric transitions from the AER catalogue are marked automatically
+and colored by molecule. To create an initial selection automatically, enter a
+line count such as `100` and press **Automatic**. PyMolFit proposes fit windows
+around the strongest covered AER transitions, skips lines in detector/order
+gaps, and merges overlapping windows. These proposals can be edited like any
+manual selection.
+
+For manual editing, first zoom or pan to the desired area. Choose **Fit** or
+**Exclude**, enable the **Draw regions** checkbox, and drag rectangles around
+the lines; only their horizontal wavelength limits are stored. Drawing stays
+active until you clear the checkbox. Every stored region is numbered on the
+plot and listed in the side panel. Edit the filename field if needed, then press
+**Save All** once to write the complete collection. In a Jupyter notebook, run
+`%matplotlib widget` before opening the selector.
+
+On later runs, the same `output_path` is detected and loaded automatically, so
+the selector window is skipped. Pass `reuse_existing=False` to reopen the
+saved regions for editing.
+
+The ECSV file records both region types and their wavelength unit and
+air/vacuum medium. Apply it directly without transcribing any endpoints:
+
+```python
+from pymolfit import correct
+
+result = correct(
+    input_path="spectrum.fits",
+    wavelength_medium="air",
+    region_file="telluric_regions.ecsv",
+)
+```
+
+`region_file` cannot be combined with explicit `fit_ranges` or
+`exclude_ranges`.
+
 ## Tutorials
 
 The runnable notebooks in
@@ -97,6 +160,7 @@ cover:
 2. [Correcting a full spectrum](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/tutorials/02_full_spectrum.ipynb)
 3. [Expert parameters](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/tutorials/03_expert_mode.ipynb)
 4. [Correcting wavelength-flux arrays](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/tutorials/04_array_input.ipynb)
+5. [Selecting telluric fit regions interactively](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/tutorials/05_telluric_region_selector.ipynb)
 
 Start with Tutorial 1 for a short example or Tutorial 2 for a complete
 one-dimensional echelle spectrum.

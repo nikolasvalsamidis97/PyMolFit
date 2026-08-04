@@ -114,6 +114,18 @@ def test_correct_file_exposes_canonical_string_choices() -> None:
         .default
         is None
     )
+    assert (
+        inspect.signature(correct_file)
+        .parameters["segment_size"]
+        .default
+        == 0.005
+    )
+    assert (
+        inspect.signature(correct_file)
+        .parameters["min_transmission"]
+        .default
+        == 0.01
+    )
 
 
 def test_atmosphere_hover_text_defines_domain_terms() -> None:
@@ -132,7 +144,7 @@ def test_loss_hover_text_explains_when_robust_fitting_is_appropriate() -> None:
     assert "clean, well-masked spectrum" in docstring
     assert "mostly clean spectrum containing a limited number" in docstring
     assert "Robust loss cannot repair generally poor calibration" in docstring
-    assert "soft_l1`` select nonlinear continuum fitting immediately" in docstring
+    assert "robust losses use an iteratively reweighted version" in docstring
 
 
 def test_lsf_hover_text_explains_automatic_estimation_and_refinement() -> None:

@@ -585,6 +585,85 @@ def test_fit_telluric_segments_can_fit_segment_wavelength_shifts():
     np.testing.assert_allclose(recovered, shifts, atol=3.0e-5)
 
 
+def test_fit_chunks_can_share_one_physical_group_wavelength_solution():
+    line_list = LineList(
+        wavelength=np.array([2.331, 2.341]),
+        strength=np.array([0.006, 0.005]),
+        sigma=np.full(2, 2.0e-5),
+        gamma=np.full(2, 1.0e-5),
+        species=np.full(2, "H2O"),
+    )
+    true_shift = 7.0e-5
+    shifted_lines = LineList(
+        wavelength=line_list.wavelength + true_shift,
+        strength=line_list.strength,
+        sigma=line_list.sigma,
+        gamma=line_list.gamma,
+        species=line_list.species,
+    )
+    spectra = []
+    for center in line_list.wavelength:
+        wavelength = np.linspace(center - 0.004, center + 0.004, 400)
+        flux = transmission_model(
+            wavelength,
+            shifted_lines,
+            ModelConfig(species_scales={"H2O": 1.3}),
+        )
+        spectra.append(Spectrum(wavelength=wavelength, flux=flux))
+
+    result = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        wavelength_group_ids=(4, 4),
+        config=FitConfig(
+            continuum_order=0,
+            fit_segment_wavelength_shifts=True,
+            wavelength_shift_bounds=(-2.0e-4, 2.0e-4),
+            estimate_uncertainties=True,
+        ),
+    )
+
+    assert result.success
+    assert tuple(result.wavelength_group_coefficients) == (4,)
+    np.testing.assert_allclose(
+        [segment.wavelength_shift for segment in result.segment_results],
+        true_shift,
+        atol=3.0e-5,
+    )
+    assert all(
+        segment.transmission_uncertainty is not None
+        for segment in result.segment_results
+    )
+
+
+def test_unobservable_species_scale_is_fixed_automatically():
+    wavelength = np.linspace(2.31, 2.36, 500)
+    line_list = LineList(
+        wavelength=np.array([2.325, 2.345]),
+        strength=np.array([0.01, 1.0e-14]),
+        sigma=np.array([2.0e-5, 2.0e-5]),
+        gamma=np.array([1.0e-5, 1.0e-5]),
+        species=np.array(["H2O", "O2"]),
+    )
+    flux = transmission_model(wavelength, line_list, ModelConfig())
+
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=flux),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            minimum_species_peak_optical_depth=1.0e-4,
+        ),
+    )
+
+    assert result.success
+    assert result.species_scales["O2"] == pytest.approx(1.0)
+    assert "log_scale:O2" not in result.parameter_names
+    assert result.provenance["species_observability"]["automatically_fixed"] == {
+        "O2": 1.0
+    }
+
+
 def test_fit_telluric_segments_can_fit_segment_wavelength_polynomial():
     line_list = LineList(
         wavelength=np.array([2.326, 2.331, 2.336]),

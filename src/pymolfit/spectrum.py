@@ -90,6 +90,7 @@ class Spectrum:
     flux: np.ndarray
     uncertainty: np.ndarray | None = None
     mask: np.ndarray | None = None
+    group_id: np.ndarray | None = None
     wavelength_unit: str = "micron"
     wavelength_medium: str = "vacuum"
     meta: Mapping[str, Any] = field(default_factory=dict)
@@ -99,6 +100,7 @@ class Spectrum:
         flux = np.asarray(self.flux, dtype=float)
         uncertainty = None if self.uncertainty is None else np.asarray(self.uncertainty, dtype=float)
         mask = None if self.mask is None else np.asarray(self.mask, dtype=bool)
+        group_id = None if self.group_id is None else np.asarray(self.group_id)
 
         if wavelength.ndim != 1 or flux.ndim != 1:
             raise ValueError("wavelength and flux must be one-dimensional arrays")
@@ -108,11 +110,14 @@ class Spectrum:
             raise ValueError("uncertainty must have the same shape as flux")
         if mask is not None and mask.shape != flux.shape:
             raise ValueError("mask must have the same shape as flux")
+        if group_id is not None and group_id.shape != flux.shape:
+            raise ValueError("group_id must have the same shape as flux")
 
         object.__setattr__(self, "wavelength", wavelength)
         object.__setattr__(self, "flux", flux)
         object.__setattr__(self, "uncertainty", uncertainty)
         object.__setattr__(self, "mask", mask)
+        object.__setattr__(self, "group_id", group_id)
         object.__setattr__(self, "wavelength_medium", normalize_wavelength_medium(self.wavelength_medium))
 
     @property
@@ -130,6 +135,7 @@ class Spectrum:
             flux=np.asarray(flux, dtype=float),
             uncertainty=self.uncertainty if uncertainty is None else uncertainty,
             mask=self.mask,
+            group_id=self.group_id,
             wavelength_unit=self.wavelength_unit,
             wavelength_medium=self.wavelength_medium,
             meta=dict(self.meta),
@@ -144,6 +150,7 @@ class Spectrum:
             flux=self.flux.copy(),
             uncertainty=None if self.uncertainty is None else self.uncertainty.copy(),
             mask=None if self.mask is None else self.mask.copy(),
+            group_id=None if self.group_id is None else self.group_id.copy(),
             wavelength_unit=wavelength_unit,
             wavelength_medium=self.wavelength_medium,
             meta={**dict(self.meta), "original_wavelength_unit": self.wavelength_unit},
@@ -157,6 +164,7 @@ class Spectrum:
             flux=self.flux.copy(),
             uncertainty=None if self.uncertainty is None else self.uncertainty.copy(),
             mask=None if self.mask is None else self.mask.copy(),
+            group_id=None if self.group_id is None else self.group_id.copy(),
             wavelength_unit=self.wavelength_unit,
             wavelength_medium="vacuum",
             meta={**dict(self.meta), "original_wavelength_medium": self.wavelength_medium},
@@ -170,6 +178,7 @@ class Spectrum:
             flux=self.flux.copy(),
             uncertainty=None if self.uncertainty is None else self.uncertainty.copy(),
             mask=None if self.mask is None else self.mask.copy(),
+            group_id=None if self.group_id is None else self.group_id.copy(),
             wavelength_unit=self.wavelength_unit,
             wavelength_medium="air",
             meta={**dict(self.meta), "original_wavelength_medium": self.wavelength_medium},
@@ -179,11 +188,13 @@ class Spectrum:
         order = np.argsort(self.wavelength)
         uncertainty = None if self.uncertainty is None else self.uncertainty[order]
         mask = None if self.mask is None else self.mask[order]
+        group_id = None if self.group_id is None else self.group_id[order]
         return Spectrum(
             wavelength=self.wavelength[order],
             flux=self.flux[order],
             uncertainty=uncertainty,
             mask=mask,
+            group_id=group_id,
             wavelength_unit=self.wavelength_unit,
             wavelength_medium=self.wavelength_medium,
             meta=dict(self.meta),
@@ -195,7 +206,7 @@ def correct_spectrum(
     transmission: np.ndarray,
     *,
     transmission_uncertainty: np.ndarray | None = None,
-    min_transmission: float = 0.03,
+    min_transmission: float = 0.01,
 ) -> Spectrum:
     """Divide a spectrum by a telluric transmission model.
 

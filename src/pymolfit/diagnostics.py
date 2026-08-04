@@ -60,6 +60,26 @@ def _class_label(value: object) -> str:
     return str(qualified_name).rsplit(".", 1)[-1]
 
 
+def _format_airmass_lines(
+    atmosphere: Mapping[str, object],
+    config: Mapping[str, object],
+) -> tuple[str, ...]:
+    observation_airmass = atmosphere.get("airmass")
+    transfer_multiplier = config.get("airmass")
+    if observation_airmass is None:
+        return (
+            "  radiative-transfer airmass: "
+            f"{_format_scalar(transfer_multiplier)}",
+        )
+    return (
+        "  observation airmass: "
+        f"{_format_scalar(observation_airmass)} "
+        "(incorporated into atmospheric layer path lengths)",
+        "  additional opacity airmass multiplier: "
+        f"{_format_scalar(transfer_multiplier)}",
+    )
+
+
 def format_fit_summary(
     result: TelluricFitResult,
     *,
@@ -83,6 +103,7 @@ def format_fit_summary(
     lsf_variable = _mapping(provenance.get("lsf_variable_width"))
     wavelength_alignment = _mapping(provenance.get("wavelength_alignment"))
     segmentation = _mapping(provenance.get("segmentation"))
+    fit_quality = _mapping(provenance.get("fit_quality"))
 
     wavelength = result.spectrum.to_unit("micron").wavelength
     finite_wavelength = wavelength[np.isfinite(wavelength)]
@@ -111,6 +132,8 @@ def format_fit_summary(
             "  wavelength frame: observatory-frame "
             f"{result.spectrum.wavelength_medium}",
             f"  pixels: {result.spectrum.wavelength.size} total, {fit_pixels} fitted",
+            f"  invalid/quality-masked pixels: "
+            f"{result.spectrum.wavelength.size - int(np.count_nonzero(result.spectrum.valid))}",
             f"  uncertainty weighting: {'yes' if result.spectrum.uncertainty is not None else 'no'}",
             "Line data",
             f"  source: {_format_scalar(provenance.get('line_source'))}",
@@ -132,7 +155,7 @@ def format_fit_summary(
             f"lat={_format_scalar(atmosphere.get('latitude_deg'))} deg, "
             f"lon={_format_scalar(atmosphere.get('longitude_deg'))} deg, "
             f"alt={_format_scalar(atmosphere.get('observatory_altitude_m'))} m",
-            f"  airmass used by fit: {_format_scalar(config.get('airmass'))}",
+            *_format_airmass_lines(atmosphere, config),
             "Fit masks and segmentation",
             "  fit ranges (observatory vacuum micron): "
             f"{_format_ranges(config.get('fit_ranges'))}",
@@ -141,6 +164,7 @@ def format_fit_summary(
             "  segmentation: "
             + (
                 f"{_format_scalar(segmentation.get('segment_count'))} automatic segments; "
+                f"{_format_scalar(segmentation.get('physical_group_count'))} physical groups; "
                 f"maximum width={_format_scalar(segmentation.get('segment_size_micron'))} micron"
                 if segmentation
                 else "single fit"
@@ -222,6 +246,10 @@ def format_fit_summary(
             f"  cost: {result.cost:.8g}",
             f"  function evaluations: {result.nfev}",
             f"  reduced chi-square: {_format_scalar(result.reduced_chi_square)}",
+            "  residual alignment: median="
+            f"{_format_scalar(fit_quality.get('median_absolute_residual_shift_pixels'))} pixels, "
+            "p90="
+            f"{_format_scalar(fit_quality.get('p90_absolute_residual_shift_pixels'))} pixels",
             f"  median transmission: {np.nanmedian(result.transmission):.8g}",
             f"  termination: {result.message}",
         )
@@ -269,6 +297,121 @@ def correction_summary(result: TelluricFitResult) -> dict[str, float]:
         "deep_absorption_fraction": float(np.nanmean(transmission < 0.5)),
         "raw_scatter": float(np.nanstd(raw_norm - np.nanmedian(raw_norm))),
         "corrected_scatter": float(np.nanstd(corrected_norm - np.nanmedian(corrected_norm))),
+    }
+
+
+def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
+    """Measure residual alignment and correction behavior without refitting."""
+
+    fit_mask = (
+        result.spectrum.valid.copy()
+        if result.fit_mask is None
+        else np.asarray(result.fit_mask, dtype=bool).copy()
+    )
+    finite = (
+        fit_mask
+        & np.isfinite(result.spectrum.flux)
+        & np.isfinite(result.continuum)
+        & (result.continuum != 0)
+        & np.isfinite(result.transmission)
+    )
+    normalized = np.full(result.spectrum.flux.shape, np.nan, dtype=float)
+    normalized[finite] = result.spectrum.flux[finite] / result.continuum[finite]
+    group_values = (
+        np.zeros(result.spectrum.wavelength.size, dtype=int)
+        if result.spectrum.group_id is None
+        else np.asarray(result.spectrum.group_id)
+    )
+    shifts = np.linspace(-0.75, 0.75, 61)
+    groups: list[dict[str, object]] = []
+    for group in np.unique(group_values):
+        group_indices = np.flatnonzero(finite & (group_values == group))
+        group_transmission = result.transmission[group_indices]
+        telluric = group_transmission < 0.995
+        telluric_count = int(np.count_nonzero(telluric))
+        if telluric_count < 12:
+            groups.append(
+                {
+                    "group": int(group),
+                    "fit_pixels": telluric_count,
+                    "status": "insufficient_telluric_pixels",
+                }
+            )
+            continue
+        observed = normalized[group_indices]
+        model = group_transmission
+        pixel = np.arange(model.size, dtype=float)
+        costs = np.empty(shifts.size, dtype=float)
+        for shift_index, shift in enumerate(shifts):
+            shifted = np.interp(
+                pixel,
+                pixel + shift,
+                model,
+                left=np.nan,
+                right=np.nan,
+            )
+            good = telluric & np.isfinite(shifted) & np.isfinite(observed)
+            if np.count_nonzero(good) < 10:
+                costs[shift_index] = np.inf
+                continue
+            design = np.column_stack((np.ones(np.count_nonzero(good)), shifted[good]))
+            coefficients, *_ = np.linalg.lstsq(design, observed[good], rcond=None)
+            residual = observed[good] - design @ coefficients
+            costs[shift_index] = float(np.mean(residual * residual))
+        best = int(np.argmin(costs))
+        groups.append(
+            {
+                "group": int(group),
+                "fit_pixels": telluric_count,
+                "status": "measured",
+                "residual_shift_pixels": float(shifts[best]),
+                "normalized_rmse": float(np.sqrt(costs[best])),
+            }
+        )
+
+    measured_shifts = np.asarray(
+        [
+            abs(float(group["residual_shift_pixels"]))
+            for group in groups
+            if group.get("status") == "measured"
+        ],
+        dtype=float,
+    )
+    transmission_bins = []
+    for label, lower, upper in (
+        ("deep", 0.01, 0.2),
+        ("moderate", 0.2, 0.9),
+        ("weak", 0.9, 0.99),
+    ):
+        selected = finite & (result.transmission >= lower) & (result.transmission < upper)
+        residual = normalized[selected] - result.transmission[selected]
+        transmission_bins.append(
+            {
+                "name": label,
+                "pixel_count": int(residual.size),
+                "median_residual": (
+                    float(np.nanmedian(residual)) if residual.size else np.nan
+                ),
+                "rmse": (
+                    float(np.sqrt(np.nanmean(residual * residual)))
+                    if residual.size
+                    else np.nan
+                ),
+            }
+        )
+    return {
+        "groups": groups,
+        "measured_group_count": int(measured_shifts.size),
+        "median_absolute_residual_shift_pixels": (
+            float(np.nanmedian(measured_shifts)) if measured_shifts.size else np.nan
+        ),
+        "p90_absolute_residual_shift_pixels": (
+            float(np.nanpercentile(measured_shifts, 90))
+            if measured_shifts.size
+            else np.nan
+        ),
+        "transmission_bins": transmission_bins,
+        "parameter_bounds_reached": dict(result.parameter_bound_status),
     }
 
 

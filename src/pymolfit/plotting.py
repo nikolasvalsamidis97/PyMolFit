@@ -2,43 +2,205 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+from astropy.table import Table
+
 from .fit import TelluricFitResult
 
 
 def plot_fit(
-    result: TelluricFitResult,
+    result: TelluricFitResult | str | Path,
     *,
     path: str | Path | None = None,
     show: bool = True,
 ):
-    """Plot observed spectrum, fitted model, transmission, and correction."""
+    """Plot a live fit result or a saved PyMolFit product ECSV.
+
+    The first panel overlays the observed and telluric-corrected flux. The
+    second panel shows atmospheric transmission. Every valid sample is drawn
+    at full resolution. Separate echelle orders and other genuine wavelength
+    discontinuities remain disconnected instead of being joined by artificial
+    lines. Pass the ``product_path`` ECSV written by :func:`pymolfit.correct`
+    to recreate the same diagnostic plot without rerunning the correction.
+    Compact files written through ``output_path`` do not contain the observed
+    flux or transmission and therefore cannot be used here.
+
+    :param result: Live ``TelluricFitResult`` or path to a full PyMolFit
+        product ECSV created with ``product_path``.
+    :param path: Optional image destination for the generated figure.
+    :param show: Display the figure when ``True``. In Jupyter, PyMolFit leaves
+        display to the active notebook backend so an interactive canvas is not
+        followed by a duplicate static rendering. In a regular Python process,
+        it calls ``matplotlib.pyplot.show`` once.
+    :return: Matplotlib figure containing flux and transmission panels.
+    """
 
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        raise ImportError("plotting requires matplotlib; install with `pip install pymolfit[plot]`") from exc
+        raise ImportError(
+            "plotting requires matplotlib; install with `pip install pymolfit[plot]`"
+        ) from exc
 
-    wave = result.spectrum.wavelength
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(11, 8))
+    wavelength, observed, corrected, transmission, wavelength_unit = (
+        _fit_plot_data(result)
+    )
+    sections = _continuous_wavelength_sections(wavelength)
 
-    axes[0].plot(wave, result.spectrum.flux, color="0.35", lw=0.9, label="observed")
-    axes[0].plot(wave, result.model_flux, color="tab:red", lw=1.1, label="model")
-    axes[0].set_ylabel("flux")
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(14, 8),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    for index, section in enumerate(sections):
+        axes[0].plot(
+            wavelength[section],
+            observed[section],
+            color="0.55",
+            linewidth=0.5,
+            label="Observed" if index == 0 else "_nolegend_",
+        )
+        axes[0].plot(
+            wavelength[section],
+            corrected[section],
+            color="tab:blue",
+            linewidth=0.5,
+            label="Telluric corrected" if index == 0 else "_nolegend_",
+        )
+        axes[1].plot(
+            wavelength[section],
+            transmission[section],
+            color="tab:green",
+            linewidth=0.5,
+            label="Atmospheric transmission" if index == 0 else "_nolegend_",
+        )
+
+    finite_wavelength = wavelength[np.isfinite(wavelength)]
+    axes[0].set_xlim(
+        float(np.nanmin(finite_wavelength)),
+        float(np.nanmax(finite_wavelength)),
+    )
+    _set_robust_flux_limits(axes[0], observed, corrected)
+    axes[0].set_ylabel("Flux")
     axes[0].legend(loc="best")
 
-    axes[1].plot(wave, result.transmission, color="tab:green", lw=1.0)
-    axes[1].set_ylabel("transmission")
+    axes[1].set_xlabel(f"Wavelength [{wavelength_unit}]")
+    axes[1].set_ylabel("Transmission")
     axes[1].set_ylim(-0.05, 1.05)
+    axes[1].legend(loc="best")
 
-    axes[2].plot(wave, result.corrected.flux, color="tab:blue", lw=0.9, label="corrected")
-    axes[2].plot(wave, result.continuum, color="0.25", lw=1.0, ls="--", label="continuum")
-    axes[2].set_xlabel(f"wavelength [{result.spectrum.wavelength_unit}]")
-    axes[2].set_ylabel("corrected flux")
-    axes[2].legend(loc="best")
-
-    fig.tight_layout()
     if path is not None:
-        fig.savefig(path, dpi=180)
-    if show:
+        figure.savefig(path, dpi=180)
+    if show and not _is_notebook_environment():
         plt.show()
-    return fig
+    return figure
+
+
+def _is_notebook_environment() -> bool:
+    """Return whether Matplotlib output is managed by a Jupyter kernel."""
+
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+    shell = get_ipython()
+    return shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell"
+
+
+def _fit_plot_data(
+    result: TelluricFitResult | str | Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    if not isinstance(result, (str, Path)):
+        return (
+            np.asarray(result.spectrum.wavelength, dtype=float),
+            np.asarray(result.spectrum.flux, dtype=float),
+            np.asarray(result.corrected.flux, dtype=float),
+            np.asarray(result.transmission, dtype=float),
+            str(result.spectrum.wavelength_unit),
+        )
+
+    product_path = Path(result)
+    if not product_path.is_file():
+        raise FileNotFoundError(f"fit product does not exist: {product_path}")
+    try:
+        table = Table.read(product_path, format="ascii.ecsv")
+    except Exception as exc:
+        raise ValueError(
+            f"{product_path} is not a readable PyMolFit product ECSV; "
+            "save the correction with product_path=..., not output_path=..."
+        ) from exc
+
+    required = {"wavelength", "flux", "corrected_flux", "transmission"}
+    missing = sorted(required.difference(table.colnames))
+    if missing:
+        raise ValueError(
+            f"{product_path} is not a full PyMolFit product ECSV; missing "
+            f"columns: {', '.join(missing)}"
+        )
+
+    wavelength_column = table["wavelength"]
+    wavelength_unit = getattr(wavelength_column, "unit", None)
+    if wavelength_unit is None:
+        wavelength_unit = table.meta.get("wavelength_unit", "micron")
+    return (
+        np.asarray(wavelength_column, dtype=float),
+        np.asarray(table["flux"], dtype=float),
+        np.asarray(table["corrected_flux"], dtype=float),
+        np.asarray(table["transmission"], dtype=float),
+        str(wavelength_unit),
+    )
+
+
+def _continuous_wavelength_sections(
+    wavelength: np.ndarray,
+) -> tuple[np.ndarray, ...]:
+    finite_indices = np.flatnonzero(np.isfinite(wavelength))
+    if finite_indices.size == 0:
+        raise ValueError("cannot plot a spectrum without finite wavelengths")
+    if finite_indices.size == 1:
+        return (finite_indices,)
+
+    spacing = np.diff(wavelength[finite_indices])
+    adjacent = np.diff(finite_indices) == 1
+    positive = spacing[adjacent & np.isfinite(spacing) & (spacing > 0)]
+    gap_limit = (
+        20.0 * float(np.nanmedian(positive))
+        if positive.size
+        else np.inf
+    )
+    discontinuity = (
+        ~adjacent
+        | ~np.isfinite(spacing)
+        | (spacing <= 0)
+        | (spacing > gap_limit)
+    )
+    breaks = np.flatnonzero(discontinuity) + 1
+    return tuple(
+        section
+        for section in np.split(finite_indices, breaks)
+        if section.size
+    )
+
+
+def _set_robust_flux_limits(axis, *values: np.ndarray) -> None:
+    finite_parts = [
+        np.asarray(value, dtype=float)[np.isfinite(value)]
+        for value in values
+        if np.asarray(value).size
+    ]
+    finite_parts = [value for value in finite_parts if value.size]
+    if not finite_parts:
+        return
+
+    finite = np.concatenate(finite_parts)
+    lower, upper = np.nanpercentile(finite, (0.5, 99.5))
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        return
+    if upper <= lower:
+        padding = max(abs(lower), 1.0) * 0.05
+    else:
+        padding = 0.08 * (upper - lower)
+    axis.set_ylim(lower - padding, upper + padding)

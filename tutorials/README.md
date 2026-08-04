@@ -11,11 +11,13 @@ expert interface:
    `correct` and explains when each one is useful.
 4. `04_array_input.ipynb` constructs an `Observation` and corrects wavelength
    and flux arrays through the same `correct` API.
+5. `05_telluric_region_selector.ipynb` uses the interactive AER-marked
+   selector to propose, edit, save, reuse, and apply fit/exclusion regions.
 
 Install the plotting support before running them:
 
 ```bash
-python -m pip install "pymolfit[plot]" ipympl
+python -m pip install "pymolfit[interactive]"
 ```
 
 Use the same Python environment for the notebook kernel and the installation.

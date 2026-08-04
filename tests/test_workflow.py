@@ -1,4 +1,5 @@
 from dataclasses import replace
+import inspect
 
 import numpy as np
 import pytest
@@ -178,7 +179,7 @@ def test_correct_arrays_auto_continuum_falls_back_after_failed_linear_fit(
     ]
 
 
-def test_correct_arrays_auto_continuum_uses_nonlinear_for_robust_loss():
+def test_correct_arrays_auto_continuum_profiles_robust_loss():
     wavelength = np.linspace(2.31, 2.36, 400)
     line_list = LineList.demo_near_ir().select_species(("H2O",))
     flux = transmission_model(
@@ -200,7 +201,8 @@ def test_correct_arrays_auto_continuum_uses_nonlinear_for_robust_loss():
     details = result.provenance["continuum_solver"]
     assert result.success
     assert details["requested"] == "auto"
-    assert details["selected"] == "nonlinear"
+    assert details["selected"] == "linear"
+    assert "iteratively reweighted" in details["selection_reason"]
     assert details["fallback_used"] is False
     assert "soft_l1" in details["selection_reason"]
 
@@ -654,6 +656,27 @@ def test_automatic_segmentation_splits_large_echelle_gaps():
     assert all(np.ptp(segment.wavelength) < 0.01 for segment in segments)
 
 
+def test_automatic_segmentation_preserves_short_island_between_gaps():
+    wavelength = np.concatenate(
+        (
+            np.linspace(1.500, 1.504, 40),
+            np.array([1.506]),
+            np.linspace(1.508, 1.512, 40),
+        )
+    )
+    spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
+
+    segments = _split_spectrum(
+        spectrum,
+        segment_size=0.01,
+        minimum_points=4,
+    )
+
+    stitched = np.concatenate([segment.wavelength for segment in segments])
+    np.testing.assert_array_equal(stitched, wavelength)
+    assert any(1.506 in segment.wavelength for segment in segments)
+
+
 def test_correct_arrays_exposes_independent_segment_wavelength_shifts():
     line_list = LineList(
         wavelength=np.array([1.503, 1.513]),
@@ -1042,6 +1065,24 @@ def test_explicit_fits_metadata_infers_wavelength_medium():
     assert _infer_wavelength_medium_from_header({"SPECSYS": "BARYCENT"}) is None
 
 
+def test_espresso_wave_column_infers_vacuum_wavelength():
+    header = {"INSTRUME": "ESPRESSO", "TTYPE1": "WAVE", "TUNIT1": "angstrom"}
+
+    assert _infer_wavelength_medium_from_header(header) == "vacuum"
+
+
+def test_espresso_wave_air_column_infers_air_wavelength():
+    header = {"INSTRUME": "ESPRESSO", "TTYPE1": "WAVE_AIR", "TUNIT1": "angstrom"}
+
+    assert _infer_wavelength_medium_from_header(header) == "air"
+
+
+def test_generic_wave_table_column_does_not_assume_a_medium():
+    header = {"INSTRUME": "OTHER", "TTYPE1": "WAVE", "TUNIT1": "angstrom"}
+
+    assert _infer_wavelength_medium_from_header(header) is None
+
+
 def test_conflicting_fits_wavelength_medium_is_rejected():
     with pytest.raises(ValueError, match="conflicting FITS metadata"):
         _infer_wavelength_medium_from_header(
@@ -1177,6 +1218,25 @@ def test_workflow_reconstructs_missing_barycentric_velocity_from_fits_metadata()
     )
 
 
+def test_workflow_reconstructs_combined_spectrum_velocity_at_midpoint():
+    header = {
+        "SPECSYS": "BARYCENT",
+        "DATE-OBS": "2024-08-26T00:04:44.603",
+        "MJD-OBS": 60548.00329403,
+        "MJD-END": 60548.3346547122,
+        "NCOMBINE": 81,
+        "RA": 311.291581,
+        "DEC": -31.3434,
+        "ESO TEL1 GEOLON": -70.4051,
+        "ESO TEL1 GEOLAT": -24.6276,
+        "ESO TEL1 GEOELEV": 2648.0,
+    }
+
+    velocity = _barycentric_velocity_from_header_km_s(header)
+
+    assert velocity == pytest.approx(-13.77, abs=0.03)
+
+
 def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():
     spectrum = Spectrum(
         wavelength=np.array([0.5889, 0.5890, 0.5891]),
@@ -1256,6 +1316,25 @@ def test_unified_correct_rejects_ambiguous_input_routes():
             flux=flux,
             observation=observation,
         )
+
+
+def test_unified_correct_declares_public_options_for_editor_completion():
+    correct_parameters = inspect.signature(correct).parameters
+    file_parameters = inspect.signature(correct_file).parameters
+    array_parameters = inspect.signature(correct_arrays).parameters
+
+    assert all(
+        name in correct_parameters
+        for name in file_parameters
+        if name != "input_path"
+    )
+    assert all(name in correct_parameters for name in array_parameters)
+    assert not any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in correct_parameters.values()
+    )
+    assert correct_parameters["continuum_order"].default == 1
+    assert correct_parameters["continuum_order"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_path):

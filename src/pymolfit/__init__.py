@@ -121,6 +121,13 @@ from .radiative_transfer import (
     physical_optical_depth_basis,
     physical_transmission_model,
 )
+from .regions import (
+    InteractiveRegionSelector,
+    RegionSelection,
+    load_region_file,
+    save_region_file,
+    select_telluric_regions,
+)
 from .spectrum import Spectrum, air_to_vacuum_wavelength, correct_spectrum, vacuum_to_air_wavelength
 from .systematics import (
     ModelSystematicsResult,
@@ -185,6 +192,7 @@ __all__ = [
     "PiecewiseConstantRebinPlan",
     "SampleAverageRebinPlan",
     "RayleighScatteringAbsorption",
+    "RegionSelection",
     "Spectrum",
     "SpectrumComparison",
     "TelluricCrossValidationResult",
@@ -233,6 +241,8 @@ __all__ = [
     "lblrtm_voigt_hwhm",
     "line_wing_effective_cutoff_cm",
     "default_hitran_cache_dir",
+    "InteractiveRegionSelector",
+    "load_region_file",
     "load_spectrum",
     "optical_depth_basis",
     "physical_components_from_options",
@@ -253,8 +263,10 @@ __all__ = [
     "average_high_resolution_values",
     "rebin_high_resolution_values",
     "residual_by_window",
+    "save_region_file",
     "save_spectrum",
     "sample_high_resolution_values",
+    "select_telluric_regions",
     "transmission_from_high_resolution_basis",
     "transmission_model",
     "vacuum_to_air_wavelength",

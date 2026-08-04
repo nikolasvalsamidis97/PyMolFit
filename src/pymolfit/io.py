@@ -27,6 +27,10 @@ WAVELENGTH_COLUMNS = (
 )
 FLUX_COLUMNS = ("flux", "flam", "fnu", "spectrum", "spec", "data", "science")
 UNCERTAINTY_COLUMNS = ("uncertainty", "error", "err", "sigma", "noise", "flux_err", "flux_error")
+QUALITY_COLUMNS = ("qual", "quality", "dq", "data_quality", "bpm", "bad_pixel_mask", "mask")
+VALID_MASK_COLUMNS = ("valid", "input_mask", "good_pixel", "good")
+ORDER_COLUMNS = ("order", "spectral_order", "echelle_order", "physical_group")
+DETECTOR_COLUMNS = ("detec", "detector", "chip", "extension")
 
 
 def load_spectrum(
@@ -261,14 +265,103 @@ def _spectrum_from_table(
         uncertainty = None
     wavelength = _column_to_1d(table[wave_name])
     flux = _column_to_1d(table[flux_name])
+    mask, quality_columns = _table_valid_mask(
+        table,
+        expected_size=flux.size,
+        wavelength_name=wave_name,
+        flux_name=flux_name,
+        uncertainty_name=uncertainty_name,
+    )
+    group_id, group_columns = _table_physical_groups(table, flux.size)
     return Spectrum(
         wavelength=wavelength,
         flux=flux,
         uncertainty=uncertainty,
+        mask=mask,
+        group_id=group_id,
         wavelength_unit=unit,
         wavelength_medium=wavelength_medium,
-        meta={"io_type": "table", "wavelength_col": wave_name, "flux_col": flux_name},
+        meta={
+            "io_type": "table",
+            "wavelength_col": wave_name,
+            "flux_col": flux_name,
+            "quality_columns": quality_columns,
+            "physical_group_columns": group_columns,
+        },
     )
+
+
+def _table_valid_mask(
+    table: Table,
+    *,
+    expected_size: int,
+    wavelength_name: str,
+    flux_name: str,
+    uncertainty_name: str | None,
+) -> tuple[np.ndarray | None, tuple[str, ...]]:
+    """Return a good-pixel mask from table masks and common quality columns."""
+
+    valid = np.ones(expected_size, dtype=bool)
+    used: list[str] = []
+    for name in (wavelength_name, flux_name, uncertainty_name):
+        if name is None:
+            continue
+        column_mask = getattr(table[name], "mask", None)
+        if column_mask is None or np.isscalar(column_mask):
+            continue
+        flattened = np.asarray(column_mask, dtype=bool).squeeze()
+        if flattened.shape == valid.shape:
+            valid &= ~flattened
+            used.append(f"{name}:astropy_mask")
+
+    quality_name = _resolve_named_column(table, QUALITY_COLUMNS)
+    if quality_name is not None:
+        quality = np.asarray(table[quality_name]).squeeze()
+        if quality.shape == valid.shape:
+            if np.issubdtype(quality.dtype, np.number) or quality.dtype == np.bool_:
+                valid &= np.asarray(quality == 0, dtype=bool)
+                used.append(quality_name)
+
+    valid_name = _resolve_named_column(table, VALID_MASK_COLUMNS)
+    if valid_name is not None:
+        good = np.asarray(table[valid_name]).squeeze()
+        if good.shape == valid.shape:
+            valid &= np.asarray(good, dtype=bool)
+            used.append(valid_name)
+
+    return (valid if used else None), tuple(used)
+
+
+def _table_physical_groups(
+    table: Table,
+    expected_size: int,
+) -> tuple[np.ndarray | None, tuple[str, ...]]:
+    """Encode order/detector columns as stable integer physical-group IDs."""
+
+    names = tuple(
+        name
+        for name in (
+            _resolve_named_column(table, ORDER_COLUMNS),
+            _resolve_named_column(table, DETECTOR_COLUMNS),
+        )
+        if name is not None
+    )
+    if not names:
+        return None, ()
+    values = [np.asarray(table[name]).squeeze() for name in names]
+    if any(value.shape != (expected_size,) for value in values):
+        return None, ()
+    keys = np.column_stack([np.asarray(value).astype(str) for value in values])
+    _, group_id = np.unique(keys, axis=0, return_inverse=True)
+    return np.asarray(group_id, dtype=int), names
+
+
+def _resolve_named_column(table: Table, candidates: tuple[str, ...]) -> str | None:
+    by_lower = {name.lower(): name for name in table.colnames}
+    for candidate in candidates:
+        if candidate.lower() in by_lower:
+            return by_lower[candidate.lower()]
+    return None
 
 
 def _column_to_1d(column: object) -> np.ndarray:

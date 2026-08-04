@@ -76,6 +76,8 @@ _OBSERVATORY_ALIASES = {
     "LA SILLA": "la_silla",
     "ESO LA SILLA": "la_silla",
     "NTT": "la_silla",
+    "ESO 3 6": "la_silla",
+    "ESO 3 6 M": "la_silla",
     "ESO 3 6M": "la_silla",
     "MPG ESO 2 2M": "la_silla",
     "KECK": "keck",
@@ -672,7 +674,7 @@ class AtmosphereProfile:
 
         pressure = pressure_at_observatory_atm
         if pressure is None:
-            pressure_hpa = _header_float(
+            pressure_hpa = _header_float_with_numbered_telescope_fallback(
                 header,
                 (
                     "ESO TEL AMBI PRES START",
@@ -682,13 +684,14 @@ class AtmosphereProfile:
                     "AMBIPRES",
                     "WXPRESS",
                 ),
-                np.nan,
+                numbered_suffixes=("AMBI PRES START", "AMBI PRES END"),
+                default=np.nan,
             )
             pressure = None if not np.isfinite(pressure_hpa) or pressure_hpa <= 0 else pressure_hpa / HPA_PER_ATM
 
         temperature = temperature_at_observatory_k
         if temperature is None:
-            temperature_c = _header_float(
+            temperature_c = _header_float_with_numbered_telescope_fallback(
                 header,
                 (
                     "ESO TEL AMBI TEMP",
@@ -698,13 +701,14 @@ class AtmosphereProfile:
                     "WXOUTTMP",
                     "WXDOMTMP",
                 ),
-                np.nan,
+                numbered_suffixes=("AMBI TEMP",),
+                default=np.nan,
             )
             temperature = None if not np.isfinite(temperature_c) else temperature_c + 273.15
 
         humidity = relative_humidity_percent
         if humidity is None:
-            humidity_value = _header_float(
+            humidity_value = _header_float_with_numbered_telescope_fallback(
                 header,
                 (
                     "ESO TEL AMBI RHUM",
@@ -715,7 +719,8 @@ class AtmosphereProfile:
                     "WXOUTHUM",
                     "WXDOMHUM",
                 ),
-                np.nan,
+                numbered_suffixes=("AMBI RHUM",),
+                default=np.nan,
             )
             humidity = None if not np.isfinite(humidity_value) else humidity_value
 
@@ -792,7 +797,7 @@ class AtmosphereProfile:
         )
         pressure = pressure_at_observatory_atm
         if pressure is None:
-            pressure_hpa = _header_float(
+            pressure_hpa = _header_float_with_numbered_telescope_fallback(
                 header,
                 (
                     "ESO TEL AMBI PRES START",
@@ -802,12 +807,13 @@ class AtmosphereProfile:
                     "AMBIPRES",
                     "WXPRESS",
                 ),
-                np.nan,
+                numbered_suffixes=("AMBI PRES START", "AMBI PRES END"),
+                default=np.nan,
             )
             pressure = None if not np.isfinite(pressure_hpa) or pressure_hpa <= 0 else pressure_hpa / 1013.25
         temperature = temperature_at_observatory_k
         if temperature is None:
-            temperature_c = _header_float(
+            temperature_c = _header_float_with_numbered_telescope_fallback(
                 header,
                 (
                     "ESO TEL AMBI TEMP",
@@ -817,7 +823,8 @@ class AtmosphereProfile:
                     "WXOUTTMP",
                     "WXDOMTMP",
                 ),
-                np.nan,
+                numbered_suffixes=("AMBI TEMP",),
+                default=np.nan,
             )
             temperature = None if not np.isfinite(temperature_c) else temperature_c + 273.15
         profile = cls.from_observatory_conditions(
@@ -1582,6 +1589,9 @@ def _interp_log_clipped_scalar(x: float, xp: np.ndarray, fp: np.ndarray) -> floa
 
 
 def _header_observation_time(header: Mapping[str, object]) -> Time | None:
+    representative = _header_representative_observation_time(header)
+    if representative is not None:
+        return representative
     for key in ("MJD-OBS", "MJDOBS", "MJD", "JD"):
         value = _header_float(header, (key,), np.nan)
         if np.isfinite(value):
@@ -1603,6 +1613,10 @@ def _header_gdas_observation_time(header: Mapping[str, object]) -> Time | None:
     date but takes seconds since midnight from the ``UTC`` ambient parameter.
     That can differ from MJD-OBS by a few seconds in reduced archive products.
     """
+
+    representative = _header_representative_observation_time(header)
+    if representative is not None:
+        return representative
 
     utc_seconds = _header_time_of_day_seconds(
         header,
@@ -1626,6 +1640,37 @@ def _header_gdas_observation_time(header: Mapping[str, object]) -> Time | None:
         if base is not None:
             return base + TimeDelta(float(utc_seconds), format="sec")
     return _header_observation_time(header)
+
+
+def _header_representative_observation_time(
+    header: Mapping[str, object],
+) -> Time | None:
+    """Return an explicit or derived midpoint for a combined spectrum."""
+
+    for key in ("MJD-AVG", "MJDAVG"):
+        value = _header_float(header, (key,), np.nan)
+        if np.isfinite(value):
+            return Time(value, format="mjd", scale="utc")
+    for key in ("DATE-AVG", "DATE_AVG"):
+        if key not in header:
+            continue
+        try:
+            return Time(str(header[key]), scale="utc")
+        except Exception:
+            continue
+
+    n_combine = _header_float(header, ("NCOMBINE",), 1.0)
+    if not np.isfinite(n_combine) or n_combine <= 1.0:
+        return None
+    start_mjd = _header_float(header, ("MJD-OBS", "MJDOBS"), np.nan)
+    end_mjd = _header_float(header, ("MJD-END", "MJDEND"), np.nan)
+    if (
+        np.isfinite(start_mjd)
+        and np.isfinite(end_mjd)
+        and end_mjd >= start_mjd
+    ):
+        return Time(0.5 * (start_mjd + end_mjd), format="mjd", scale="utc")
+    return None
 
 
 def _header_time_of_day_seconds(
@@ -1775,11 +1820,21 @@ def _join_coordinate_sources(*sources: str) -> str:
 
 
 def _header_observatory_latitude_value(header: Mapping[str, object]) -> float:
-    return _header_float(header, _LATITUDE_HEADER_KEYS, np.nan)
+    return _header_float_with_numbered_telescope_fallback(
+        header,
+        _LATITUDE_HEADER_KEYS,
+        numbered_suffixes=("GEOLAT",),
+        default=np.nan,
+    )
 
 
 def _header_observatory_longitude_value(header: Mapping[str, object]) -> float:
-    east_positive = _header_float(header, _LONGITUDE_HEADER_KEYS, np.nan)
+    east_positive = _header_float_with_numbered_telescope_fallback(
+        header,
+        _LONGITUDE_HEADER_KEYS,
+        numbered_suffixes=("GEOLON",),
+        default=np.nan,
+    )
     if np.isfinite(east_positive):
         return float(east_positive)
 
@@ -1793,7 +1848,12 @@ def _header_observatory_longitude_value(header: Mapping[str, object]) -> float:
 
 
 def _header_observatory_altitude_value(header: Mapping[str, object]) -> float:
-    return _header_float(header, _ALTITUDE_HEADER_KEYS, np.nan)
+    return _header_float_with_numbered_telescope_fallback(
+        header,
+        _ALTITUDE_HEADER_KEYS,
+        numbered_suffixes=("GEOELEV",),
+        default=np.nan,
+    )
 
 
 def _header_observatory_latitude_deg(
@@ -1924,11 +1984,74 @@ def _header_float(header: Mapping[str, object], keys: tuple[str, ...], default: 
     return float(default)
 
 
+def _header_numbered_telescope_mean(
+    header: Mapping[str, object],
+    suffixes: tuple[str, ...],
+    default: float = np.nan,
+) -> float:
+    values = []
+    for telescope_index in range(1, 5):
+        keys = tuple(
+            key
+            for suffix in suffixes
+            for key in (
+                f"ESO TEL{telescope_index} {suffix}",
+                f"HIERARCH ESO TEL{telescope_index} {suffix}",
+            )
+        )
+        value = _header_float(header, keys, np.nan)
+        if np.isfinite(value):
+            values.append(value)
+    return float(np.mean(values)) if values else float(default)
+
+
+def _header_float_with_numbered_telescope_fallback(
+    header: Mapping[str, object],
+    keys: tuple[str, ...],
+    *,
+    numbered_suffixes: tuple[str, ...],
+    default: float,
+) -> float:
+    value = _header_float(header, keys, np.nan)
+    if np.isfinite(value):
+        return value
+    return _header_numbered_telescope_mean(
+        header,
+        numbered_suffixes,
+        default,
+    )
+
+
 def _header_airmass(header: Mapping[str, object]) -> float:
+    quality_control_average = _header_float(
+        header,
+        ("ESO QC AIRM AVG", "HIERARCH ESO QC AIRM AVG"),
+        np.nan,
+    )
+    if np.isfinite(quality_control_average) and quality_control_average > 0:
+        return quality_control_average
+
     start = _header_float(header, ("ESO TEL AIRM START", "HIERARCH ESO TEL AIRM START"), np.nan)
     end = _header_float(header, ("ESO TEL AIRM END", "HIERARCH ESO TEL AIRM END"), np.nan)
     if np.isfinite(start) and np.isfinite(end) and start > 0 and end > 0:
         return 0.5 * (start + end)
+
+    numbered_start = _header_numbered_telescope_mean(
+        header,
+        ("AIRM START",),
+    )
+    numbered_end = _header_numbered_telescope_mean(
+        header,
+        ("AIRM END",),
+    )
+    if (
+        np.isfinite(numbered_start)
+        and np.isfinite(numbered_end)
+        and numbered_start > 0
+        and numbered_end > 0
+    ):
+        return 0.5 * (numbered_start + numbered_end)
+
     for key in ("AIRMASS", "ESO OBS AIRM", "HIERARCH ESO OBS AIRM"):
         value = _header_float(header, (key,), np.nan)
         if np.isfinite(value) and value > 0:

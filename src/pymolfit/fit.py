@@ -81,8 +81,9 @@ class FitConfig:
     lblrtm_hwf3: float = LBLRTM_VOIGT_DOMAIN_HWF3
     line_margin_micron: float = 0.01
     chunk_size: int = 0
-    min_transmission: float = 0.03
+    min_transmission: float = 0.01
     scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3)
+    minimum_species_peak_optical_depth: float = 1.0e-4
     atmosphere: AtmosphereProfile | None = None
     partition_exponent: float = 1.5
     partition_table: PartitionTable | None = None
@@ -104,6 +105,8 @@ class FitConfig:
     initial_wavelength_shift: float = 0.0
     wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4)
     wavelength_shift_unit: Literal["micron", "pixel"] = "micron"
+    initialize_wavelength_shift_grid: bool = True
+    wavelength_shift_grid_size: int = 13
     fit_lsf_sigma: bool = False
     lsf_sigma_bounds: tuple[float, float] = (0.0, 5.0)
     fit_lsf_box_width: bool = False
@@ -119,6 +122,7 @@ class FitConfig:
     gtol: float = 1.0e-10
     max_nfev: int | None = None
     use_jacobian_sparsity: bool = True
+    staged_optimization: bool = True
     basis_workers: int = 0
     estimate_uncertainties: bool = False
 
@@ -152,6 +156,8 @@ class TelluricFitResult:
     covariance_rank: int = 0
     fit_mask: np.ndarray | None = None
     parameter_bound_status: dict[str, str] = field(default_factory=dict)
+    wavelength_group_coefficients: dict[int, np.ndarray] = field(default_factory=dict)
+    wavelength_group_bounds: dict[int, tuple[float, float]] = field(default_factory=dict)
     provenance: dict[str, object] = field(default_factory=dict)
 
     def to_table(self) -> Table:
@@ -170,6 +176,8 @@ class TelluricFitResult:
         if self.corrected.uncertainty is not None:
             table["corrected_uncertainty"] = self.corrected.uncertainty
         table["input_mask"] = self.spectrum.valid
+        if self.spectrum.group_id is not None:
+            table["physical_group"] = self.spectrum.group_id
         if self.fit_mask is not None:
             table["fit_mask"] = np.asarray(self.fit_mask, dtype=bool)
         table["corrected_mask"] = self.corrected.valid
@@ -238,6 +246,8 @@ class MultiTelluricFitResult:
     reduced_chi_square: float = np.nan
     covariance_rank: int = 0
     parameter_bound_status: dict[str, str] = field(default_factory=dict)
+    wavelength_group_coefficients: dict[int, np.ndarray] = field(default_factory=dict)
+    wavelength_group_bounds: dict[int, tuple[float, float]] = field(default_factory=dict)
     provenance: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -617,22 +627,30 @@ def _fix_zero_basis_species(
     species_names: tuple[str, ...],
     basis_entries: Sequence[tuple[tuple[str, ...], np.ndarray]],
 ) -> FitConfig:
-    """Remove exactly unconstrained scale directions from the optimizer."""
+    """Fix molecular scales whose fitted pixels cannot constrain them."""
 
     fixed = dict(config.fixed_species_scales or {})
     initial = config.initial_species_scales or {}
     for name in species_names:
         if name in fixed:
             continue
-        active = False
+        peak_optical_depth = 0.0
         for local_names, basis in basis_entries:
             if name not in local_names:
                 continue
             row = basis[local_names.index(name)]
-            if np.any(np.isfinite(row) & (row != 0.0)):
-                active = True
-                break
-        if not active:
+            finite = np.abs(row[np.isfinite(row)])
+            if finite.size:
+                peak_optical_depth = max(
+                    peak_optical_depth,
+                    float(np.nanmax(finite)),
+                )
+        expected_peak = (
+            peak_optical_depth
+            * float(config.airmass)
+            * float(initial.get(name, 1.0))
+        )
+        if expected_peak < config.minimum_species_peak_optical_depth:
             fixed[name] = float(initial.get(name, 1.0))
     return replace(config, fixed_species_scales=fixed)
 
@@ -759,6 +777,80 @@ def _solve_linear_continuum(
             )
 
     coefficients, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+    return coefficients
+
+
+def _robust_loss_weights(
+    residual: np.ndarray,
+    *,
+    loss: str,
+    f_scale: float,
+) -> np.ndarray:
+    """Return square-root influence weights matching SciPy robust losses."""
+
+    if loss == "linear":
+        return np.ones_like(residual, dtype=float)
+    scale = max(float(f_scale), np.finfo(float).tiny)
+    z = np.square(np.asarray(residual, dtype=float) / scale)
+    if loss == "soft_l1":
+        derivative = 1.0 / np.sqrt(1.0 + z)
+    elif loss == "huber":
+        derivative = np.ones_like(z)
+        outside = z > 1.0
+        derivative[outside] = 1.0 / np.sqrt(z[outside])
+    elif loss == "cauchy":
+        derivative = 1.0 / (1.0 + z)
+    elif loss == "arctan":
+        derivative = 1.0 / (1.0 + z * z)
+    else:
+        raise ValueError(f"unsupported least-squares loss: {loss!r}")
+    return np.sqrt(np.maximum(derivative, np.finfo(float).eps))
+
+
+def _solve_profiled_continuum(
+    design: np.ndarray,
+    transmission: np.ndarray,
+    flux: np.ndarray,
+    sigma: np.ndarray,
+    *,
+    loss: str,
+    f_scale: float,
+    continuum_prior: np.ndarray | None = None,
+    continuum_prior_weight: float = 0.0,
+    continuum_prior_fractional_sigma: float = 0.05,
+    robust_iterations: int = 3,
+) -> np.ndarray:
+    """Profile continuum coefficients with optional robust IRLS weights."""
+
+    coefficients = _solve_linear_continuum(
+        design,
+        transmission,
+        flux,
+        sigma,
+        continuum_prior=continuum_prior,
+        continuum_prior_weight=continuum_prior_weight,
+        continuum_prior_fractional_sigma=continuum_prior_fractional_sigma,
+    )
+    if loss == "linear":
+        return coefficients
+    effective_sigma = np.asarray(sigma, dtype=float)
+    for _ in range(max(1, int(robust_iterations))):
+        model = (design @ coefficients) * transmission
+        residual = (flux - model) / sigma
+        weights = _robust_loss_weights(residual, loss=loss, f_scale=f_scale)
+        updated = _solve_linear_continuum(
+            design,
+            transmission,
+            flux,
+            effective_sigma / weights,
+            continuum_prior=continuum_prior,
+            continuum_prior_weight=continuum_prior_weight,
+            continuum_prior_fractional_sigma=continuum_prior_fractional_sigma,
+        )
+        if np.allclose(updated, coefficients, rtol=1.0e-8, atol=1.0e-12):
+            coefficients = updated
+            break
+        coefficients = updated
     return coefficients
 
 
@@ -1043,6 +1135,8 @@ def fit_tellurics(
     config = FitConfig() if config is None else config
     if config.scale_bounds[0] <= 0 or config.scale_bounds[1] <= config.scale_bounds[0]:
         raise ValueError("scale_bounds must be positive and increasing")
+    if config.minimum_species_peak_optical_depth < 0:
+        raise ValueError("minimum_species_peak_optical_depth must be non-negative")
     _validate_lsf_fit_config(config)
     global_wavelength_order = _global_wavelength_polynomial_order(config)
     if global_wavelength_order is not None and config.wavelength_shift_bounds[1] <= config.wavelength_shift_bounds[0]:
@@ -1051,8 +1145,6 @@ def fit_tellurics(
         raise ValueError("fit_segment_wavelength_shifts is only supported by fit_telluric_segments")
     if config.fit_segment_wavelength_polynomial:
         raise ValueError("fit_segment_wavelength_polynomial is only supported by fit_telluric_segments")
-    if config.solve_continuum_linear and config.loss != "linear":
-        raise ValueError("solve_continuum_linear currently requires loss='linear'")
     if config.max_nfev is not None and config.max_nfev <= 0:
         raise ValueError("max_nfev must be positive")
     _validate_optimizer_tolerances(config)
@@ -1164,6 +1256,11 @@ def fit_tellurics(
     basis_fit = basis_all[:, valid] if not config.high_resolution_grid else np.zeros((basis_all.shape[0], 0))
 
     scale_config = _fix_zero_basis_species(config, species_names, ((species_names, basis_all),))
+    automatically_fixed_species = {
+        name: value
+        for name, value in (scale_config.fixed_species_scales or {}).items()
+        if name not in (config.fixed_species_scales or {})
+    }
     fitted_species_names, fixed_species_scales, p0_scales, lower_scales, upper_scales = _species_scale_setup(
         species_names,
         scale_config,
@@ -1183,7 +1280,9 @@ def fit_tellurics(
         p0_parts.append(continuum0)
         lower_parts.append(np.full(config.continuum_order + 1, -np.inf))
         upper_parts.append(np.full(config.continuum_order + 1, np.inf))
+    wavelength_parameter_index = None
     if global_wavelength_order is not None:
+        wavelength_parameter_index = sum(part.size for part in p0_parts)
         p0_parts.append(
             _wavelength_coefficients_initial(
                 global_wavelength_order,
@@ -1321,15 +1420,29 @@ def fit_tellurics(
                 lsf_molecfit_voigt=config.lsf_molecfit_voigt,
             )
         if config.solve_continuum_linear:
-            continuum_coeff = _solve_linear_continuum(
+            continuum_coeff = _solve_profiled_continuum(
                 design_fit,
                 transmission,
                 flux_fit,
                 sigma,
+                loss=config.loss,
+                f_scale=config.f_scale,
             )
         continuum = design_fit @ continuum_coeff
         return (flux_fit - continuum * transmission) / sigma
 
+    wavelength_shift_coarse_search = None
+    if (
+        wavelength_parameter_index is not None
+        and config.initialize_wavelength_shift_grid
+    ):
+        p0, wavelength_shift_coarse_search = _coarse_lsf_sigma_initialization(
+            residual,
+            p0,
+            parameter_index=wavelength_parameter_index,
+            bounds=config.wavelength_shift_bounds,
+            grid_size=config.wavelength_shift_grid_size,
+        )
     lsf_sigma_coarse_search = None
     if config.initialize_lsf_sigma_grid:
         if lsf_sigma_parameter_index is None:
@@ -1410,11 +1523,13 @@ def fit_tellurics(
         native_to_model_plan=native_to_model_plan,
     )
     if config.solve_continuum_linear:
-        continuum_coeff = _solve_linear_continuum(
+        continuum_coeff = _solve_profiled_continuum(
             design_fit,
             transmission[valid],
             flux_fit,
             sigma,
+            loss=config.loss,
+            f_scale=config.f_scale,
         )
     continuum = design_all @ continuum_coeff
     model_flux = continuum * transmission
@@ -1471,7 +1586,12 @@ def fit_tellurics(
     parameter_standard_errors: dict[str, float] = {}
     species_scale_uncertainties: dict[str, float] = {}
     transmission_uncertainty = None
-    reduced_chi_square = np.nan
+    degrees_of_freedom = max(0, int(fit.fun.size) - int(fit.x.size))
+    reduced_chi_square = (
+        float(2.0 * fit.cost / degrees_of_freedom)
+        if degrees_of_freedom > 0
+        else np.nan
+    )
     covariance_rank = 0
     if config.estimate_uncertainties:
         parameter_covariance, reduced_chi_square, covariance_rank = _linearized_parameter_covariance(
@@ -1573,12 +1693,23 @@ def fit_tellurics(
         config=config,
         fit_pixel_counts=(int(np.count_nonzero(valid)),),
     )
+    provenance = {
+        **provenance,
+        "species_observability": {
+            "minimum_peak_optical_depth": config.minimum_species_peak_optical_depth,
+            "automatically_fixed": automatically_fixed_species,
+        },
+    }
     if lsf_sigma_coarse_search is not None:
         provenance = {
             **provenance,
             "lsf_sigma_coarse_search": lsf_sigma_coarse_search,
         }
-
+    if wavelength_shift_coarse_search is not None:
+        provenance = {
+            **provenance,
+            "wavelength_shift_coarse_search": wavelength_shift_coarse_search,
+        }
     return TelluricFitResult(
         spectrum=spectrum,
         corrected=corrected,
@@ -1642,6 +1773,7 @@ def _multi_fit_jacobian_sparsity(
     solve_continuum_linear: bool,
     global_wavelength_order: int | None,
     segment_wavelength_order: int | None,
+    segment_wavelength_groups: np.ndarray,
     fit_lsf_sigma: bool,
     fit_lsf_box_width: bool,
     fit_lsf_lorentz_fwhm: bool,
@@ -1681,10 +1813,15 @@ def _multi_fit_jacobian_sparsity(
     local_wavelength_columns = [None] * len(prepared)
     if segment_wavelength_order is not None:
         block = segment_wavelength_order + 1
-        local_wavelength_columns = []
-        for _ in prepared:
-            local_wavelength_columns.append(slice(column_cursor, column_cursor + block))
-            column_cursor += block
+        group_count = int(np.max(segment_wavelength_groups)) + 1
+        group_columns = [
+            slice(column_cursor + group * block, column_cursor + (group + 1) * block)
+            for group in range(group_count)
+        ]
+        local_wavelength_columns = [
+            group_columns[int(group)] for group in segment_wavelength_groups
+        ]
+        column_cursor += group_count * block
 
     for enabled in (
         fit_lsf_sigma,
@@ -1902,6 +2039,7 @@ def _prepare_multi_fit_segment(
     global_wavelength_order: int | None,
     global_wavelength_bounds: tuple[float, float] | None,
     segment_wavelength_order: int | None,
+    local_wavelength_bounds: tuple[float, float] | None = None,
 ) -> _PreparedSegment:
     unit_spectrum = spectrum.to_unit("micron")
     order = np.argsort(unit_spectrum.wavelength)
@@ -1972,8 +2110,12 @@ def _prepare_multi_fit_segment(
         )
     else:
         local_bounds = (
-            float(np.nanmin(segment.wavelength)),
-            float(np.nanmax(segment.wavelength)),
+            (
+                float(np.nanmin(segment.wavelength)),
+                float(np.nanmax(segment.wavelength)),
+            )
+            if local_wavelength_bounds is None
+            else local_wavelength_bounds
         )
         wavelength_shift_design_all = _wavelength_shift_design(
             segment.wavelength,
@@ -2058,6 +2200,158 @@ def _prepare_multi_fit_segment(
     )
 
 
+def _robust_cost(residual: np.ndarray, *, loss: str, f_scale: float) -> float:
+    residual = np.asarray(residual, dtype=float)
+    scale = max(float(f_scale), np.finfo(float).tiny)
+    z = np.square(residual / scale)
+    if loss == "linear":
+        rho = z
+    elif loss == "soft_l1":
+        rho = 2.0 * (np.sqrt(1.0 + z) - 1.0)
+    elif loss == "huber":
+        rho = np.where(z <= 1.0, z, 2.0 * np.sqrt(z) - 1.0)
+    elif loss == "cauchy":
+        rho = np.log1p(z)
+    elif loss == "arctan":
+        rho = np.arctan(z)
+    else:
+        raise ValueError(f"unsupported least-squares loss: {loss!r}")
+    return float(0.5 * scale * scale * np.sum(rho))
+
+
+def _prepared_segment_transmission(
+    segment: _PreparedSegment,
+    *,
+    config: FitConfig,
+    species_scales: Mapping[str, float],
+    wavelength_coefficients: np.ndarray,
+    lsf_sigma_pixels: float,
+    lsf_box_width_pixels: float,
+    lsf_lorentz_fwhm_pixels: float,
+    lsf_wavelength_exponent: float,
+) -> np.ndarray:
+    shift_fit = _wavelength_shift_from_coefficients(
+        segment.wavelength_shift_design_fit,
+        wavelength_coefficients,
+    )
+    shift_basis = _wavelength_shift_from_coefficients(
+        segment.wavelength_shift_design_basis,
+        wavelength_coefficients,
+    )
+    if config.high_resolution_grid:
+        transmission = _transmission_from_prepared_basis(
+            segment.spectrum.wavelength,
+            segment.species_names,
+            segment.basis_all,
+            config=config,
+            species_scales=species_scales,
+            airmass=config.airmass,
+            wavelength_shift=shift_basis,
+            lsf_sigma_pixels=lsf_sigma_pixels,
+            lsf_box_width_pixels=lsf_box_width_pixels,
+            lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+            lsf_wavelength_exponent=lsf_wavelength_exponent,
+            basis_wavelength=segment.basis_wavelength,
+            model_wavelength=segment.model_wavelength,
+            highres_pixels_per_observed_pixel=segment.highres_pixels_per_observed_pixel,
+            rebin_plan=segment.rebin_plan,
+            native_to_model_plan=segment.native_to_model_plan,
+        )
+        return transmission[segment.valid]
+    return _transmission_from_prepared_basis(
+        segment.spectrum.wavelength[segment.valid],
+        segment.species_names,
+        segment.basis_fit,
+        config=config,
+        species_scales=species_scales,
+        airmass=config.airmass,
+        wavelength_shift=shift_fit,
+        lsf_sigma_pixels=lsf_sigma_pixels,
+        lsf_box_width_pixels=lsf_box_width_pixels,
+        lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
+        basis_wavelength=segment.spectrum.wavelength[segment.valid],
+        model_wavelength=segment.spectrum.wavelength[segment.valid],
+        highres_pixels_per_observed_pixel=1.0,
+        rebin_plan=None,
+        native_to_model_plan=None,
+    )
+
+
+def _coarse_segment_wavelength_initialization(
+    prepared: Sequence[_PreparedSegment],
+    *,
+    config: FitConfig,
+    species_scales: Mapping[str, float],
+    polynomial_order: int,
+) -> tuple[np.ndarray, tuple[dict[str, object], ...]]:
+    """Initialize local line alignment independently for each physical group."""
+
+    initial = np.tile(
+        _wavelength_coefficients_initial(
+            polynomial_order,
+            config.initial_wavelength_shift,
+        ),
+        (len(prepared), 1),
+    )
+    if (
+        not config.initialize_wavelength_shift_grid
+        or config.wavelength_shift_grid_size < 3
+    ):
+        return initial, ()
+    lower, upper = config.wavelength_shift_bounds
+    grid = np.linspace(lower, upper, int(config.wavelength_shift_grid_size))
+    details: list[dict[str, object]] = []
+    for index, segment in enumerate(prepared):
+        costs = []
+        peak_absorption = 0.0
+        for shift in grid:
+            coefficients = initial[index].copy()
+            coefficients[0] = float(shift)
+            transmission = _prepared_segment_transmission(
+                segment,
+                config=config,
+                species_scales=species_scales,
+                wavelength_coefficients=coefficients,
+                lsf_sigma_pixels=config.lsf_sigma_pixels,
+                lsf_box_width_pixels=config.lsf_box_width_pixels,
+                lsf_lorentz_fwhm_pixels=config.lsf_lorentz_fwhm_pixels,
+                lsf_wavelength_exponent=config.lsf_wavelength_exponent,
+            )
+            peak_absorption = max(
+                peak_absorption,
+                float(np.nanmax(1.0 - transmission)),
+            )
+            continuum = _solve_profiled_continuum(
+                segment.design_fit,
+                transmission,
+                segment.flux_fit,
+                segment.sigma,
+                loss=config.loss,
+                f_scale=config.f_scale,
+                continuum_prior=segment.continuum_prior_fit,
+                continuum_prior_weight=config.continuum_prior_weight,
+                continuum_prior_fractional_sigma=config.continuum_prior_fractional_sigma,
+            )
+            residual = (
+                segment.flux_fit - (segment.design_fit @ continuum) * transmission
+            ) / segment.sigma
+            costs.append(_robust_cost(residual, loss=config.loss, f_scale=config.f_scale))
+        best = int(np.argmin(costs))
+        if peak_absorption >= 1.0e-3:
+            initial[index, 0] = float(grid[best])
+        details.append(
+            {
+                "segment_index": index,
+                "selected_shift": float(initial[index, 0]),
+                "peak_absorption": peak_absorption,
+                "grid": grid.tolist(),
+                "cost": [float(value) for value in costs],
+            }
+        )
+    return initial, tuple(details)
+
+
 def fit_telluric_segments(
     spectra: Sequence[Spectrum],
     *,
@@ -2066,14 +2360,17 @@ def fit_telluric_segments(
     fit_masks: Sequence[np.ndarray | None] | None = None,
     continuum_priors: Sequence[np.ndarray | None] | None = None,
     global_wavelength_bounds: tuple[float, float] | None = None,
+    wavelength_group_ids: Sequence[int] | None = None,
+    wavelength_group_bounds: Mapping[int, tuple[float, float]] | None = None,
 ) -> MultiTelluricFitResult:
     """Fit several spectral segments with shared telluric scales.
 
     This mirrors the most important Molecfit fitting pattern: molecular column
-    scale factors are global, while each order/chip gets its own continuum
-    polynomial. It is especially important for heavily absorbed segments where
-    a single segment cannot distinguish a low continuum from deep telluric
-    absorption.
+    scale factors are global, while each numerical chunk gets its own continuum
+    polynomial. ``wavelength_group_ids`` can map several numerical chunks back
+    to one physical order/detector so they share one smooth wavelength solution.
+    This is especially important for heavily absorbed segments where a single
+    segment cannot distinguish a low continuum from deep telluric absorption.
     """
 
     if not spectra:
@@ -2081,6 +2378,8 @@ def fit_telluric_segments(
     config = FitConfig() if config is None else config
     if config.scale_bounds[0] <= 0 or config.scale_bounds[1] <= config.scale_bounds[0]:
         raise ValueError("scale_bounds must be positive and increasing")
+    if config.minimum_species_peak_optical_depth < 0:
+        raise ValueError("minimum_species_peak_optical_depth must be non-negative")
     _validate_lsf_fit_config(config)
     global_wavelength_order = _global_wavelength_polynomial_order(config)
     if global_wavelength_order is not None and config.wavelength_shift_bounds[1] <= config.wavelength_shift_bounds[0]:
@@ -2096,8 +2395,6 @@ def fit_telluric_segments(
         raise ValueError("continuum_prior_weight must be non-negative")
     if config.continuum_prior_fractional_sigma <= 0:
         raise ValueError("continuum_prior_fractional_sigma must be positive")
-    if config.solve_continuum_linear and config.loss != "linear":
-        raise ValueError("solve_continuum_linear currently requires loss='linear'")
     if config.max_nfev is not None and config.max_nfev <= 0:
         raise ValueError("max_nfev must be positive")
     if config.basis_workers < 0:
@@ -2112,6 +2409,43 @@ def fit_telluric_segments(
         continuum_priors = [None] * len(spectra)
     if len(continuum_priors) != len(spectra):
         raise ValueError("continuum_priors must have the same length as spectra")
+    if wavelength_group_ids is None:
+        wavelength_group_ids = tuple(range(len(spectra)))
+    if len(wavelength_group_ids) != len(spectra):
+        raise ValueError("wavelength_group_ids must have the same length as spectra")
+    external_group_ids = tuple(int(value) for value in wavelength_group_ids)
+    unique_group_ids = tuple(dict.fromkeys(external_group_ids))
+    group_position = {group_id: index for index, group_id in enumerate(unique_group_ids)}
+    segment_group_positions = np.asarray(
+        [group_position[group_id] for group_id in external_group_ids],
+        dtype=int,
+    )
+    supplied_group_bounds = dict(wavelength_group_bounds or {})
+    resolved_group_bounds: dict[int, tuple[float, float]] = {}
+    for group_id in unique_group_ids:
+        if group_id in supplied_group_bounds:
+            bounds = tuple(float(value) for value in supplied_group_bounds[group_id])
+        else:
+            arrays = [
+                spectrum.to_unit("micron").wavelength
+                for spectrum, local_group in zip(
+                    spectra,
+                    external_group_ids,
+                    strict=True,
+                )
+                if local_group == group_id
+            ]
+            bounds = (
+                float(min(np.nanmin(values) for values in arrays)),
+                float(max(np.nanmax(values) for values in arrays)),
+            )
+        if (
+            len(bounds) != 2
+            or not np.all(np.isfinite(bounds))
+            or bounds[1] <= bounds[0]
+        ):
+            raise ValueError("wavelength_group_bounds must be finite and increasing")
+        resolved_group_bounds[group_id] = bounds
 
     if global_wavelength_order is not None:
         if global_wavelength_bounds is None:
@@ -2134,7 +2468,15 @@ def fit_telluric_segments(
             ):
                 raise ValueError("global_wavelength_bounds must be finite and increasing")
 
-    jobs = list(zip(spectra, fit_masks, continuum_priors, strict=True))
+    jobs = list(
+        zip(
+            spectra,
+            fit_masks,
+            continuum_priors,
+            external_group_ids,
+            strict=True,
+        )
+    )
     worker_count = min(4, len(jobs)) if config.basis_workers == 0 else min(config.basis_workers, len(jobs))
     if worker_count > 1:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -2149,6 +2491,7 @@ def fit_telluric_segments(
                         global_wavelength_order=global_wavelength_order,
                         global_wavelength_bounds=global_wavelength_bounds,
                         segment_wavelength_order=segment_wavelength_order,
+                        local_wavelength_bounds=resolved_group_bounds[job[3]],
                     ),
                     jobs,
                 )
@@ -2164,8 +2507,9 @@ def fit_telluric_segments(
                 global_wavelength_order=global_wavelength_order,
                 global_wavelength_bounds=global_wavelength_bounds,
                 segment_wavelength_order=segment_wavelength_order,
+                local_wavelength_bounds=resolved_group_bounds[group_id],
             )
-            for spectrum, fit_mask, continuum_prior in jobs
+            for spectrum, fit_mask, continuum_prior, group_id in jobs
         ]
 
     global_species: list[str] = []
@@ -2180,6 +2524,11 @@ def fit_telluric_segments(
         species_names,
         tuple((segment.species_names, segment.basis_all) for segment in prepared),
     )
+    automatically_fixed_species = {
+        name: value
+        for name, value in (scale_config.fixed_species_scales or {}).items()
+        if name not in (config.fixed_species_scales or {})
+    }
     fitted_species_names, fixed_species_scales, p0_scales, lower_scales, upper_scales = _species_scale_setup(
         species_names,
         scale_config,
@@ -2196,7 +2545,9 @@ def fit_telluric_segments(
             p0_parts.append(continuum0)
             lower_parts.append(np.full(config.continuum_order + 1, -np.inf))
             upper_parts.append(np.full(config.continuum_order + 1, np.inf))
+    global_wavelength_parameter_index = None
     if global_wavelength_order is not None:
+        global_wavelength_parameter_index = sum(part.size for part in p0_parts)
         p0_parts.append(
             _wavelength_coefficients_initial(
                 global_wavelength_order,
@@ -2210,17 +2561,41 @@ def fit_telluric_segments(
             np.full(global_wavelength_order + 1, config.wavelength_shift_bounds[1])
         )
     if segment_wavelength_order is not None:
-        initial_wavelength_coefficients = _wavelength_coefficients_initial(
-            segment_wavelength_order,
-            config.initial_wavelength_shift,
+        initial_scales = _scales_from_params(
+            fitted_species_names,
+            fixed_species_scales,
+            p0_scales,
         )
-        p0_parts.append(np.tile(initial_wavelength_coefficients, len(prepared)))
+        (
+            initial_chunk_wavelength_coefficients,
+            wavelength_shift_coarse_search,
+        ) = _coarse_segment_wavelength_initialization(
+            prepared,
+            config=config,
+            species_scales=initial_scales,
+            polynomial_order=segment_wavelength_order,
+        )
+        initial_group_wavelength_coefficients = np.zeros(
+            (len(unique_group_ids), segment_wavelength_order + 1),
+            dtype=float,
+        )
+        for position in range(len(unique_group_ids)):
+            members = initial_chunk_wavelength_coefficients[
+                segment_group_positions == position
+            ]
+            initial_group_wavelength_coefficients[position] = np.nanmedian(
+                members,
+                axis=0,
+            )
+        p0_parts.append(initial_group_wavelength_coefficients.ravel())
         lower_parts.append(
-            np.full(len(prepared) * (segment_wavelength_order + 1), config.wavelength_shift_bounds[0])
+            np.full(len(unique_group_ids) * (segment_wavelength_order + 1), config.wavelength_shift_bounds[0])
         )
         upper_parts.append(
-            np.full(len(prepared) * (segment_wavelength_order + 1), config.wavelength_shift_bounds[1])
+            np.full(len(unique_group_ids) * (segment_wavelength_order + 1), config.wavelength_shift_bounds[1])
         )
+    else:
+        wavelength_shift_coarse_search = ()
     lsf_sigma_parameter_index = None
     if config.fit_lsf_sigma:
         lsf_sigma_parameter_index = sum(part.size for part in p0_parts)
@@ -2275,6 +2650,7 @@ def fit_telluric_segments(
             solve_continuum_linear=config.solve_continuum_linear,
             global_wavelength_order=global_wavelength_order,
             segment_wavelength_order=segment_wavelength_order,
+            segment_wavelength_groups=segment_group_positions,
             fit_lsf_sigma=config.fit_lsf_sigma,
             fit_lsf_box_width=config.fit_lsf_box_width,
             fit_lsf_lorentz_fwhm=config.fit_lsf_lorentz_fwhm,
@@ -2297,11 +2673,11 @@ def fit_telluric_segments(
             global_wavelength_coefficients = None
         if segment_wavelength_order is not None:
             n_wavelength_coefficients = segment_wavelength_order + 1
-            stop = cursor + len(prepared) * n_wavelength_coefficients
+            stop = cursor + len(unique_group_ids) * n_wavelength_coefficients
             segment_wavelength_coefficients = np.asarray(
                 params[cursor:stop],
                 dtype=float,
-            ).reshape(len(prepared), n_wavelength_coefficients)
+            ).reshape(len(unique_group_ids), n_wavelength_coefficients)
             cursor = stop
         else:
             segment_wavelength_coefficients = None
@@ -2350,7 +2726,9 @@ def fit_telluric_segments(
         residuals = []
         for index, segment in enumerate(prepared):
             if segment_wavelength_coefficients is not None:
-                coefficients = segment_wavelength_coefficients[index]
+                coefficients = segment_wavelength_coefficients[
+                    segment_group_positions[index]
+                ]
                 segment_shift_fit = _wavelength_shift_from_coefficients(
                     segment.wavelength_shift_design_fit,
                     coefficients,
@@ -2412,11 +2790,13 @@ def fit_telluric_segments(
             if config.high_resolution_grid:
                 transmission = transmission[segment.valid]
             if config.solve_continuum_linear:
-                continuum_coeff = _solve_linear_continuum(
+                continuum_coeff = _solve_profiled_continuum(
                     segment.design_fit,
                     transmission,
                     segment.flux_fit,
                     segment.sigma,
+                    loss=config.loss,
+                    f_scale=config.f_scale,
                     continuum_prior=segment.continuum_prior_fit,
                     continuum_prior_weight=config.continuum_prior_weight,
                     continuum_prior_fractional_sigma=config.continuum_prior_fractional_sigma,
@@ -2436,6 +2816,18 @@ def fit_telluric_segments(
                 )
         return np.concatenate(residuals)
 
+    global_wavelength_shift_coarse_search = None
+    if (
+        global_wavelength_parameter_index is not None
+        and config.initialize_wavelength_shift_grid
+    ):
+        p0, global_wavelength_shift_coarse_search = _coarse_lsf_sigma_initialization(
+            residual,
+            p0,
+            parameter_index=global_wavelength_parameter_index,
+            bounds=config.wavelength_shift_bounds,
+            grid_size=config.wavelength_shift_grid_size,
+        )
     lsf_sigma_coarse_search = None
     if config.initialize_lsf_sigma_grid:
         if lsf_sigma_parameter_index is None:
@@ -2447,6 +2839,81 @@ def fit_telluric_segments(
             bounds=config.lsf_sigma_bounds,
             grid_size=config.lsf_sigma_grid_size,
         )
+
+    parameter_cursor = len(fitted_species_names)
+    if not config.solve_continuum_linear:
+        parameter_cursor += len(prepared) * continuum_block
+    alignment_stage_indices: list[int] = []
+    if global_wavelength_order is not None:
+        alignment_stage_indices.extend(
+            range(parameter_cursor, parameter_cursor + global_wavelength_order + 1)
+        )
+        parameter_cursor += global_wavelength_order + 1
+    if segment_wavelength_order is not None:
+        parameter_cursor += len(unique_group_ids) * (segment_wavelength_order + 1)
+    for enabled in (
+        config.fit_lsf_sigma,
+        config.fit_lsf_box_width,
+        config.fit_lsf_lorentz_fwhm,
+        config.fit_lsf_wavelength_exponent,
+    ):
+        if enabled:
+            alignment_stage_indices.append(parameter_cursor)
+            parameter_cursor += 1
+    if parameter_cursor != p0.size:
+        raise RuntimeError("staged optimizer parameter layout is inconsistent")
+
+    staged_attempts: list[dict[str, object]] = []
+    staged_nfev = 0
+
+    def run_stage(label: str, indices: Sequence[int]) -> None:
+        nonlocal p0, staged_nfev
+        selected = np.asarray(tuple(indices), dtype=int)
+        if selected.size == 0:
+            return
+        baseline = p0.copy()
+
+        def stage_residual(values: np.ndarray) -> np.ndarray:
+            parameters = baseline.copy()
+            parameters[selected] = values
+            return residual(parameters)
+
+        initial_cost = _robust_cost(
+            stage_residual(baseline[selected]),
+            loss=config.loss,
+            f_scale=config.f_scale,
+        )
+        stage = least_squares(
+            stage_residual,
+            baseline[selected],
+            bounds=(lower[selected], upper[selected]),
+            method="trf",
+            loss=config.loss,
+            f_scale=config.f_scale,
+            ftol=max(config.ftol, 1.0e-8),
+            xtol=max(config.xtol, 1.0e-8),
+            gtol=max(config.gtol, 1.0e-8),
+            max_nfev=min(config.max_nfev or 20, 20),
+        )
+        staged_nfev += int(stage.nfev)
+        accepted = bool(np.isfinite(stage.cost) and stage.cost <= initial_cost)
+        if accepted:
+            p0[selected] = stage.x
+        staged_attempts.append(
+            {
+                "stage": label,
+                "parameter_count": int(selected.size),
+                "initial_cost": float(initial_cost),
+                "final_cost": float(stage.cost),
+                "accepted": accepted,
+                "success": bool(stage.success),
+                "nfev": int(stage.nfev),
+            }
+        )
+
+    if config.staged_optimization and p0.size:
+        run_stage("wavelength_and_lsf", alignment_stage_indices)
+        run_stage("molecular_columns", range(len(fitted_species_names)))
 
     if p0.size == 0:
         fit = _evaluate_without_nonlinear_parameters(residual, p0)
@@ -2469,6 +2936,7 @@ def fit_telluric_segments(
             max_nfev=config.max_nfev,
             jac=jacobian,
         )
+    fit.nfev = int(fit.nfev) + staged_nfev
 
     (
         species_scales,
@@ -2515,7 +2983,7 @@ def fit_telluric_segments(
             indices.extend(global_wavelength_indices)
         parameter_cursor += global_wavelength_order + 1
     if segment_wavelength_order is not None:
-        for segment_index in range(len(prepared)):
+        for group_index, external_group_id in enumerate(unique_group_ids):
             local_indices = list(
                 range(
                     parameter_cursor,
@@ -2524,13 +2992,15 @@ def fit_telluric_segments(
             )
             parameter_names.extend(
                 (
-                    f"segment:{segment_index}:wavelength_pixel_coefficient:{degree}"
+                    f"wavelength_group:{external_group_id}:pixel_coefficient:{degree}"
                     if config.wavelength_shift_unit == "pixel"
-                    else f"segment:{segment_index}:wavelength_coefficient:{degree}"
+                    else f"wavelength_group:{external_group_id}:coefficient:{degree}"
                 )
                 for degree in range(segment_wavelength_order + 1)
             )
-            segment_transmission_indices[segment_index].extend(local_indices)
+            for segment_index, position in enumerate(segment_group_positions):
+                if int(position) == group_index:
+                    segment_transmission_indices[segment_index].extend(local_indices)
             parameter_cursor += segment_wavelength_order + 1
     for enabled, name in (
         (config.fit_lsf_sigma, "lsf_sigma_pixels"),
@@ -2563,16 +3033,47 @@ def fit_telluric_segments(
         config=config,
         fit_pixel_counts=tuple(int(np.count_nonzero(segment.valid)) for segment in prepared),
     )
+    provenance = {
+        **provenance,
+        "species_observability": {
+            "minimum_peak_optical_depth": config.minimum_species_peak_optical_depth,
+            "automatically_fixed": automatically_fixed_species,
+        },
+    }
     if lsf_sigma_coarse_search is not None:
         provenance = {
             **provenance,
             "lsf_sigma_coarse_search": lsf_sigma_coarse_search,
         }
+    if global_wavelength_shift_coarse_search is not None:
+        provenance = {
+            **provenance,
+            "wavelength_shift_coarse_search": global_wavelength_shift_coarse_search,
+        }
+    if wavelength_shift_coarse_search:
+        provenance = {
+            **provenance,
+            "segment_wavelength_coarse_search": list(
+                wavelength_shift_coarse_search
+            ),
+        }
+    provenance = {
+        **provenance,
+        "staged_optimization": {
+            "enabled": bool(config.staged_optimization),
+            "attempts": staged_attempts,
+        },
+    }
 
     parameter_covariance = None
     parameter_standard_errors: dict[str, float] = {}
     species_scale_uncertainties: dict[str, float] = {}
-    reduced_chi_square = np.nan
+    degrees_of_freedom = max(0, int(fit.fun.size) - int(fit.x.size))
+    reduced_chi_square = (
+        float(2.0 * fit.cost / degrees_of_freedom)
+        if degrees_of_freedom > 0
+        else np.nan
+    )
     covariance_rank = 0
     if config.estimate_uncertainties:
         parameter_covariance, reduced_chi_square, covariance_rank = _linearized_parameter_covariance(
@@ -2595,7 +3096,9 @@ def fit_telluric_segments(
     reported_segment_shifts = []
     for index, segment in enumerate(prepared):
         if segment_wavelength_coefficients is not None:
-            coefficients = segment_wavelength_coefficients[index]
+            coefficients = segment_wavelength_coefficients[
+                segment_group_positions[index]
+            ]
             segment_shift_all = _wavelength_shift_from_coefficients(
                 segment.wavelength_shift_design_all,
                 coefficients,
@@ -2639,11 +3142,13 @@ def fit_telluric_segments(
             native_to_model_plan=segment.native_to_model_plan,
         )
         if config.solve_continuum_linear:
-            continuum_coeff = _solve_linear_continuum(
+            continuum_coeff = _solve_profiled_continuum(
                 segment.design_fit,
                 transmission[segment.valid],
                 segment.flux_fit,
                 segment.sigma,
+                loss=config.loss,
+                f_scale=config.f_scale,
                 continuum_prior=segment.continuum_prior_fit,
                 continuum_prior_weight=config.continuum_prior_weight,
                 continuum_prior_fractional_sigma=config.continuum_prior_fractional_sigma,
@@ -2667,7 +3172,9 @@ def fit_telluric_segments(
                     local_lsf_exponent,
                 ) = unpack(parameters)
                 if local_segment_coefficients is not None:
-                    local_coefficients = local_segment_coefficients[index]
+                    local_coefficients = local_segment_coefficients[
+                        segment_group_positions[index]
+                    ]
                     local_shift_all = _wavelength_shift_from_coefficients(
                         segment.wavelength_shift_design_all,
                         local_coefficients,
@@ -2757,6 +3264,17 @@ def fit_telluric_segments(
             )
         )
 
+    fitted_group_coefficients = (
+        {}
+        if segment_wavelength_coefficients is None
+        else {
+            group_id: np.asarray(
+                segment_wavelength_coefficients[position],
+                dtype=float,
+            )
+            for position, group_id in enumerate(unique_group_ids)
+        }
+    )
     return MultiTelluricFitResult(
         segment_results=tuple(segment_results),
         species_scales=dict(species_scales),
@@ -2776,6 +3294,8 @@ def fit_telluric_segments(
         reduced_chi_square=reduced_chi_square,
         covariance_rank=covariance_rank,
         parameter_bound_status=bound_status,
+        wavelength_group_coefficients=fitted_group_coefficients,
+        wavelength_group_bounds=resolved_group_bounds,
         provenance=provenance,
     )
 
@@ -2787,11 +3307,25 @@ def _apply_multi_fit_to_segment(
     config: FitConfig,
     fit_result: MultiTelluricFitResult,
     global_wavelength_bounds: tuple[float, float] | None = None,
+    wavelength_group_id: int | None = None,
 ) -> TelluricFitResult:
     """Apply shared fitted parameters to a segment that did not constrain the fit."""
 
     evaluation_config = replace(config, fit_ranges=None, exclude_ranges=None)
     global_wavelength_order = _global_wavelength_polynomial_order(config)
+    local_coefficients = (
+        None
+        if wavelength_group_id is None
+        else fit_result.wavelength_group_coefficients.get(wavelength_group_id)
+    )
+    local_order = (
+        None if local_coefficients is None else int(local_coefficients.size - 1)
+    )
+    local_bounds = (
+        None
+        if wavelength_group_id is None
+        else fit_result.wavelength_group_bounds.get(wavelength_group_id)
+    )
     prepared = _prepare_multi_fit_segment(
         spectrum,
         None,
@@ -2800,9 +3334,20 @@ def _apply_multi_fit_to_segment(
         config=evaluation_config,
         global_wavelength_order=global_wavelength_order,
         global_wavelength_bounds=global_wavelength_bounds,
-        segment_wavelength_order=None,
+        segment_wavelength_order=local_order,
+        local_wavelength_bounds=local_bounds,
     )
-    if global_wavelength_order is None:
+    if local_coefficients is not None:
+        wavelength_coefficients = np.asarray(local_coefficients, dtype=float)
+        wavelength_shift_all = _wavelength_shift_from_coefficients(
+            prepared.wavelength_shift_design_all,
+            wavelength_coefficients,
+        )
+        wavelength_shift_basis = _wavelength_shift_from_coefficients(
+            prepared.wavelength_shift_design_basis,
+            wavelength_coefficients,
+        )
+    elif global_wavelength_order is None:
         wavelength_coefficients = np.array([0.0], dtype=float)
         wavelength_shift_all: float | np.ndarray = 0.0
         wavelength_shift_basis: float | np.ndarray = 0.0
@@ -2842,11 +3387,13 @@ def _apply_multi_fit_to_segment(
         rebin_plan=prepared.rebin_plan,
         native_to_model_plan=prepared.native_to_model_plan,
     )
-    continuum_coefficients = _solve_linear_continuum(
+    continuum_coefficients = _solve_profiled_continuum(
         prepared.design_fit,
         transmission[prepared.valid],
         prepared.flux_fit,
         prepared.sigma,
+        loss=config.loss,
+        f_scale=config.f_scale,
     )
     continuum = prepared.design_all @ continuum_coefficients
     model_flux = continuum * transmission

@@ -233,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_SEGMENT_SIZE_MICRON,
         metavar="MICRON",
-        help="maximum automatic segment width in microns (default: 0.01 = 100 Angstrom)",
+        help="maximum automatic segment width in microns (default: 0.005 = 50 Angstrom)",
     )
     fit_parser.add_argument(
         "--line-cutoff-cm",
@@ -293,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--min-transmission",
         type=float,
-        default=0.03,
+        default=0.01,
         help="mask corrected pixels whose fitted atmospheric transmission is below this fraction",
     )
     fit_parser.add_argument(
@@ -364,6 +364,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument("--fit-range", action="append", default=[], metavar="START:STOP")
     fit_parser.add_argument("--exclude-range", action="append", default=[], metavar="START:STOP")
+    fit_parser.add_argument(
+        "--region-file",
+        type=Path,
+        help=(
+            "PyMolFit ECSV file containing fit and exclusion regions; do not "
+            "combine with --fit-range or --exclude-range"
+        ),
+    )
     fit_parser.add_argument(
         "--loss",
         choices=["linear", "soft_l1", "huber", "cauchy", "arctan"],
@@ -665,6 +673,13 @@ def main(argv: list[str] | None = None) -> int:
             exclude_ranges = _parse_ranges(args.exclude_range)
         except ValueError as exc:
             parser.error(str(exc))
+        if args.region_file is not None and (
+            fit_ranges is not None or exclude_ranges is not None
+        ):
+            parser.error(
+                "--region-file cannot be combined with --fit-range or "
+                "--exclude-range"
+            )
 
         correct_file(
             args.input,
@@ -784,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             fit_ranges=fit_ranges,
             exclude_ranges=exclude_ranges,
+            region_file=args.region_file,
             loss=args.loss,
             f_scale=args.f_scale,
             ftol=args.ftol,

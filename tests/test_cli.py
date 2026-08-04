@@ -95,6 +95,43 @@ def test_cli_exposes_native_radiative_transfer_controls():
     assert args.lblrtm_avmass_amu == 35.5
 
 
+def test_cli_uses_public_correction_defaults():
+    args = build_parser().parse_args(["fit", "input.txt", "output.txt"])
+
+    assert args.segment_size == 0.005
+    assert args.min_transmission == 0.01
+
+
+def test_cli_accepts_region_file():
+    args = build_parser().parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--region-file",
+            "regions.ecsv",
+        ]
+    )
+
+    assert args.region_file.name == "regions.ecsv"
+
+
+def test_cli_rejects_region_file_with_explicit_ranges():
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "fit",
+                "input.txt",
+                "output.txt",
+                "--demo-lines",
+                "--region-file",
+                "regions.ecsv",
+                "--fit-range",
+                "2.31:2.32",
+            ]
+        )
+
+
 def test_cli_continuum_solver_defaults_to_auto_and_accepts_overrides():
     parser = build_parser()
     automatic = parser.parse_args(["fit", "input.txt", "output.txt"])

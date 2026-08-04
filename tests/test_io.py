@@ -116,6 +116,26 @@ def test_fits_table_columns_are_inferred(tmp_path):
     np.testing.assert_allclose(loaded.uncertainty, table["ERR"])
 
 
+def test_fits_quality_and_physical_group_columns_are_preserved(tmp_path):
+    path = tmp_path / "echelle.fits"
+    table = Table()
+    table["WAVE"] = [2.31, 2.32, 2.41, 2.42]
+    table["FLUX"] = [1.0, 0.9, 1.1, 0.8]
+    table["ERR"] = [0.01, 0.01, 0.02, 0.02]
+    table["QUAL"] = [0, 1, 0, 2]
+    table["ORDER"] = [10, 10, 11, 11]
+    table["DETEC"] = [1, 1, 2, 2]
+    table.write(path)
+
+    loaded = load_spectrum(path, format="fits")
+
+    np.testing.assert_array_equal(loaded.mask, [True, False, True, False])
+    assert loaded.group_id is not None
+    assert np.unique(loaded.group_id).size == 2
+    assert loaded.meta["quality_columns"] == ("QUAL",)
+    assert loaded.meta["physical_group_columns"] == ("ORDER", "DETEC")
+
+
 def test_fits_table_single_row_vector_columns_are_loaded(tmp_path):
     path = tmp_path / "harps_like.fits"
     wave = np.array([5000.0, 5000.1, 5000.2], dtype=float)
