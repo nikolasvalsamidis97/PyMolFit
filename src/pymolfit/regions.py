@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -10,6 +11,7 @@ import numpy as np
 from astropy.table import Table
 
 from .aer_data import load_aer_line_window
+from .atmosphere import AtmosphereProfile
 from .physics import SPEED_OF_LIGHT_M_PER_S
 from .spectrum import (
     Spectrum,
@@ -40,7 +42,7 @@ _SPECIES_COLORS = {
 }
 DEFAULT_TELLURIC_MARKER_LIMIT = 10_000
 DEFAULT_AUTOMATIC_REGION_COUNT = 100
-DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS = 6.0
+DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS = 12.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,7 @@ class RegionSelection:
     exclude_ranges: RegionRanges = ()
     wavelength_unit: str = "micron"
     wavelength_medium: str = "vacuum"
+    output_path: Path | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         wavelength_scale_to_micron(self.wavelength_unit)
@@ -70,6 +73,11 @@ class RegionSelection:
             self,
             "exclude_ranges",
             _normalize_ranges(self.exclude_ranges),
+        )
+        object.__setattr__(
+            self,
+            "output_path",
+            None if self.output_path is None else Path(self.output_path),
         )
 
     @property
@@ -113,6 +121,7 @@ class RegionSelection:
             exclude_ranges=convert_ranges(self.exclude_ranges),
             wavelength_unit=wavelength_unit,
             wavelength_medium=target_medium,
+            output_path=self.output_path,
         )
 
     def write(self, path: str | Path) -> Path:
@@ -206,6 +215,7 @@ def load_region_file(path: str | Path) -> RegionSelection:
         exclude_ranges=tuple(exclude_ranges),
         wavelength_unit=str(wavelength_unit),
         wavelength_medium=str(wavelength_medium),
+        output_path=source,
     )
 
 
@@ -218,8 +228,11 @@ class InteractiveRegionSelector:
     affect the fit. Drawing remains enabled until the checkbox is cleared. In
     ``Delete`` mode, rectangles remove intersecting regions. AER catalogue
     ticks identify candidate telluric transitions by default. ``Automatic``
-    proposes editable fit windows around the requested number of strongest
-    in-range AER transitions. The side panel lists regions held in memory,
+    proposes editable fit windows around the requested number of transitions
+    with the strongest expected atmospheric absorption. By default, each
+    proposal extends 12 sampled detector pixels to either side of the line so
+    its core, wings, and nearby continuum can constrain alignment and the LSF.
+    The side panel lists regions held in memory,
     provides an editable output filename, and includes ``Undo``, ``Clear``,
     and ``Save All`` controls.
     """
@@ -413,6 +426,7 @@ class InteractiveRegionSelector:
             ),
             wavelength_unit=self.spectrum.wavelength_unit,
             wavelength_medium=self.spectrum.wavelength_medium,
+            output_path=self.output_path,
         )
 
     def add_region(
@@ -460,10 +474,13 @@ class InteractiveRegionSelector:
         self.add_region(lower, upper, kind=selected_kind)
 
     def add_automatic_fit_regions(self, count: int | None = None) -> RegionRanges:
-        """Add windows around the strongest covered AER transitions.
+        """Add windows around the strongest expected telluric transitions.
 
         ``count`` is the number of catalogue transitions considered, not
         necessarily the final number of windows: nearby transitions are merged.
+        Transitions are ranked by AER line strength times a representative
+        atmospheric column for their molecule, so strengths from different
+        species are compared on an atmospheric absorption scale.
         Lines falling in detector or echelle-order gaps are skipped. Proposed
         windows are ordinary fit regions and can be edited, undone, cleared, or
         saved in exactly the same way as manually drawn regions.
@@ -668,7 +685,8 @@ class InteractiveRegionSelector:
             self._update_status(str(exc))
             return
         self._update_status(
-            f"Automatic selection will use the {count} strongest AER lines."
+            f"Automatic selection will use the {count} strongest expected "
+            "telluric lines."
         )
 
     @staticmethod
@@ -842,10 +860,12 @@ def select_telluric_regions(
     default. Up to 10,000 of the strongest in-range catalogue transitions are
     shown so weaker O2 and trace-species lines are not hidden by the much more
     numerous H2O lines. Enter a line count and press ``Automatic`` to propose
-    fit windows around that many strongest covered AER transitions; windows in
-    detector gaps are skipped and overlapping windows are merged. The proposals
-    remain fully editable. Edit the filename field if needed, then press ``Save
-    All`` to write every region together as ECSV. In Jupyter, enable
+    fit windows around that many transitions with the greatest expected
+    atmospheric absorption. This ranking combines each AER line intensity with
+    a representative atmospheric column for its molecule. Windows in detector
+    gaps are skipped and overlapping windows are merged. The proposals remain
+    fully editable. Edit the filename field if needed, then press ``Save All``
+    to write every region together as ECSV. In Jupyter, enable
     ``%matplotlib widget`` and install ``pymolfit[interactive]``. The returned
     selector exposes ``selection`` and ``save()`` for notebook and scripted use.
 
@@ -977,12 +997,12 @@ def _automatic_fit_regions(
     max_lines: int,
     half_width_pixels: float,
 ) -> RegionRanges:
-    """Propose strongest-line windows that overlap sampled spectrum pixels."""
+    """Propose strongest expected telluric windows on sampled pixels."""
 
     count = _validate_automatic_region_count(count)
     if not np.isfinite(half_width_pixels) or half_width_pixels <= 0:
         raise ValueError("half_width_pixels must be positive and finite")
-    marker_wavelength, _species, strength = _aer_catalog_for_spectrum(
+    marker_wavelength, species, strength = _aer_catalog_for_spectrum(
         spectrum,
         max_lines=max(max_lines, count),
     )
@@ -1012,17 +1032,20 @@ def _automatic_fit_regions(
         best_lower[improved] = sampled_wavelength[0]
         best_upper[improved] = sampled_wavelength[-1]
 
+    absorption_score = _expected_aer_absorption_score(strength, species)
     eligible = (
         np.isfinite(marker_wavelength)
         & np.isfinite(strength)
         & (strength > 0)
+        & np.isfinite(absorption_score)
+        & (absorption_score > 0)
         & np.isfinite(best_step)
     )
     eligible_indices = np.flatnonzero(eligible)
     if eligible_indices.size == 0:
         return ()
     ranking = eligible_indices[
-        np.argsort(-strength[eligible_indices], kind="stable")
+        np.argsort(-absorption_score[eligible_indices], kind="stable")
     ][:count]
 
     raw_ranges: list[tuple[float, float]] = []
@@ -1033,6 +1056,43 @@ def _automatic_fit_regions(
         if np.isfinite(lower) and np.isfinite(upper) and upper > lower:
             raw_ranges.append((float(lower), float(upper)))
     return _normalize_ranges(tuple(raw_ranges))
+
+
+@lru_cache(maxsize=1)
+def _representative_telluric_columns_cm2() -> tuple[tuple[str, float], ...]:
+    """Return deterministic vertical columns used only for line ranking."""
+
+    atmosphere = AtmosphereProfile.standard_midlatitude(airmass=1.0)
+    return tuple(
+        (species, atmosphere.total_vertical_column_cm2(species))
+        for species in atmosphere.species_names
+    )
+
+
+def _expected_aer_absorption_score(
+    strength: np.ndarray,
+    species: np.ndarray,
+) -> np.ndarray:
+    """Estimate integrated atmospheric absorption for catalogue ranking.
+
+    HITRAN/AER line intensity alone is not comparable across molecules because
+    their atmospheric columns differ by orders of magnitude. Multiplying by a
+    representative molecular column is the optically thin integrated-opacity
+    scaling and gives a physical, observation-independent ordering. The actual
+    correction still uses the observation-specific atmosphere and full
+    radiative-transfer calculation.
+    """
+
+    strength_array = np.asarray(strength, dtype=float)
+    species_array = np.asarray(species, dtype=str)
+    if strength_array.shape != species_array.shape:
+        raise ValueError("strength and species must have matching shapes")
+    columns = dict(_representative_telluric_columns_cm2())
+    molecular_column = np.asarray(
+        [columns.get(name.strip().upper(), 0.0) for name in species_array],
+        dtype=float,
+    )
+    return strength_array * molecular_column
 
 
 def _selector_sampling_sections(spectrum: Spectrum) -> tuple[np.ndarray, ...]:

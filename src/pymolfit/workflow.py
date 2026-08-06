@@ -38,6 +38,7 @@ from .components import (
 from .continuum import HitranCIATable, LBLRTMCO2Continuum, LBLRTMH2OContinuum, MTCKDH2OContinuum, TabulatedContinuum
 from .diagnostics import fit_quality_diagnostics, print_fit_summary
 from .fit import (
+    DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH,
     FitConfig,
     MultiTelluricFitResult,
     TelluricFitResult,
@@ -132,6 +133,7 @@ def correct_arrays(
     *,
     uncertainty: np.ndarray | None = None,
     mask: np.ndarray | None = None,
+    group_id: np.ndarray | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: WavelengthMedium = "vacuum",
     observation: Observation | None = None,
@@ -210,6 +212,9 @@ def correct_arrays(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
+    minimum_species_peak_optical_depth: float = (
+        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+    ),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -238,9 +243,11 @@ def correct_arrays(
 
     ``observation`` supplies metadata that arrays lack, including observation
     time/site for GDAS, resolving power for the automatic LSF, local weather,
-    and the wavelength velocity frame. Calls without an observation retain
-    the legacy behavior and treat the arrays as already being in the
-    observatory frame.
+    and the wavelength velocity frame. ``group_id`` identifies independent
+    detector orders or chips when their wavelength ranges overlap; equal IDs
+    are kept together during segmentation, fitting, and output stitching.
+    Calls without an observation retain the legacy behavior and treat the
+    arrays as already being in the observatory frame.
     """
 
     atmosphere_header = (
@@ -253,6 +260,7 @@ def correct_arrays(
         flux=flux,
         uncertainty=uncertainty,
         mask=mask,
+        group_id=group_id,
         wavelength_unit=wavelength_unit,
         wavelength_medium=wavelength_medium,
         meta=(
@@ -349,6 +357,7 @@ def correct_arrays(
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
+        minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
@@ -460,6 +469,9 @@ def correct_file(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
+    minimum_species_peak_optical_depth: float = (
+        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+    ),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -578,7 +590,8 @@ def correct_file(
     :param o2_continuum_xo2cn: Multiplicative LBLRTM O2-continuum coefficient scale, normally ``1``.
     :param line_margin_micron: Extra line-selection margin in microns around each modelled spectral interval.
     :param min_transmission: Pixels with fitted atmospheric transmission below this fraction are masked in the corrected spectrum because division cannot recover reliable flux from nearly opaque regions; it must be strictly between ``0`` and ``1``.
-    :param fit_wavelength_shift: ``"auto"`` compares no residual correction, a constant detector-pixel offset, and a smooth linear pixel-offset trend on distributed telluric-rich pilot regions, selecting by penalized fit quality; ``True`` preserves the explicit legacy constant-micron fit and ``False`` disables automatic residual alignment. Explicit polynomial or per-segment wavelength options take precedence over ``"auto"``.
+    :param minimum_species_peak_optical_depth: A molecule's abundance scale is fitted only when its strongest expected absorption in the selected fit pixels reaches this optical-depth threshold. Weaker species remain in the atmospheric model at their profile abundance instead of acquiring an unconstrained extreme scale; lower the default only when deliberately measuring weak trace-gas lines.
+    :param fit_wavelength_shift: ``"auto"`` uses one constant pixel offset per detected order/detector group for multi-order spectra. For a single physical group it compares no residual correction, a constant detector-pixel offset, and a smooth linear pixel-offset trend on distributed telluric-rich pilot regions, selecting by penalized fit quality. ``True`` preserves the explicit legacy constant-micron fit and ``False`` disables automatic residual alignment. Explicit polynomial or per-segment wavelength options take precedence over ``"auto"``.
     :param fit_wavelength_polynomial: ``True`` fits a global wavelength-correction polynomial; ``False`` disables it. Do not combine it with ``fit_wavelength_shift``.
     :param wavelength_polynomial_order: Degree of the global wavelength-correction polynomial in normalized wavelength coordinates.
     :param fit_segment_wavelength_shifts: ``True`` fits one constant wavelength offset per detected physical order/detector group and shares it across that group's numerical radiative-transfer chunks; it cannot be combined with either global wavelength-fit option.
@@ -712,6 +725,7 @@ def correct_file(
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
+        minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
@@ -754,6 +768,7 @@ def correct(
     flux: np.ndarray | None = None,
     uncertainty: np.ndarray | None = None,
     mask: np.ndarray | None = None,
+    group_id: np.ndarray | None = None,
     input_format: InputSpectrumFormat | None = None,
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
@@ -836,6 +851,9 @@ def correct(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
+    minimum_species_peak_optical_depth: float = (
+        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+    ),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -889,6 +907,9 @@ def correct(
     :param uncertainty: Optional one-sigma flux uncertainty array for weighted
         fitting and propagated corrected-flux uncertainty.
     :param mask: Optional Boolean array; ``True`` values are valid fit pixels.
+    :param group_id: Optional detector/order label for every array sample.
+        Samples with equal labels are treated as one physical spectral group,
+        preventing overlapping echelle orders from being interleaved.
     :param wavelength_unit: Unit of the input wavelengths, for example
         ``"micron"``, ``"nm"``, or ``"angstrom"``.
     :param wavelength_medium: ``"air"`` or ``"vacuum"``. A file may infer this
@@ -1004,6 +1025,7 @@ def correct(
         "o2_continuum_xo2cn": o2_continuum_xo2cn,
         "line_margin_micron": line_margin_micron,
         "min_transmission": min_transmission,
+        "minimum_species_peak_optical_depth": minimum_species_peak_optical_depth,
         "fit_wavelength_shift": fit_wavelength_shift,
         "fit_wavelength_polynomial": fit_wavelength_polynomial,
         "wavelength_polynomial_order": wavelength_polynomial_order,
@@ -1029,9 +1051,9 @@ def correct(
     }
 
     if has_path:
-        if uncertainty is not None or mask is not None:
+        if uncertainty is not None or mask is not None or group_id is not None:
             raise ValueError(
-                "uncertainty and mask arrays cannot be combined with input_path; "
+                "uncertainty, mask, and group_id arrays cannot be combined with input_path; "
                 "load the file as arrays or identify its uncertainty column"
             )
         return correct_file(
@@ -1079,6 +1101,7 @@ def correct(
         flux=np.asarray(flux, dtype=float),
         uncertainty=uncertainty,
         mask=mask,
+        group_id=group_id,
         wavelength_unit=wavelength_unit,
         wavelength_medium=wavelength_medium,
         observation=observation,
@@ -1220,6 +1243,7 @@ def _correct_spectrum_workflow(
     o2_continuum_xo2cn: float,
     line_margin_micron: float,
     min_transmission: float,
+    minimum_species_peak_optical_depth: float,
     fit_wavelength_shift: WavelengthFitMode,
     fit_wavelength_polynomial: bool,
     wavelength_polynomial_order: int,
@@ -1476,7 +1500,7 @@ def _correct_spectrum_workflow(
     if o2_continuum:
         fixed_component_scales["O2_continuum"] = 1.0
     if rayleigh:
-        fixed_component_scales["AIR"] = 1.0
+        fixed_component_scales["Rayleigh"] = 1.0
 
     if solve_continuum_linear != "auto" and not isinstance(
         solve_continuum_linear,
@@ -1532,6 +1556,7 @@ def _correct_spectrum_workflow(
     ):
         raise ValueError("wavelength_shift_bounds must be finite and increasing")
     wavelength_shift_unit = "pixel" if automatic_pixel_wavelength_bounds else "micron"
+
     fit_initial_wavelength_shift = (
         _micron_shift_to_pixel(
             spectrum,
@@ -1582,6 +1607,7 @@ def _correct_spectrum_workflow(
         o2_continuum_xo2cn=o2_continuum_xo2cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
+        minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
         atmosphere=resolved_atmosphere,
         partition_table=resolved_partition,
         h2o_continuum=resolved_h2o_continuum,
@@ -1650,9 +1676,8 @@ def _correct_spectrum_workflow(
             fit_config,
             fit_wavelength_shift=False,
             fit_wavelength_polynomial=False,
-            fit_segment_wavelength_shifts=False,
-            fit_segment_wavelength_polynomial=True,
-            segment_wavelength_polynomial_order=1,
+            fit_segment_wavelength_shifts=True,
+            fit_segment_wavelength_polynomial=False,
             wavelength_shift_unit="pixel",
             wavelength_shift_bounds=AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS,
             initial_wavelength_shift=0.0,
@@ -1784,10 +1809,9 @@ def _correct_spectrum_workflow(
     if automatic_physical_group_wavelength:
         wavelength_model_resolution = {
             **wavelength_model_resolution,
-            "selected_model": "physical_group_polynomial",
+            "selected_model": "physical_group_constant",
             "selection_reason": "detected_independent_order_or_detector_groups",
             "physical_group_count": len(physical_group_ids),
-            "polynomial_order": fit_config.segment_wavelength_polynomial_order,
         }
     if auto_select_wavelength_model:
         try:
@@ -3930,7 +3954,10 @@ def _stitch_segment_results(
     segment_results = tuple(
         sorted(
             source_results,
-            key=lambda item: float(np.nanmin(item.spectrum.wavelength)),
+            key=lambda item: (
+                int(item.spectrum.meta.get("segment_index", 0)),
+                float(np.nanmin(item.spectrum.wavelength)),
+            ),
         )
     )
     spectra = tuple(item.spectrum for item in segment_results)
@@ -4365,6 +4392,7 @@ def _spectrum_to_observatory_vacuum(
         flux=spectrum.flux.copy(),
         uncertainty=None if spectrum.uncertainty is None else spectrum.uncertainty.copy(),
         mask=None if spectrum.mask is None else spectrum.mask.copy(),
+        group_id=None if spectrum.group_id is None else spectrum.group_id.copy(),
         wavelength_unit=spectrum.wavelength_unit,
         wavelength_medium=spectrum.wavelength_medium,
         meta={

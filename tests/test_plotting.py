@@ -78,6 +78,34 @@ def test_plot_fit_reads_saved_product_ecsv(tmp_path):
     plt.close(figure)
 
 
+def test_plot_fit_flux_limits_include_isolated_corrected_extrema():
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    wavelength = np.linspace(0.50, 0.51, 1000)
+    observed = np.ones_like(wavelength)
+    corrected = np.ones_like(wavelength)
+    corrected[100] = -2.0
+    corrected[900] = 8.0
+    result = SimpleNamespace(
+        spectrum=SimpleNamespace(
+            wavelength=wavelength,
+            flux=observed,
+            wavelength_unit="micron",
+        ),
+        corrected=SimpleNamespace(flux=corrected),
+        transmission=np.ones_like(wavelength),
+    )
+
+    figure = plot_fit(result, show=False)
+
+    lower, upper = figure.axes[0].get_ylim()
+    assert lower < np.nanmin(corrected)
+    assert upper > np.nanmax(corrected)
+    plt.close(figure)
+
+
 def test_plot_fit_rejects_compact_output_file(tmp_path):
     compact_path = tmp_path / "corrected.ecsv"
     np.savetxt(compact_path, np.ones((3, 2)))

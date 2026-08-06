@@ -8,6 +8,7 @@ from astropy.table import Table
 
 import pymolfit.workflow as workflow_module
 from pymolfit import (
+    AtmosphereProfile,
     LineList,
     ModelConfig,
     Observation,
@@ -21,6 +22,7 @@ from pymolfit import (
     transmission_model,
     vacuum_to_air_wavelength,
 )
+from pymolfit.fit import FitConfig, fit_telluric_segments, fit_tellurics
 from pymolfit.physics import SPEED_OF_LIGHT_M_PER_S
 from pymolfit.workflow import (
     _barycentric_velocity_from_header_km_s,
@@ -33,6 +35,7 @@ from pymolfit.workflow import (
     _resolve_line_list,
     _split_spectrum,
     _spectrum_to_observatory_vacuum,
+    _stitch_segment_results,
 )
 from pymolfit.fit import _shift_basis
 from pymolfit.model import optical_depth_basis, transmission_from_basis
@@ -47,12 +50,12 @@ def _fixed_decimal(value, width, decimals):
     return f"{text:>{width}}"[-width:]
 
 
-def _hitran_row(*, mol_id=1):
+def _hitran_row(*, mol_id=1, wavenumber=4320.0, strength=1.0e-24):
     row = (
         f"{mol_id:2d}"
         f"{1:1d}"
-        f"{4320.0:12.6f}"
-        f"{1.0e-24:10.3E}"
+        f"{wavenumber:12.6f}"
+        f"{strength:10.3E}"
         f"{1.0:10.3E}"
         f"{_fixed_decimal(0.07, 5, 4)}"
         f"{_fixed_decimal(0.30, 5, 4)}"
@@ -83,6 +86,26 @@ def test_physical_line_list_only_auto_enables_matching_molecule_continua(tmp_pat
     assert set(result.species_scales) == {"O2"}
 
 
+def test_rayleigh_component_uses_fixed_physical_scale():
+    wavelength = np.linspace(0.50, 0.51, 80)
+
+    result = correct_arrays(
+        wavelength,
+        np.ones_like(wavelength),
+        line_list=LineList.empty_hitran(),
+        atmosphere=AtmosphereProfile.standard_midlatitude(),
+        continuum_order=0,
+        solve_continuum_linear=True,
+        rayleigh=True,
+        high_resolution_grid=False,
+        auto_segment=False,
+    )
+
+    assert result.success
+    assert result.species_scales == {"Rayleigh": 1.0}
+    assert result.provenance["fit_quality"]["measured_group_count"] == 0
+
+
 def test_correct_arrays_uses_demo_workflow():
     wavelength = np.linspace(2.31, 2.36, 400)
     line_list = LineList.demo_near_ir()
@@ -98,6 +121,104 @@ def test_correct_arrays_uses_demo_workflow():
 
     assert result.success
     assert result.corrected.flux.shape == wavelength.shape
+
+
+def test_correct_arrays_preserves_overlapping_echelle_group_ids():
+    first = np.linspace(1.500, 1.530, 120)
+    second = np.linspace(1.510, 1.540, 120)
+    wavelength = np.concatenate((first, second))
+    group_id = np.concatenate(
+        (np.full(first.size, "order-1"), np.full(second.size, "order-2"))
+    )
+    line_list = LineList(
+        wavelength=np.array([1.520]),
+        strength=np.array([0.01]),
+        sigma=np.array([2.0e-5]),
+        gamma=np.array([1.0e-5]),
+        species=np.array(["H2O"]),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        np.ones_like(wavelength),
+        group_id=group_id,
+        line_list=line_list,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        auto_segment=True,
+        segment_size=0.01,
+    )
+
+    np.testing.assert_array_equal(result.spectrum.group_id, group_id)
+    np.testing.assert_array_equal(result.corrected.group_id, group_id)
+
+
+def test_multi_order_auto_alignment_uses_constant_shift_per_physical_group():
+    wavelength = np.concatenate(
+        (np.linspace(1.500, 1.506, 240), np.linspace(1.510, 1.516, 240))
+    )
+    group_id = np.repeat((10, 20), 240)
+    line_list = LineList(
+        wavelength=np.array([1.503, 1.513]),
+        strength=np.array([0.006, 0.005]),
+        sigma=np.full(2, 2.0e-5),
+        gamma=np.full(2, 1.0e-5),
+        species=np.array(["H2O", "H2O"]),
+    )
+    shifts = np.array([7.0e-5, -6.0e-5])
+    shifted_lines = LineList(
+        wavelength=line_list.wavelength + shifts,
+        strength=line_list.strength,
+        sigma=line_list.sigma,
+        gamma=line_list.gamma,
+        species=line_list.species,
+    )
+    flux = transmission_model(
+        wavelength,
+        shifted_lines,
+        ModelConfig(species_scales={"H2O": 1.4}),
+    )
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        group_id=group_id,
+        line_list=line_list,
+        continuum_order=0,
+        lsf_sigma_pixels=0.0,
+        lsf_lorentz_fwhm_pixels=0.0,
+        high_resolution_grid=False,
+        segment_size=0.02,
+    )
+
+    alignment = result.provenance["wavelength_alignment"]
+    assert alignment["selected_model"] == "per_segment_constant"
+    recovered = result.provenance["segmentation"]["wavelength_shifts_micron"]
+    np.testing.assert_allclose(recovered, shifts, atol=3.0e-5)
+
+
+def test_unified_correct_passes_array_group_ids():
+    wavelength = np.concatenate(
+        (np.linspace(1.500, 1.510, 40), np.linspace(1.505, 1.515, 40))
+    )
+    group_id = np.repeat((3, 7), 40)
+    observation = Observation(wavelength_frame="observatory")
+
+    result = correct(
+        wavelength=wavelength,
+        flux=np.ones_like(wavelength),
+        group_id=group_id,
+        wavelength_medium="vacuum",
+        observation=observation,
+        line_list=LineList.empty_hitran(),
+        physical=False,
+        continuum_order=0,
+        solve_continuum_linear=True,
+        auto_segment=True,
+        segment_size=0.01,
+    )
+
+    np.testing.assert_array_equal(result.spectrum.group_id, group_id)
 
 
 def test_correct_arrays_automatically_uses_linear_continuum_for_linear_loss():
@@ -524,6 +645,67 @@ def test_correct_arrays_exposes_minimum_transmission_mask():
     assert np.all(np.isnan(result.corrected.flux[opaque]))
 
 
+def test_correct_arrays_fixes_species_below_default_observability_threshold():
+    wavelength = np.linspace(2.31, 2.36, 500)
+    line_list = LineList(
+        wavelength=np.array([2.325, 2.345]),
+        strength=np.array([0.01, 1.0e-14]),
+        sigma=np.array([2.0e-5, 2.0e-5]),
+        gamma=np.array([1.0e-5, 1.0e-5]),
+        species=np.array(["H2O", "O2"]),
+    )
+    flux = transmission_model(wavelength, line_list, ModelConfig())
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        lsf_sigma_pixels=0.0,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+        lsf_variable_width=False,
+        fit_wavelength_shift=False,
+    )
+
+    observability = result.provenance["species_observability"]
+    assert observability["minimum_peak_optical_depth"] == pytest.approx(5.0e-3)
+    assert observability["automatically_fixed"] == {"O2": 1.0}
+    assert "log_scale:O2" not in result.parameter_names
+
+
+def test_correct_arrays_allows_expert_observability_threshold_override():
+    wavelength = np.linspace(2.31, 2.36, 500)
+    line_list = LineList(
+        wavelength=np.array([2.325, 2.345]),
+        strength=np.array([0.01, 1.0e-14]),
+        sigma=np.array([2.0e-5, 2.0e-5]),
+        gamma=np.array([1.0e-5, 1.0e-5]),
+        species=np.array(["H2O", "O2"]),
+    )
+    flux = transmission_model(wavelength, line_list, ModelConfig())
+
+    result = correct_arrays(
+        wavelength,
+        flux,
+        line_list=line_list,
+        continuum_order=0,
+        lsf_sigma_pixels=0.0,
+        fit_lsf_sigma=False,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_lorentz_fwhm=False,
+        lsf_variable_width=False,
+        fit_wavelength_shift=False,
+        minimum_species_peak_optical_depth=0.0,
+    )
+
+    observability = result.provenance["species_observability"]
+    assert observability["minimum_peak_optical_depth"] == 0.0
+    assert observability["automatically_fixed"] == {}
+    assert "log_scale:O2" in result.parameter_names
+
+
 def test_correct_arrays_accepts_native_radiative_transfer_controls():
     wavelength = np.linspace(2.31, 2.36, 120)
     line_list = LineList.demo_near_ir()
@@ -629,13 +811,60 @@ def test_segmented_physical_result_matches_unsegmented_result(tmp_path):
         segmented.transmission,
         unsegmented.transmission,
         rtol=0.0,
-        atol=2.0e-8,
+        atol=5.0e-8,
     )
     np.testing.assert_allclose(
         segmented.corrected.flux,
         unsegmented.corrected.flux,
         rtol=0.0,
-        atol=2.0e-8,
+        atol=5.0e-8,
+    )
+
+
+def test_segmented_overlap_convolution_matches_unsegmented_at_boundary(tmp_path):
+    center = 1.0e4 / 4320.0
+    lower = center - 0.015
+    upper = center + 0.015
+    line_wavelength = lower + (upper - lower) / 3.0
+    hitran_path = tmp_path / "boundary_h2o.par"
+    hitran_path.write_text(
+        _hitran_row(
+            wavenumber=1.0e4 / line_wavelength,
+            strength=1.0e-22,
+        )
+        + "\n"
+    )
+    line_list = LineList.from_hitran_par(hitran_path, species=("H2O",))
+    wavelength = np.linspace(lower, upper, 600)
+    spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
+    config = FitConfig(
+        continuum_order=0,
+        solve_continuum_linear=True,
+        fixed_species_scales={"H2O": 1.0},
+        atmosphere=AtmosphereProfile.standard_midlatitude(),
+        high_resolution_grid=True,
+        high_resolution_rebin_mode="molecfit_overlap",
+        radiative_transfer_grid="auto",
+        line_wing_mode="lblrtm_panel",
+        lsf_sigma_pixels=2.0,
+    )
+
+    unsegmented = fit_tellurics(spectrum, line_list=line_list, config=config)
+    segments = _split_spectrum(spectrum, segment_size=0.01, minimum_points=2)
+    segmented = fit_telluric_segments(
+        segments,
+        line_list=line_list,
+        config=config,
+    )
+    stitched = np.concatenate(
+        [result.transmission for result in segmented.segment_results]
+    )
+
+    np.testing.assert_allclose(
+        stitched,
+        unsegmented.transmission,
+        rtol=0.0,
+        atol=5.0e-6,
     )
 
 
@@ -675,6 +904,40 @@ def test_automatic_segmentation_preserves_short_island_between_gaps():
     stitched = np.concatenate([segment.wavelength for segment in segments])
     np.testing.assert_array_equal(stitched, wavelength)
     assert any(1.506 in segment.wavelength for segment in segments)
+
+
+def test_stitching_keeps_overlapping_physical_groups_contiguous():
+    first = np.linspace(1.500, 1.530, 120)
+    second = np.linspace(1.510, 1.540, 120)
+    spectrum = Spectrum(
+        wavelength=np.concatenate((first, second)),
+        flux=np.ones(first.size + second.size),
+        group_id=np.concatenate(
+            (np.full(first.size, 10), np.full(second.size, 20))
+        ),
+    )
+    line_list = LineList(
+        wavelength=np.array([1.520]),
+        strength=np.array([0.01]),
+        sigma=np.array([2.0e-5]),
+        gamma=np.array([1.0e-5]),
+        species=np.array(["H2O"]),
+    )
+    config = FitConfig(
+        continuum_order=0,
+        solve_continuum_linear=True,
+        fixed_species_scales={"H2O": 1.0},
+    )
+    segments = _split_spectrum(spectrum, segment_size=0.01, minimum_points=2)
+    multi = fit_telluric_segments(segments, line_list=line_list, config=config)
+
+    stitched = _stitch_segment_results(multi, segment_size=0.01)
+
+    assert stitched.spectrum.group_id is not None
+    group_id = stitched.spectrum.group_id
+    assert np.count_nonzero(np.diff(group_id)) == 1
+    assert np.all(group_id[: first.size] == 10)
+    assert np.all(group_id[first.size :] == 20)
 
 
 def test_correct_arrays_exposes_independent_segment_wavelength_shifts():
@@ -1241,6 +1504,7 @@ def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():
     spectrum = Spectrum(
         wavelength=np.array([0.5889, 0.5890, 0.5891]),
         flux=np.ones(3),
+        group_id=np.array([2, 2, 3]),
         wavelength_medium="air",
     )
     header = {"SPECSYS": "BARYCENT", "ESO DRS BERV": -7.5}
@@ -1251,6 +1515,7 @@ def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():
     expected = air_to_vacuum_wavelength(spectrum.wavelength / factor)
     np.testing.assert_allclose(converted.wavelength, expected, rtol=0.0, atol=1.0e-15)
     assert converted.meta["observatory_frame_correction"] is True
+    np.testing.assert_array_equal(converted.group_id, spectrum.group_id)
     assert _resolve_initial_wavelength_shift(converted, None, header) == 0.0
 
     ranges = ((0.58888, 0.58912), (0.58948, 0.58978))

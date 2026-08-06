@@ -118,9 +118,13 @@ selector = select_telluric_regions(
 Candidate telluric transitions from the AER catalogue are marked automatically
 and colored by molecule. To create an initial selection automatically, enter a
 line count such as `100` and press **Automatic**. PyMolFit proposes fit windows
-around the strongest covered AER transitions, skips lines in detector/order
-gaps, and merges overlapping windows. These proposals can be edited like any
-manual selection.
+around the transitions with the strongest expected atmospheric absorption,
+using both AER line intensity and the representative atmospheric column of
+each molecule. Automatic windows extend 12 sampled detector pixels to either
+side of each line by default, retaining the line core, wings, and nearby
+continuum needed to constrain alignment and instrumental broadening. It skips
+lines in detector/order gaps and merges overlapping windows. These proposals
+can be edited like any manual selection.
 
 For manual editing, first zoom or pan to the desired area. Choose **Fit** or
 **Exclude**, enable the **Draw regions** checkbox, and drag rectangles around

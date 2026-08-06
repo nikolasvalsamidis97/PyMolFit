@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from astropy.table import Table
 
 from pymolfit import (
@@ -61,6 +62,63 @@ def test_fit_tellurics_accepts_fit_mask():
     assert provenance["selected_line_count"] <= provenance["line_count"]
     assert len(provenance["line_list_sha256"]) == 64
     assert len(provenance["fit_config_sha256"]) == 64
+
+
+def test_fit_ranges_do_not_limit_lines_applied_to_full_correction():
+    wavelength = np.linspace(2.30, 2.37, 700)
+    line_list = LineList(
+        wavelength=np.array([2.315, 2.355]),
+        strength=np.array([0.4, 0.3]),
+        sigma=np.full(2, 3.0e-5),
+        gamma=np.zeros(2),
+        species=np.array(["H2O", "H2O"]),
+    )
+    expected = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.0}),
+    )
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=expected),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            fit_ranges=((2.305, 2.325),),
+            fixed_species_scales={"H2O": 1.0},
+        ),
+    )
+
+    second_line = np.abs(wavelength - 2.355) < 2.0e-4
+    assert np.nanmin(result.transmission[second_line]) < 0.99
+    np.testing.assert_allclose(result.transmission, expected, rtol=0.0, atol=1.0e-12)
+
+
+def test_species_outside_fit_ranges_is_applied_but_not_fitted():
+    wavelength = np.linspace(2.30, 2.37, 700)
+    line_list = LineList(
+        wavelength=np.array([2.315, 2.355]),
+        strength=np.array([0.4, 0.3]),
+        sigma=np.full(2, 3.0e-5),
+        gamma=np.zeros(2),
+        species=np.array(["H2O", "CO2"]),
+    )
+    expected = transmission_model(wavelength, line_list, ModelConfig())
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=expected),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            fit_ranges=((2.305, 2.325),),
+        ),
+    )
+
+    assert "log_scale:H2O" in result.parameter_names
+    assert "log_scale:CO2" not in result.parameter_names
+    assert result.species_scales["CO2"] == 1.0
+    assert result.provenance["species_observability"]["automatically_fixed"] == {
+        "CO2": 1.0
+    }
+    np.testing.assert_allclose(result.transmission, expected, rtol=0.0, atol=2.0e-9)
 
 
 def test_fit_tellurics_reorders_fit_mask_with_unsorted_wavelength():
@@ -206,3 +264,33 @@ def test_covariance_rank_is_invariant_to_parameter_units():
     assert reduced_chi_square == 1.0
     assert np.all(np.isfinite(covariance))
     assert covariance[0, 0] < covariance[1, 1]
+
+
+def test_robust_fit_reports_raw_reduced_chi_square_with_profiled_continuum():
+    wavelength = np.linspace(2.31, 2.36, 300)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    uncertainty = np.full(wavelength.shape, 0.003)
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.3}),
+    )
+    flux[150] += 0.1
+
+    result = fit_tellurics(
+        Spectrum(wavelength=wavelength, flux=flux, uncertainty=uncertainty),
+        line_list=line_list,
+        config=FitConfig(
+            continuum_order=0,
+            solve_continuum_linear=True,
+            loss="soft_l1",
+        ),
+    )
+
+    residual = (result.spectrum.flux - result.model_flux) / uncertainty
+    effective_parameter_count = len(result.parameter_names) + 1
+    expected = float(
+        np.dot(residual, residual)
+        / (residual.size - effective_parameter_count)
+    )
+    assert result.reduced_chi_square == pytest.approx(expected)

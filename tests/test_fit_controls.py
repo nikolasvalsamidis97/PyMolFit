@@ -22,6 +22,7 @@ def test_optimizer_tolerances_match_molecfit_defaults():
     assert config.ftol == 1.0e-10
     assert config.xtol == 1.0e-10
     assert config.gtol == 1.0e-10
+    assert config.minimum_species_peak_optical_depth == pytest.approx(5.0e-3)
 
 
 def test_fitting_lsf_wavelength_exponent_requires_variable_width():

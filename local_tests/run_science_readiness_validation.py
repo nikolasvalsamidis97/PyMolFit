@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 import platform
@@ -2785,10 +2786,20 @@ def _review_packet_archive_check() -> ValidationCheck:
                 raise ValueError("archive is missing reviewer instructions or forms")
             case_tables = {path for path in paths if path.startswith("case_") and path.endswith(".ecsv")}
             case_plots = {path for path in paths if path.startswith("case_") and path.endswith(".png")}
-            if len(case_tables) != 9 or {Path(path).stem for path in case_tables} != {
+            case_ids = {Path(path).stem for path in case_tables}
+            if not case_ids or case_ids != {
                 Path(path).stem for path in case_plots
             }:
-                raise ValueError("archive does not contain nine matched case table/plot pairs")
+                raise ValueError("archive does not contain matched case table/plot pairs")
+            review_rows = list(
+                csv.DictReader(
+                    io.StringIO(
+                        archive.read("independent_review/review.csv").decode("utf-8")
+                    )
+                )
+            )
+            if {str(row.get("case", "")) for row in review_rows} != case_ids:
+                raise ValueError("archive review form does not match the blind cases")
 
             for entry in entries:
                 relative = str(entry["path"])
@@ -2804,7 +2815,7 @@ def _review_packet_archive_check() -> ValidationCheck:
             "independent_review",
             "reviewer-safe archive integrity",
             "FAIL",
-            threshold="manifest-valid archive with no private answer key and nine matched cases",
+            threshold="manifest-valid archive with no private answer key and matched cases",
             details=str(exc),
         )
 
@@ -2812,7 +2823,7 @@ def _review_packet_archive_check() -> ValidationCheck:
         "independent_review",
         "reviewer-safe archive integrity",
         "PASS",
-        threshold="manifest-valid archive with no private answer key and nine matched cases",
+        threshold="manifest-valid archive with no private answer key and matched cases",
         details=(
             f"{_display_path(REVIEW_ARCHIVE)}, "
             f"sha256={hashlib.sha256(REVIEW_ARCHIVE.read_bytes()).hexdigest()}"

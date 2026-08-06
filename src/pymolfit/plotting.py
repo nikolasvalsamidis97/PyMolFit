@@ -83,7 +83,7 @@ def plot_fit(
         float(np.nanmin(finite_wavelength)),
         float(np.nanmax(finite_wavelength)),
     )
-    _set_robust_flux_limits(axes[0], observed, corrected)
+    _set_complete_flux_limits(axes[0], observed, corrected)
     axes[0].set_ylabel("Flux")
     axes[0].legend(loc="best")
 
@@ -185,7 +185,9 @@ def _continuous_wavelength_sections(
     )
 
 
-def _set_robust_flux_limits(axis, *values: np.ndarray) -> None:
+def _set_complete_flux_limits(axis, *values: np.ndarray) -> None:
+    """Set limits that include every finite plotted flux sample."""
+
     finite_parts = [
         np.asarray(value, dtype=float)[np.isfinite(value)]
         for value in values
@@ -196,7 +198,8 @@ def _set_robust_flux_limits(axis, *values: np.ndarray) -> None:
         return
 
     finite = np.concatenate(finite_parts)
-    lower, upper = np.nanpercentile(finite, (0.5, 99.5))
+    lower = float(np.min(finite))
+    upper = float(np.max(finite))
     if not np.isfinite(lower) or not np.isfinite(upper):
         return
     if upper <= lower:

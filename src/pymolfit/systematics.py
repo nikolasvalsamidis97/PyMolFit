@@ -301,6 +301,7 @@ def _combine_single_systematics(
         flux=corrected.flux,
         uncertainty=corrected.uncertainty,
         mask=corrected.mask,
+        group_id=corrected.group_id,
         wavelength_unit=corrected.wavelength_unit,
         wavelength_medium=corrected.wavelength_medium,
         meta={

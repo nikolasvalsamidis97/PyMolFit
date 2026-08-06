@@ -96,6 +96,7 @@ def _spectrum_summary(spectrum: Any) -> dict[str, Any]:
         "flux": np.asarray(spectrum.flux),
         "uncertainty": None if spectrum.uncertainty is None else np.asarray(spectrum.uncertainty),
         "mask": None if spectrum.mask is None else np.asarray(spectrum.mask),
+        "group_id": None if spectrum.group_id is None else np.asarray(spectrum.group_id),
         "wavelength_unit": spectrum.wavelength_unit,
         "wavelength_medium": spectrum.wavelength_medium,
     }

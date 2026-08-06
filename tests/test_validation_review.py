@@ -129,11 +129,16 @@ def test_blind_packet_preserves_only_matching_hashed_responses(tmp_path, monkeyp
 def test_reviewer_archive_campaign_gate(tmp_path, monkeypatch):
     packet_dir = tmp_path / "independent_review"
     packet_dir.mkdir()
-    for name in ("README.md", "review.csv", "held_out_review.csv"):
+    for name in ("README.md", "held_out_review.csv"):
         (packet_dir / name).write_text("review material\n", encoding="utf-8")
     for case in range(1, 10):
         (packet_dir / f"case_{case:02d}.ecsv").write_text("# table\n", encoding="utf-8")
         (packet_dir / f"case_{case:02d}.png").write_bytes(b"PNG")
+    _write_csv(
+        packet_dir / "review.csv",
+        ("case",),
+        [{"case": f"case_{case:02d}"} for case in range(1, 10)],
+    )
     monkeypatch.setattr(packet, "PACKET", packet_dir)
     packet._write_reviewer_archive()
     monkeypatch.setattr(campaign, "REVIEW_PACKET", packet_dir)

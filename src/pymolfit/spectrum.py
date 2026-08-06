@@ -96,11 +96,15 @@ class Spectrum:
     meta: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        wavelength = np.asarray(self.wavelength, dtype=float)
-        flux = np.asarray(self.flux, dtype=float)
-        uncertainty = None if self.uncertainty is None else np.asarray(self.uncertainty, dtype=float)
-        mask = None if self.mask is None else np.asarray(self.mask, dtype=bool)
-        group_id = None if self.group_id is None else np.asarray(self.group_id)
+        wavelength = np.array(self.wavelength, dtype=float, copy=True)
+        flux = np.array(self.flux, dtype=float, copy=True)
+        uncertainty = (
+            None
+            if self.uncertainty is None
+            else np.array(self.uncertainty, dtype=float, copy=True)
+        )
+        mask = None if self.mask is None else np.array(self.mask, dtype=bool, copy=True)
+        group_id = None if self.group_id is None else np.array(self.group_id, copy=True)
 
         if wavelength.ndim != 1 or flux.ndim != 1:
             raise ValueError("wavelength and flux must be one-dimensional arrays")
@@ -226,7 +230,7 @@ def correct_spectrum(
     if not 0 < min_transmission < 1:
         raise ValueError("min_transmission must be between 0 and 1")
 
-    safe = np.isfinite(transmission) & (transmission >= min_transmission)
+    safe = spectrum.valid & np.isfinite(transmission) & (transmission >= min_transmission)
     corrected_flux = np.full_like(spectrum.flux, np.nan, dtype=float)
     corrected_flux[safe] = spectrum.flux[safe] / transmission[safe]
 
@@ -250,6 +254,11 @@ def correct_spectrum(
         flux=corrected_flux,
         uncertainty=corrected_uncertainty,
         mask=corrected_mask,
+        group_id=(
+            None
+            if spectrum.group_id is None
+            else spectrum.group_id.copy()
+        ),
         wavelength_unit=spectrum.wavelength_unit,
         wavelength_medium=spectrum.wavelength_medium,
         meta={

@@ -42,6 +42,9 @@ from .radiative_transfer import PhysicalModelConfig, physical_optical_depth_basi
 from .spectrum import Spectrum, correct_spectrum
 
 
+DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH = 5.0e-3
+
+
 @dataclass(frozen=True)
 class FitConfig:
     airmass: float = 1.0
@@ -83,7 +86,9 @@ class FitConfig:
     chunk_size: int = 0
     min_transmission: float = 0.01
     scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3)
-    minimum_species_peak_optical_depth: float = 1.0e-4
+    minimum_species_peak_optical_depth: float = (
+        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+    )
     atmosphere: AtmosphereProfile | None = None
     partition_exponent: float = 1.5
     partition_table: PartitionTable | None = None
@@ -960,9 +965,30 @@ def _prepare_high_resolution_grids(
         in overlap_aliases
         else model_wavelength
     )
+    detector_output_wavelength = np.asarray(observed_wavelength, dtype=float)
+    trim_start = 0
+    trim_stop = None
+    if (
+        str(config.high_resolution_rebin_mode).strip().lower().replace("-", "_")
+        in overlap_aliases
+    ):
+        detector_output_wavelength, trim_start, trim_stop = (
+            _extended_detector_wavelength_grid(
+                observed_wavelength,
+                margin_pixels=_high_resolution_margin_pixels(
+                    observed_wavelength,
+                    config,
+                ),
+            )
+        )
     detector_rebin_plan = prepare_piecewise_constant_rebin(
-        observed_wavelength,
+        detector_output_wavelength,
         detector_input_wavelength,
+    )
+    detector_rebin_plan = replace(
+        detector_rebin_plan,
+        trim_start=trim_start,
+        trim_stop=trim_stop,
     )
     return (
         basis_wavelength,
@@ -977,8 +1003,25 @@ def _high_resolution_model_grid(
     observed_wavelength: np.ndarray,
     config: FitConfig,
 ) -> tuple[np.ndarray, float]:
+    effective_margin = _high_resolution_margin_pixels(
+        observed_wavelength,
+        config,
+    )
+    return high_resolution_wavelength_grid(
+        observed_wavelength,
+        oversampling=config.high_resolution_oversampling,
+        margin_pixels=effective_margin,
+    )
+
+
+def _high_resolution_margin_pixels(
+    observed_wavelength: np.ndarray,
+    config: FitConfig,
+) -> float:
     gaussian_sigma = (
-        config.lsf_sigma_bounds[1] if config.fit_lsf_sigma else config.lsf_sigma_pixels
+        config.lsf_sigma_bounds[1]
+        if config.fit_lsf_sigma
+        else config.lsf_sigma_pixels
     )
     box_width = (
         config.lsf_box_width_bounds[1]
@@ -1032,14 +1075,37 @@ def _high_resolution_model_grid(
             if config.wavelength_shift_unit == "pixel"
             else maximum_shift / wavelength_step
         )
-    effective_margin = max(
+    return max(
         float(config.high_resolution_margin_pixels),
         kernel_margin + shift_margin + 1.0,
     )
-    return high_resolution_wavelength_grid(
-        observed_wavelength,
-        oversampling=config.high_resolution_oversampling,
-        margin_pixels=effective_margin,
+
+
+def _extended_detector_wavelength_grid(
+    observed_wavelength: np.ndarray,
+    *,
+    margin_pixels: float,
+) -> tuple[np.ndarray, int, int]:
+    """Add detector guard pixels so convolution is valid at segment edges."""
+
+    observed = np.asarray(observed_wavelength, dtype=float)
+    if observed.ndim != 1 or observed.size < 2:
+        raise ValueError("detector guard pixels require at least two wavelengths")
+    if not np.all(np.isfinite(observed)) or not np.all(np.diff(observed) > 0):
+        raise ValueError("detector guard pixels require finite increasing wavelengths")
+    steps = np.diff(observed)
+    step = float(np.nanmedian(steps))
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError("detector wavelength spacing must be positive and finite")
+    count = max(0, int(np.ceil(float(margin_pixels))))
+    if count == 0:
+        return observed.copy(), 0, int(observed.size)
+    left = observed[0] - step * np.arange(count, 0, -1, dtype=float)
+    right = observed[-1] + step * np.arange(1, count + 1, dtype=float)
+    return (
+        np.concatenate((left, observed, right)),
+        count,
+        count + int(observed.size),
     )
 
 
@@ -1118,6 +1184,57 @@ def _transmission_from_prepared_basis(
     )
 
 
+def _observable_optical_depth_basis(
+    observed_wavelength: np.ndarray,
+    valid: np.ndarray,
+    species_names: tuple[str, ...],
+    basis: np.ndarray,
+    *,
+    config: FitConfig,
+    basis_wavelength: np.ndarray,
+    model_wavelength: np.ndarray,
+    highres_pixels_per_observed_pixel: float,
+    rebin_plan: PiecewiseConstantRebinPlan | None,
+    native_to_model_plan: SampleAverageRebinPlan | None,
+) -> np.ndarray:
+    """Return per-species optical depth visible in the fitted detector pixels."""
+
+    if not config.high_resolution_grid:
+        return np.asarray(basis[:, valid], dtype=float)
+    rows = []
+    zero_scales = {name: 0.0 for name in species_names}
+    for name in species_names:
+        scales = {**zero_scales, name: 1.0}
+        transmission = _transmission_from_prepared_basis(
+            observed_wavelength,
+            species_names,
+            basis,
+            config=config,
+            species_scales=scales,
+            airmass=1.0,
+            wavelength_shift=0.0,
+            lsf_sigma_pixels=config.lsf_sigma_pixels,
+            lsf_box_width_pixels=config.lsf_box_width_pixels,
+            lsf_lorentz_fwhm_pixels=config.lsf_lorentz_fwhm_pixels,
+            lsf_wavelength_exponent=config.lsf_wavelength_exponent,
+            basis_wavelength=basis_wavelength,
+            model_wavelength=model_wavelength,
+            highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
+            rebin_plan=rebin_plan,
+            native_to_model_plan=native_to_model_plan,
+        )
+        rows.append(
+            -np.log(
+                np.clip(
+                    transmission[valid],
+                    np.finfo(float).tiny,
+                    1.0,
+                )
+            )
+        )
+    return np.asarray(rows, dtype=float)
+
+
 def fit_tellurics(
     spectrum: Spectrum,
     *,
@@ -1170,10 +1287,13 @@ def fit_tellurics(
     _, design_fit = _poly_design(wavelength_fit, config.continuum_order)
     _, design_all = _poly_design(spectrum.wavelength, config.continuum_order)
 
+    # Fit windows constrain parameter estimation, not the wavelength range that
+    # receives a telluric correction. Keep every line that can contribute to
+    # the requested output spectrum.
     selected_lines = line_list.select_range(
-        np.nanmin(wavelength_fit),
-        np.nanmax(wavelength_fit),
-        margin=_line_selection_margin(wavelength_fit, config),
+        np.nanmin(spectrum.wavelength),
+        np.nanmax(spectrum.wavelength),
+        margin=_line_selection_margin(spectrum.wavelength, config),
     )
     basis_wavelength = spectrum.wavelength
     model_wavelength = spectrum.wavelength
@@ -1255,7 +1375,23 @@ def fit_tellurics(
         basis_airmass = config.airmass
     basis_fit = basis_all[:, valid] if not config.high_resolution_grid else np.zeros((basis_all.shape[0], 0))
 
-    scale_config = _fix_zero_basis_species(config, species_names, ((species_names, basis_all),))
+    observable_basis = _observable_optical_depth_basis(
+        spectrum.wavelength,
+        valid,
+        species_names,
+        basis_all,
+        config=config,
+        basis_wavelength=basis_wavelength,
+        model_wavelength=model_wavelength,
+        highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
+        rebin_plan=rebin_plan,
+        native_to_model_plan=native_to_model_plan,
+    )
+    scale_config = _fix_zero_basis_species(
+        config,
+        species_names,
+        ((species_names, observable_basis),),
+    )
     automatically_fixed_species = {
         name: value
         for name, value in (scale_config.fixed_species_scales or {}).items()
@@ -1586,9 +1722,15 @@ def fit_tellurics(
     parameter_standard_errors: dict[str, float] = {}
     species_scale_uncertainties: dict[str, float] = {}
     transmission_uncertainty = None
-    degrees_of_freedom = max(0, int(fit.fun.size) - int(fit.x.size))
+    effective_parameter_count = int(fit.x.size) + (
+        config.continuum_order + 1
+        if config.solve_continuum_linear
+        else 0
+    )
+    quadratic_cost = 0.5 * float(np.dot(fit.fun, fit.fun))
+    degrees_of_freedom = max(0, int(fit.fun.size) - effective_parameter_count)
     reduced_chi_square = (
-        float(2.0 * fit.cost / degrees_of_freedom)
+        float(2.0 * quadratic_cost / degrees_of_freedom)
         if degrees_of_freedom > 0
         else np.nan
     )
@@ -1596,9 +1738,10 @@ def fit_tellurics(
     if config.estimate_uncertainties:
         parameter_covariance, reduced_chi_square, covariance_rank = _linearized_parameter_covariance(
             fit.jac,
-            fit.cost,
+            quadratic_cost,
             fit.fun.size,
-            fit.x.size,
+            effective_parameter_count,
+            covariance_parameter_count=fit.x.size,
         )
         standard_errors = np.sqrt(np.maximum(0.0, np.diag(parameter_covariance)))
         parameter_standard_errors = {
@@ -1910,6 +2053,8 @@ def _linearized_parameter_covariance(
     cost: float,
     n_residuals: int,
     n_parameters: int,
+    *,
+    covariance_parameter_count: int | None = None,
 ) -> tuple[np.ndarray, float, int]:
     """Estimate a scaled local covariance from a weighted least-squares fit.
 
@@ -1919,7 +2064,12 @@ def _linearized_parameter_covariance(
     """
 
     jacobian = np.asarray(jacobian, dtype=float)
-    if jacobian.shape != (n_residuals, n_parameters):
+    covariance_parameter_count = (
+        int(n_parameters)
+        if covariance_parameter_count is None
+        else int(covariance_parameter_count)
+    )
+    if jacobian.shape != (n_residuals, covariance_parameter_count):
         raise ValueError("jacobian shape does not match residual and parameter counts")
     degrees_of_freedom = max(0, int(n_residuals) - int(n_parameters))
     reduced_chi_square = (
@@ -1927,7 +2077,7 @@ def _linearized_parameter_covariance(
         if degrees_of_freedom > 0
         else np.nan
     )
-    if n_parameters == 0:
+    if covariance_parameter_count == 0:
         return np.zeros((0, 0), dtype=float), reduced_chi_square, 0
 
     # Rank and conditioning must not depend on whether a parameter is measured
@@ -1942,7 +2092,14 @@ def _linearized_parameter_covariance(
     scaled_jacobian = jacobian / safe_scales[None, :]
     _, singular_values, vt = np.linalg.svd(scaled_jacobian, full_matrices=False)
     if singular_values.size == 0:
-        return np.full((n_parameters, n_parameters), np.nan), reduced_chi_square, 0
+        return (
+            np.full(
+                (covariance_parameter_count, covariance_parameter_count),
+                np.nan,
+            ),
+            reduced_chi_square,
+            0,
+        )
     # The optimizer Jacobian is obtained with finite differences whose useful
     # relative precision is O(sqrt(machine epsilon)), not machine epsilon.
     # Using the latter mistakes differencing noise for an identifiable
@@ -1957,7 +2114,7 @@ def _linearized_parameter_covariance(
     if np.isfinite(reduced_chi_square):
         covariance *= reduced_chi_square
     rank = min(rank, int(np.count_nonzero(active_columns)))
-    if rank < n_parameters:
+    if rank < covariance_parameter_count:
         # A pseudoinverse can assign a deceptively small variance to a null
         # direction. A rank-deficient fit has no identifiable full covariance,
         # so expose that limitation instead of reporting false precision.
@@ -2064,10 +2221,13 @@ def _prepare_multi_fit_segment(
     flux_fit = segment.flux[valid]
     _, design_fit = _poly_design(wavelength_fit, config.continuum_order)
     _, design_all = _poly_design(segment.wavelength, config.continuum_order)
+    # Fit windows constrain parameter estimation, not the wavelength range that
+    # receives a telluric correction. Keep every line that can contribute to
+    # the complete segment.
     selected_lines = line_list.select_range(
-        np.nanmin(wavelength_fit),
-        np.nanmax(wavelength_fit),
-        margin=_line_selection_margin(wavelength_fit, config),
+        np.nanmin(segment.wavelength),
+        np.nanmax(segment.wavelength),
+        margin=_line_selection_margin(segment.wavelength, config),
     )
 
     basis_wavelength = segment.wavelength
@@ -2522,7 +2682,26 @@ def fit_telluric_segments(
     scale_config = _fix_zero_basis_species(
         config,
         species_names,
-        tuple((segment.species_names, segment.basis_all) for segment in prepared),
+        tuple(
+            (
+                segment.species_names,
+                _observable_optical_depth_basis(
+                    segment.spectrum.wavelength,
+                    segment.valid,
+                    segment.species_names,
+                    segment.basis_all,
+                    config=config,
+                    basis_wavelength=segment.basis_wavelength,
+                    model_wavelength=segment.model_wavelength,
+                    highres_pixels_per_observed_pixel=(
+                        segment.highres_pixels_per_observed_pixel
+                    ),
+                    rebin_plan=segment.rebin_plan,
+                    native_to_model_plan=segment.native_to_model_plan,
+                ),
+            )
+            for segment in prepared
+        ),
     )
     automatically_fixed_species = {
         name: value
@@ -3019,11 +3198,11 @@ def fit_telluric_segments(
 
     selected_keep = np.zeros(line_list.wavelength.shape, dtype=bool)
     for segment in prepared:
-        fitted_wavelength = segment.spectrum.wavelength[segment.valid]
-        margin = _line_selection_margin(fitted_wavelength, config)
+        output_wavelength = segment.spectrum.wavelength
+        margin = _line_selection_margin(output_wavelength, config)
         selected_keep |= (
-            (line_list.wavelength >= np.nanmin(fitted_wavelength) - margin)
-            & (line_list.wavelength <= np.nanmax(fitted_wavelength) + margin)
+            (line_list.wavelength >= np.nanmin(output_wavelength) - margin)
+            & (line_list.wavelength <= np.nanmax(output_wavelength) + margin)
         )
     selected_lines = line_list.select(selected_keep)
     provenance = build_fit_provenance(
@@ -3068,9 +3247,15 @@ def fit_telluric_segments(
     parameter_covariance = None
     parameter_standard_errors: dict[str, float] = {}
     species_scale_uncertainties: dict[str, float] = {}
-    degrees_of_freedom = max(0, int(fit.fun.size) - int(fit.x.size))
+    effective_parameter_count = int(fit.x.size) + (
+        len(prepared) * (config.continuum_order + 1)
+        if config.solve_continuum_linear
+        else 0
+    )
+    quadratic_cost = 0.5 * float(np.dot(fit.fun, fit.fun))
+    degrees_of_freedom = max(0, int(fit.fun.size) - effective_parameter_count)
     reduced_chi_square = (
-        float(2.0 * fit.cost / degrees_of_freedom)
+        float(2.0 * quadratic_cost / degrees_of_freedom)
         if degrees_of_freedom > 0
         else np.nan
     )
@@ -3078,9 +3263,10 @@ def fit_telluric_segments(
     if config.estimate_uncertainties:
         parameter_covariance, reduced_chi_square, covariance_rank = _linearized_parameter_covariance(
             fit.jac,
-            fit.cost,
+            quadratic_cost,
             fit.fun.size,
-            fit.x.size,
+            effective_parameter_count,
+            covariance_parameter_count=fit.x.size,
         )
         standard_errors = np.sqrt(np.maximum(0.0, np.diag(parameter_covariance)))
         parameter_standard_errors = {

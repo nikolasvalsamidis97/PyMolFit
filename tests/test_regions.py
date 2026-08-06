@@ -16,6 +16,12 @@ from pymolfit import (
 from pymolfit.spectrum import air_to_vacuum_wavelength
 
 
+def test_automatic_region_default_includes_line_wings_and_continuum() -> None:
+    from pymolfit.regions import DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS
+
+    assert DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS == 12.0
+
+
 def test_region_selection_normalizes_and_merges_ranges() -> None:
     selection = RegionSelection(
         fit_ranges=((5910.0, 5900.0), (5905.0, 5920.0)),
@@ -40,6 +46,7 @@ def test_region_file_round_trip_preserves_coordinates(tmp_path) -> None:
     loaded = load_region_file(path)
 
     assert loaded == selection
+    assert loaded.output_path == path
 
 
 def test_selector_reuses_existing_output_file_without_opening_window(
@@ -63,6 +70,7 @@ def test_selector_reuses_existing_output_file_without_opening_window(
 
     assert isinstance(reused, RegionSelection)
     assert reused == existing
+    assert reused.output_path == tmp_path / "regions.ecsv"
 
 
 def test_selector_can_open_existing_output_file_for_editing(tmp_path) -> None:
@@ -86,6 +94,8 @@ def test_selector_can_open_existing_output_file_for_editing(tmp_path) -> None:
 
     assert not isinstance(selector, RegionSelection)
     assert selector.selection == existing
+    assert selector.output_path == path
+    assert selector.selection.output_path == path
     selector.close()
 
 
@@ -316,6 +326,39 @@ def test_automatic_fit_regions_selects_strongest_covered_lines(
     )
 
     assert regions == ((5028.0, 5032.0), (5078.0, 5082.0))
+
+
+def test_automatic_fit_regions_compares_species_by_expected_absorption(
+    monkeypatch,
+) -> None:
+    from pymolfit.regions import _automatic_fit_regions
+
+    monkeypatch.setattr(
+        "pymolfit.regions._aer_catalog_for_spectrum",
+        lambda _spectrum, *, max_lines: (
+            np.array([5010.0, 5030.0]),
+            np.array(["CO2", "CH4"]),
+            # CH4 is stronger in the catalogue, but its atmospheric column is
+            # much smaller than CO2's, so the CO2 line has greater expected
+            # integrated telluric absorption.
+            np.array([1.0, 100.0]),
+        ),
+    )
+    spectrum = Spectrum(
+        wavelength=np.arange(5000.0, 5101.0),
+        flux=np.ones(101),
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+    )
+
+    regions = _automatic_fit_regions(
+        spectrum,
+        count=1,
+        max_lines=100,
+        half_width_pixels=2.0,
+    )
+
+    assert regions == ((5008.0, 5012.0),)
 
 
 def test_automatic_fit_regions_skips_catalogue_lines_in_spectral_gaps(

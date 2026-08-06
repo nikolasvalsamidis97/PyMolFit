@@ -325,6 +325,7 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
     shifts = np.linspace(-0.75, 0.75, 61)
     groups: list[dict[str, object]] = []
     for group in np.unique(group_values):
+        group_label = group.item() if isinstance(group, np.generic) else group
         group_indices = np.flatnonzero(finite & (group_values == group))
         group_transmission = result.transmission[group_indices]
         telluric = group_transmission < 0.995
@@ -332,7 +333,7 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
         if telluric_count < 12:
             groups.append(
                 {
-                    "group": int(group),
+                    "group": group_label,
                     "fit_pixels": telluric_count,
                     "status": "insufficient_telluric_pixels",
                 }
@@ -358,10 +359,30 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
             coefficients, *_ = np.linalg.lstsq(design, observed[good], rcond=None)
             residual = observed[good] - design @ coefficients
             costs[shift_index] = float(np.mean(residual * residual))
+        finite_costs = costs[np.isfinite(costs)]
+        if finite_costs.size == 0:
+            groups.append(
+                {
+                    "group": group_label,
+                    "fit_pixels": telluric_count,
+                    "status": "unconstrained_alignment",
+                }
+            )
+            continue
+        cost_scale = max(1.0, float(np.nanmax(np.abs(finite_costs))))
+        if float(np.ptp(finite_costs)) <= 100.0 * np.finfo(float).eps * cost_scale:
+            groups.append(
+                {
+                    "group": group_label,
+                    "fit_pixels": telluric_count,
+                    "status": "unconstrained_alignment",
+                }
+            )
+            continue
         best = int(np.argmin(costs))
         groups.append(
             {
-                "group": int(group),
+                "group": group_label,
                 "fit_pixels": telluric_count,
                 "status": "measured",
                 "residual_shift_pixels": float(shifts[best]),

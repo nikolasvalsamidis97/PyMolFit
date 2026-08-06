@@ -384,22 +384,41 @@ def transmission_from_high_resolution_basis(
             if plan_matches_native_grid
             else rebin_piecewise_constant_values(observed, highres, raw_highres_transmission)
         )
-        return np.clip(
-            convolve_lsf(
-                rebinned,
-                gaussian_sigma_pixels=lsf_sigma_pixels,
-                box_width_pixels=lsf_box_width_pixels,
-                lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
-                wavelength_micron=observed,
-                variable_width=lsf_variable_width,
-                reference_wavelength_micron=lsf_reference_wavelength_micron,
-                wavelength_exponent=lsf_wavelength_exponent,
-                kernel_width_fwhm=lsf_kernel_width_fwhm,
-                molecfit_voigt=lsf_molecfit_voigt,
-            ),
-            0.0,
-            1.0,
+        detector_wavelength = observed
+        trim_start = 0
+        trim_stop = None
+        if (
+            plan_matches_native_grid
+            and rebin_plan is not None
+            and rebin_plan.output_wavelength is not None
+        ):
+            planned_wavelength = np.asarray(
+                rebin_plan.output_wavelength,
+                dtype=float,
+            )
+            if planned_wavelength.shape == rebinned.shape:
+                detector_wavelength = planned_wavelength
+                trim_start = int(rebin_plan.trim_start)
+                trim_stop = rebin_plan.trim_stop
+        convolved = convolve_lsf(
+            rebinned,
+            gaussian_sigma_pixels=lsf_sigma_pixels,
+            box_width_pixels=lsf_box_width_pixels,
+            lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+            wavelength_micron=detector_wavelength,
+            variable_width=lsf_variable_width,
+            reference_wavelength_micron=lsf_reference_wavelength_micron,
+            wavelength_exponent=lsf_wavelength_exponent,
+            kernel_width_fwhm=lsf_kernel_width_fwhm,
+            molecfit_voigt=lsf_molecfit_voigt,
         )
+        if trim_start or trim_stop is not None:
+            convolved = convolved[trim_start:trim_stop]
+        if convolved.shape != observed.shape:
+            raise RuntimeError(
+                "overlap rebin/convolution output does not match the observed grid"
+            )
+        return np.clip(convolved, 0.0, 1.0)
 
     if model_wavelength_micron is None:
         model_wavelength = highres
@@ -661,6 +680,9 @@ class PiecewiseConstantRebinPlan:
     edge_offsets: np.ndarray
     output_widths: np.ndarray
     output_order: np.ndarray
+    output_wavelength: np.ndarray | None = None
+    trim_start: int = 0
+    trim_stop: int | None = None
 
     def apply(self, input_values: np.ndarray) -> np.ndarray:
         values = np.asarray(input_values, dtype=float)
@@ -736,6 +758,7 @@ def prepare_piecewise_constant_rebin(
         edge_offsets=edge_offsets,
         output_widths=output_widths,
         output_order=output_order,
+        output_wavelength=observed.copy(),
     )
 
 
