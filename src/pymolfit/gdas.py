@@ -14,6 +14,8 @@ import numpy as np
 from astropy.table import Table
 from astropy.time import Time
 
+from .errors import ExternalDataError
+
 GDAS_BASE_URLS = (
     "https://ftp.eso.org/pub/dfs/pipelines/skytools/molecfit/gdas",
     "ftp://ftp.eso.org/pub/dfs/pipelines/skytools/molecfit/gdas",
@@ -22,7 +24,7 @@ GDAS_INTERVAL_HOURS = 3
 GDAS_SEARCH_HOURS = 6
 
 
-class GDASProfileUnavailable(RuntimeError):
+class GDASProfileUnavailable(ExternalDataError):
     """Raised when a strict GDAS mode cannot find a time-local profile."""
 
 
@@ -80,6 +82,12 @@ def resolve_time_local_gdas_profile(
 
     tarball_path = _tarball_path(cache_root, site_id)
     downloaded = False
+    if tarball_path.exists() and not _valid_gdas_tarball(tarball_path):
+        if normalized_mode == "cache":
+            raise GDASProfileUnavailable(
+                f"cached GDAS tarball is corrupt: {tarball_path}"
+            )
+        tarball_path.unlink()
     if not tarball_path.exists():
         if normalized_mode == "cache":
             raise GDASProfileUnavailable(f"GDAS tarball not found in cache: {tarball_path}")
@@ -111,7 +119,18 @@ def resolve_time_local_gdas_profile(
         interpolated.meta["GDASAFT"] = after_member
         interpolated.meta["GDASSITE"] = site_id
         profile_path.parent.mkdir(parents=True, exist_ok=True)
-        interpolated.write(profile_path, overwrite=True)
+        with tempfile.NamedTemporaryFile(
+            dir=profile_path.parent,
+            suffix=".fits",
+            delete=False,
+        ) as handle:
+            temp_profile = Path(handle.name)
+        try:
+            interpolated.write(temp_profile, format="fits", overwrite=True)
+            temp_profile.replace(profile_path)
+        finally:
+            if temp_profile.exists():
+                temp_profile.unlink()
         return GDASProfileResolution(
             path=profile_path,
             source="download" if downloaded else "cache",
@@ -188,6 +207,10 @@ def _download_tarball(
                         out.write(chunk)
                 if tmp_path.stat().st_size <= 0:
                     raise URLError("empty GDAS tarball download")
+                if not _valid_gdas_tarball(tmp_path):
+                    raise GDASProfileUnavailable(
+                        "downloaded GDAS archive is not a readable tarball"
+                    )
                 tmp_path.replace(path)
                 return
             except Exception as exc:
@@ -196,6 +219,20 @@ def _download_tarball(
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+def _valid_gdas_tarball(path: Path) -> bool:
+    """Return whether a cached/downloaded archive is structurally readable."""
+
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            members = archive.getmembers()
+        return bool(members) and any(
+            member.isfile() and member.name.endswith(".gdas")
+            for member in members
+        )
+    except (OSError, tarfile.TarError):
+        return False
 
 
 def _find_bracketing_members(

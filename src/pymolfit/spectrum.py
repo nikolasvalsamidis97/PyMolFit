@@ -110,6 +110,8 @@ class Spectrum:
             raise ValueError("wavelength and flux must be one-dimensional arrays")
         if wavelength.shape != flux.shape:
             raise ValueError("wavelength and flux must have the same shape")
+        if wavelength.size == 0:
+            raise ValueError("spectrum arrays must not be empty")
         if uncertainty is not None and uncertainty.shape != flux.shape:
             raise ValueError("uncertainty must have the same shape as flux")
         if mask is not None and mask.shape != flux.shape:
@@ -123,6 +125,7 @@ class Spectrum:
         object.__setattr__(self, "mask", mask)
         object.__setattr__(self, "group_id", group_id)
         object.__setattr__(self, "wavelength_medium", normalize_wavelength_medium(self.wavelength_medium))
+        object.__setattr__(self, "meta", dict(self.meta))
 
     @property
     def valid(self) -> np.ndarray:
@@ -132,6 +135,13 @@ class Spectrum:
         if self.mask is not None:
             valid &= self.mask
         return valid
+
+    @property
+    def name(self) -> str | None:
+        """Spectrum name assigned by the loader, normally the source file stem."""
+
+        value = self.meta.get("name")
+        return None if value is None else str(value)
 
     def with_flux(self, flux: np.ndarray, *, uncertainty: np.ndarray | None = None) -> "Spectrum":
         return Spectrum(
@@ -146,6 +156,8 @@ class Spectrum:
         )
 
     def to_unit(self, wavelength_unit: str) -> "Spectrum":
+        if wavelength_unit == self.wavelength_unit:
+            return self
         source = wavelength_scale_to_micron(self.wavelength_unit)
         target = wavelength_scale_to_micron(wavelength_unit)
         factor = source / target

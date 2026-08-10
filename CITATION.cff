@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use PyMolFit, please cite this software and the upstream scientific resources listed in the README."
+title: "PyMolFit: pure-Python telluric modelling and correction"
+type: software
+authors:
+  - family-names: Valsamidis
+    given-names: Nikolas
+repository-code: "https://github.com/nikolasvalsamidis97/PyMolFit"
+url: "https://pypi.org/project/pymolfit/"
+license: BSD-3-Clause
+version: 0.6.0
+date-released: 2026-08-10
+keywords:
+  - astronomy
+  - spectroscopy
+  - telluric correction
+  - radiative transfer

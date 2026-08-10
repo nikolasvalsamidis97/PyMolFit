@@ -37,6 +37,7 @@ from .components import (
 )
 from .continuum import HitranCIATable, LBLRTMCO2Continuum, LBLRTMH2OContinuum, MTCKDH2OContinuum, TabulatedContinuum
 from .diagnostics import fit_quality_diagnostics, print_fit_summary
+from .errors import ConfigurationError, WavelengthMetadataError
 from .fit import (
     DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH,
     FitConfig,
@@ -49,6 +50,7 @@ from .fit import (
     fit_tellurics,
 )
 from .io import (
+    infer_wavelength_medium_from_header as _infer_wavelength_medium_from_header,
     infer_spectrum_format,
     load_spectrum,
     save_corrected_txt,
@@ -68,7 +70,7 @@ from .physics import (
 )
 from .plotting import plot_fit
 from .regions import load_region_file
-from .spectrum import Spectrum
+from .spectrum import Spectrum, normalize_wavelength_medium
 
 
 DEFAULT_SEGMENT_SIZE_MICRON = 0.005
@@ -77,6 +79,8 @@ DEFAULT_LSF_SIGMA_BOUNDS = (0.0, 5.0)
 AUTO_LSF_SIGMA_FALLBACK_PIXELS = 2.0
 AUTO_LSF_SIGMA_FEATURE_MAX_PIXELS = 6.0
 AUTO_LSF_SIGMA_MAX_PIXELS = 50.0
+AUTO_LSF_RESOLUTION_LOWER_FACTOR = 0.5
+AUTO_LSF_RESOLUTION_UPPER_FACTOR = 2.0
 AUTO_LSF_LORENTZ_PILOT_WIDTH_MICRON = 0.0005
 AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS = 3
 AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS = 2
@@ -91,6 +95,7 @@ AUTO_LSF_VARIABLE_MIN_REGION_FRACTION = 0.6
 AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN = 0.02
 AUTO_WAVELENGTH_PILOT_WIDTH_MICRON = 0.002
 AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS = (-3.0, 3.0)
+AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS = (-12.0, 12.0)
 AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT = 6.0
 AUTO_WAVELENGTH_MIN_REGION_FRACTION = 0.5
 
@@ -391,6 +396,8 @@ def correct_file(
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
+    hdu: int = 1,
+    image_index: int | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: OptionalWavelengthMedium = None,
     observation: Observation | None = None,
@@ -499,6 +506,7 @@ def correct_file(
     product_format: str = "ascii.ecsv",
     plot_path: str | Path | None = None,
     show_plot: bool = False,
+    report: bool = True,
 ) -> TelluricFitResult:
     """Load a one-dimensional spectrum, fit telluric absorption, and correct it.
 
@@ -512,6 +520,8 @@ def correct_file(
     :param wavelength_col: Wavelength column name or zero-based index; ``None`` uses recognized names or the first numeric column.
     :param flux_col: Flux column name or zero-based index; ``None`` uses recognized names or the second numeric column.
     :param uncertainty_col: Optional uncertainty column name or zero-based index; ``None`` performs an unweighted fit.
+    :param hdu: FITS HDU containing the spectrum; ignored for text input.
+    :param image_index: Row to extract from a two-dimensional FITS image; ``None`` requires a one-dimensional image.
     :param wavelength_unit: Unit of input wavelengths, such as ``micron``/``um``, ``nm``, ``angstrom``/``aa``, or ``m``.
     :param wavelength_medium: ``air`` declares standard-air wavelengths; ``vacuum`` or ``vac`` declares vacuum wavelengths. ``None`` accepts only an unambiguous air/vacuum declaration in FITS metadata; otherwise PyMolFit stops before fitting and asks for an explicit value. ``SPECSYS`` alone is not sufficient because it describes the velocity frame, not the wavelength medium.
     :param observation: Optional structured observing metadata. Explicit values override matching FITS-header values and can supply time/site, weather, resolving power, or spectral-frame information for text inputs.
@@ -618,15 +628,21 @@ def correct_file(
     :param product_format: Astropy table writer format used for ``product_path``, for example ``ascii.ecsv`` or ``fits``.
     :param plot_path: Optional diagnostic-plot output path; ``None`` does not save a plot.
     :param show_plot: ``True`` opens/displays the diagnostic plot; ``False`` only saves it when ``plot_path`` is provided.
+    :param report: Print the resolved fit configuration and result summary when ``True``.
     :return: ``TelluricFitResult`` containing the input, model, transmission, corrected spectrum, fitted parameters, diagnostics, and provenance.
     """
 
-    atmosphere_header = _load_fits_header_if_available(input_path, input_format)
+    atmosphere_header = _load_fits_header_if_available(
+        input_path,
+        input_format,
+        hdu=hdu,
+    )
     if observation is not None:
         atmosphere_header = observation.to_header(atmosphere_header)
     resolved_wavelength_medium = _resolve_wavelength_medium(
         wavelength_medium,
         atmosphere_header,
+        wavelength_col=wavelength_col,
     )
     spectrum = load_spectrum(
         input_path,
@@ -634,8 +650,11 @@ def correct_file(
         wavelength_col=wavelength_col,
         flux_col=flux_col,
         uncertainty_col=uncertainty_col,
+        hdu=hdu,
         wavelength_unit=wavelength_unit,
         wavelength_medium=resolved_wavelength_medium,
+        image_index=image_index,
+        save_header=False,
     )
     fit_ranges, exclude_ranges = _resolve_region_file_ranges(
         region_file=region_file,
@@ -758,12 +777,14 @@ def correct_file(
         product_format=product_format,
         plot_path=plot_path,
         show_plot=show_plot,
+        report=report,
     )
 
 
 def correct(
     input_path: str | Path | None = None,
     *,
+    spectrum: Spectrum | None = None,
     wavelength: np.ndarray | None = None,
     flux: np.ndarray | None = None,
     uncertainty: np.ndarray | None = None,
@@ -773,6 +794,8 @@ def correct(
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
+    hdu: int = 1,
+    image_index: int | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: OptionalWavelengthMedium = None,
     observation: Observation | None = None,
@@ -882,12 +905,14 @@ def correct(
     product_format: str = "ascii.ecsv",
     plot_path: str | Path | None = None,
     show_plot: bool = False,
+    report: bool = True,
 ) -> TelluricFitResult:
     """Correct either a spectrum file or wavelength/flux arrays.
 
     Supply exactly one input route:
 
-    - ``input_path`` for FITS, text, CSV, or ECSV data; or
+    - ``input_path`` for FITS, text, CSV, or ECSV data;
+    - ``spectrum`` for a previously loaded :class:`Spectrum`; or
     - both ``wavelength`` and ``flux`` plus an ``Observation``.
 
     Array input must explicitly declare ``wavelength_medium`` and the
@@ -900,7 +925,9 @@ def correct(
     Existing ``correct_file`` and ``correct_arrays`` calls remain supported.
 
     :param input_path: FITS, text, CSV, or ECSV spectrum path. Do not combine
-        this with ``wavelength`` or ``flux``.
+        this with ``spectrum``, ``wavelength``, or ``flux``.
+    :param spectrum: Previously loaded ``Spectrum``. Its units, wavelength
+        medium, masks, order labels, and metadata are preserved.
     :param wavelength: One-dimensional wavelength array. It must be paired
         with ``flux``, ``observation``, and an explicit ``wavelength_medium``.
     :param flux: One-dimensional flux array sampled at ``wavelength``.
@@ -928,24 +955,29 @@ def correct(
         default is portable ``"ascii.ecsv"``.
     :param plot_path: Optional path for a saved diagnostic plot.
     :param show_plot: Display the diagnostic plot when ``True``.
+    :param report: Print the resolved fit configuration and result summary.
     :return: Complete ``TelluricFitResult`` in memory.
     """
 
     has_path = input_path is not None
+    has_spectrum = spectrum is not None
     has_wavelength = wavelength is not None
     has_flux = flux is not None
     has_array_input = has_wavelength or has_flux
 
-    if has_path and has_array_input:
-        raise ValueError(
-            "provide either input_path or wavelength/flux arrays, not both"
+    route_count = int(has_path) + int(has_spectrum) + int(has_array_input)
+    if route_count == 0:
+        raise ConfigurationError(
+            "provide input_path, spectrum, or both "
+            "wavelength and flux arrays"
         )
-    if not has_path and not has_array_input:
-        raise ValueError(
-            "provide input_path or both wavelength and flux arrays"
+    if route_count > 1:
+        raise ConfigurationError(
+            "provide input_path, spectrum, or wavelength/flux arrays, not both "
+            "or multiple input routes"
         )
     if has_array_input and not (has_wavelength and has_flux):
-        raise ValueError(
+        raise ConfigurationError(
             "array input requires both wavelength and flux"
         )
 
@@ -1071,28 +1103,93 @@ def correct(
             product_format=product_format,
             plot_path=plot_path,
             show_plot=show_plot,
+            report=report,
             **fit_options,
         )
 
+    if has_spectrum:
+        if any(value is not None for value in (wavelength, flux, uncertainty, mask, group_id)):
+            raise ConfigurationError(
+                "spectrum input cannot be combined with wavelength, flux, "
+                "uncertainty, mask, or group_id arrays"
+            )
+        if any(
+            value is not None
+            for value in (
+                input_format,
+                wavelength_col,
+                flux_col,
+                uncertainty_col,
+                image_index,
+            )
+        ):
+            raise ConfigurationError(
+                "file format, column, HDU-image options apply only to input_path"
+            )
+        if (
+            wavelength_medium is not None
+            and spectrum.wavelength_medium
+            != normalize_wavelength_medium(wavelength_medium)
+        ):
+            raise WavelengthMetadataError(
+                "wavelength_medium conflicts with spectrum.wavelength_medium"
+            )
+        source = spectrum.meta.get("source")
+        atmosphere_header = None
+        if source:
+            atmosphere_header = _load_fits_header_if_available(
+                str(source),
+                None,
+                hdu=hdu,
+            )
+        if observation is not None:
+            atmosphere_header = observation.to_header(atmosphere_header)
+        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+            region_file=region_file,
+            fit_ranges=fit_ranges,
+            exclude_ranges=exclude_ranges,
+            spectrum=spectrum,
+        )
+        spectrum_options = {
+            **fit_options,
+            "fit_ranges": resolved_fit_ranges,
+            "exclude_ranges": resolved_exclude_ranges,
+        }
+        result = _correct_spectrum_workflow(
+            spectrum,
+            atmosphere_header=atmosphere_header,
+            **spectrum_options,
+        )
+        return _finalize_correction(
+            result,
+            input_label=spectrum.name or source or "<Spectrum>",
+            output_path=output_path,
+            product_path=product_path,
+            product_format=product_format,
+            plot_path=plot_path,
+            show_plot=show_plot,
+            report=report,
+        )
+
     if observation is None:
-        raise ValueError(
+        raise ConfigurationError(
             "array input requires observation=Observation(...) so observing "
             "metadata is explicit"
         )
     if observation.wavelength_frame is None:
-        raise ValueError(
+        raise ConfigurationError(
             "array input requires observation.wavelength_frame to be "
             "'observatory', 'barycentric', or 'heliocentric'"
         )
     if wavelength_medium is None:
-        raise ValueError(
+        raise WavelengthMetadataError(
             "array input requires wavelength_medium='air' or 'vacuum'"
         )
     if any(
         value is not None
         for value in (input_format, wavelength_col, flux_col, uncertainty_col)
     ):
-        raise ValueError(
+        raise ConfigurationError(
             "input_format and column selectors apply only to input_path"
         )
 
@@ -1116,6 +1213,7 @@ def correct(
         product_format=product_format,
         plot_path=plot_path,
         show_plot=show_plot,
+        report=report,
     )
 
 
@@ -1148,8 +1246,10 @@ def _finalize_correction(
     product_format: str,
     plot_path: str | Path | None,
     show_plot: bool,
+    report: bool,
 ) -> TelluricFitResult:
-    print_fit_summary(result, input_path=input_label)
+    if report:
+        print_fit_summary(result, input_path=input_label)
     if output_path is not None:
         save_corrected_txt(result, output_path)
     if product_path is not None:
@@ -1267,6 +1367,29 @@ def _correct_spectrum_workflow(
     gtol: float,
     estimate_uncertainties: bool,
 ) -> TelluricFitResult:
+    _validate_correction_options(
+        spectrum,
+        continuum_order=continuum_order,
+        auto_segment=auto_segment,
+        segment_size=segment_size,
+        radiative_transfer_max_points=radiative_transfer_max_points,
+        min_transmission=min_transmission,
+        fit_wavelength_shift=fit_wavelength_shift,
+        fit_wavelength_polynomial=fit_wavelength_polynomial,
+        fit_segment_wavelength_shifts=fit_segment_wavelength_shifts,
+        fit_segment_wavelength_polynomial=fit_segment_wavelength_polynomial,
+        wavelength_polynomial_order=wavelength_polynomial_order,
+        segment_wavelength_polynomial_order=segment_wavelength_polynomial_order,
+        fit_ranges=fit_ranges,
+        exclude_ranges=exclude_ranges,
+        loss=loss,
+        f_scale=f_scale,
+        ftol=ftol,
+        xtol=xtol,
+        gtol=gtol,
+        aer_timeout_s=aer_timeout_s,
+        gdas_download_timeout_s=gdas_download_timeout_s,
+    )
     input_medium = spectrum.wavelength_medium
     fit_ranges = _ranges_to_observatory_vacuum(fit_ranges, input_medium, atmosphere_header)
     exclude_ranges = _ranges_to_observatory_vacuum(exclude_ranges, input_medium, atmosphere_header)
@@ -2057,6 +2180,98 @@ def _correct_spectrum_workflow(
     )
 
 
+def _validate_correction_options(
+    spectrum: Spectrum,
+    *,
+    continuum_order: int,
+    auto_segment: bool,
+    segment_size: float,
+    radiative_transfer_max_points: int,
+    min_transmission: float,
+    fit_wavelength_shift: WavelengthFitMode,
+    fit_wavelength_polynomial: bool,
+    fit_segment_wavelength_shifts: bool,
+    fit_segment_wavelength_polynomial: bool,
+    wavelength_polynomial_order: int,
+    segment_wavelength_polynomial_order: int,
+    fit_ranges: tuple[tuple[float, float], ...] | None,
+    exclude_ranges: tuple[tuple[float, float], ...] | None,
+    loss: str,
+    f_scale: float,
+    ftol: float,
+    xtol: float,
+    gtol: float,
+    aer_timeout_s: float,
+    gdas_download_timeout_s: float,
+) -> None:
+    """Reject invalid public options before line-data or network work starts."""
+
+    if np.count_nonzero(spectrum.valid) < 3:
+        raise ConfigurationError(
+            "telluric correction requires at least three valid spectrum pixels"
+        )
+    if not isinstance(continuum_order, (int, np.integer)) or continuum_order < 0:
+        raise ConfigurationError("continuum_order must be a non-negative integer")
+    if auto_segment and (not np.isfinite(segment_size) or segment_size <= 0):
+        raise ConfigurationError("segment_size must be positive and finite")
+    if int(radiative_transfer_max_points) < 2:
+        raise ConfigurationError("radiative_transfer_max_points must be at least two")
+    if not np.isfinite(min_transmission) or not 0 < min_transmission < 1:
+        raise ConfigurationError("min_transmission must be between zero and one")
+    if fit_wavelength_shift != "auto" and not isinstance(
+        fit_wavelength_shift,
+        (bool, np.bool_),
+    ):
+        raise ConfigurationError(
+            "fit_wavelength_shift must be 'auto', True, or False"
+        )
+    explicit_models = sum(
+        bool(value)
+        for value in (
+            fit_wavelength_polynomial,
+            fit_segment_wavelength_shifts,
+            fit_segment_wavelength_polynomial,
+        )
+    )
+    if explicit_models > 1:
+        raise ConfigurationError(
+            "choose only one explicit wavelength model: global polynomial, "
+            "per-group shifts, or per-group polynomial"
+        )
+    if fit_wavelength_shift is True and explicit_models:
+        raise ConfigurationError(
+            "fit_wavelength_shift=True cannot be combined with another "
+            "wavelength-correction model"
+        )
+    if wavelength_polynomial_order < 0 or segment_wavelength_polynomial_order < 0:
+        raise ConfigurationError("wavelength polynomial orders must be non-negative")
+    for label, ranges in (("fit_ranges", fit_ranges), ("exclude_ranges", exclude_ranges)):
+        if ranges is None:
+            continue
+        for bounds in ranges:
+            if len(bounds) != 2:
+                raise ConfigurationError(
+                    f"each {label} entry must contain two endpoints"
+                )
+            lower, upper = map(float, bounds)
+            if not np.isfinite(lower) or not np.isfinite(upper) or lower == upper:
+                raise ConfigurationError(
+                    f"{label} endpoints must be finite and distinct"
+                )
+    if loss not in {"linear", "soft_l1", "huber", "cauchy", "arctan"}:
+        raise ConfigurationError(f"unsupported least-squares loss: {loss!r}")
+    for label, value in (
+        ("f_scale", f_scale),
+        ("ftol", ftol),
+        ("xtol", xtol),
+        ("gtol", gtol),
+        ("aer_timeout_s", aer_timeout_s),
+        ("gdas_download_timeout_s", gdas_download_timeout_s),
+    ):
+        if not np.isfinite(value) or value <= 0:
+            raise ConfigurationError(f"{label} must be positive and finite")
+
+
 def _continuum_fit_problem(result: TelluricFitResult) -> str | None:
     if not result.success:
         return f"optimizer did not converge: {result.message}"
@@ -2214,11 +2429,20 @@ def _resolve_lsf_sigma(
 
     if lsf_sigma_bounds is None:
         if automatic_sigma:
-            upper = min(
-                AUTO_LSF_SIGMA_MAX_PIXELS,
-                max(6.0, 4.0 * max(initial_sigma, 1.0)),
-            )
-            resolved_bounds = (0.0, upper)
+            if resolution["source"] == "fits_resolving_power":
+                resolved_bounds = (
+                    AUTO_LSF_RESOLUTION_LOWER_FACTOR * initial_sigma,
+                    min(
+                        AUTO_LSF_SIGMA_MAX_PIXELS,
+                        AUTO_LSF_RESOLUTION_UPPER_FACTOR * initial_sigma,
+                    ),
+                )
+            else:
+                upper = min(
+                    AUTO_LSF_SIGMA_MAX_PIXELS,
+                    max(6.0, 4.0 * max(initial_sigma, 1.0)),
+                )
+                resolved_bounds = (0.0, upper)
         else:
             resolved_bounds = DEFAULT_LSF_SIGMA_BOUNDS
     else:
@@ -2522,6 +2746,92 @@ def _select_wavelength_model_from_pilots(
         ),
     }
 
+    constant_bound_status = {
+        parameter: status
+        for parameter, status in constant_result.parameter_bound_status.items()
+        if "wavelength_" in parameter
+    }
+    constant_coefficient = float(
+        constant_result.segment_results[0].wavelength_coefficients[0]
+    )
+    bound_lower, bound_upper = map(
+        float,
+        constant_config.wavelength_shift_bounds,
+    )
+    bound_margin = 0.01 * (bound_upper - bound_lower)
+    if not constant_bound_status:
+        if constant_coefficient <= bound_lower + bound_margin:
+            constant_bound_status["wavelength_shift_pixels"] = "lower"
+        elif constant_coefficient >= bound_upper - bound_margin:
+            constant_bound_status["wavelength_shift_pixels"] = "upper"
+    constant_bic_improvement, constant_improved_fraction = (
+        _wavelength_candidate_improvement(
+            no_shift_metrics,
+            constant_metrics,
+        )
+    )
+    should_expand_bounds = bool(
+        constant_result.success
+        and constant_bound_status
+        and constant_bic_improvement >= AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT
+        and constant_improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
+        and tuple(config.wavelength_shift_bounds)
+        == AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
+    )
+    if should_expand_bounds:
+        bounded_model = dict(details["constant_pixel_model"])
+        expanded_initial = float(
+            np.clip(
+                constant_result.segment_results[0].wavelength_coefficients[0],
+                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS[0],
+                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS[1],
+            )
+        )
+        expanded_constant_config = replace(
+            constant_config,
+            initial_wavelength_shift=expanded_initial,
+            wavelength_shift_bounds=(
+                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS
+            ),
+        )
+        expanded_constant_result = fit_telluric_segments(
+            pilot_segments,
+            line_list=line_list,
+            config=expanded_constant_config,
+            global_wavelength_bounds=global_bounds,
+        )
+        expanded_constant_metrics = _lsf_pilot_model_metrics(
+            expanded_constant_result
+        )
+        details["wavelength_shift_bound_expansion"] = {
+            "triggered": True,
+            "initial_bounds_pixels": list(
+                AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
+            ),
+            "expanded_bounds_pixels": list(
+                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS
+            ),
+            "initial_bound_status": constant_bound_status,
+            "initial_bic_improvement": constant_bic_improvement,
+            "initial_improved_region_fraction": constant_improved_fraction,
+            "bounded_constant_model": bounded_model,
+        }
+        if expanded_constant_result.success:
+            constant_config = expanded_constant_config
+            constant_result = expanded_constant_result
+            constant_metrics = expanded_constant_metrics
+            details["constant_pixel_model"] = {
+                **constant_metrics,
+                "coefficients_pixels": (
+                    constant_result.segment_results[0]
+                    .wavelength_coefficients.tolist()
+                ),
+            }
+    else:
+        details["wavelength_shift_bound_expansion"] = {
+            "triggered": False,
+        }
+
     model_records: list[
         tuple[str, FitConfig, MultiTelluricFitResult, dict[str, object]]
     ] = [
@@ -2619,12 +2929,14 @@ def _select_wavelength_model_from_pilots(
         fit_wavelength_polynomial=selected_name == "linear_pixel_trend",
         wavelength_polynomial_order=1,
         wavelength_shift_unit="pixel",
+        wavelength_shift_bounds=tuple(selected_config.wavelength_shift_bounds),
         initial_wavelength_shift=float(selected_coefficients[0]),
         initialize_lsf_sigma_grid=False,
         lsf_sigma_pixels=float(selected_result.lsf_sigma_pixels),
     )
     return selected_config, {
         **details,
+        "bounds": list(selected_config.wavelength_shift_bounds),
         "selected_model": selected_name,
         "selection_reason": (
             "penalized_distributed_pilot_evidence"
@@ -4568,6 +4880,8 @@ def _barycentric_velocity_from_header_km_s(
 def _load_fits_header_if_available(
     input_path: str | Path,
     input_format: str | None,
+    *,
+    hdu: int = 1,
 ) -> Mapping[str, object] | None:
     path = Path(input_path)
     chosen_format = infer_spectrum_format(path, input_format)
@@ -4576,8 +4890,8 @@ def _load_fits_header_if_available(
     try:
         with fits.open(path) as hdul:
             header = dict(hdul[0].header)
-            if len(hdul) > 1:
-                for key, value in hdul[1].header.items():
+            if 0 <= int(hdu) < len(hdul) and int(hdu) != 0:
+                for key, value in hdul[int(hdu)].header.items():
                     header.setdefault(key, value)
             return header
     except Exception:
@@ -4587,15 +4901,20 @@ def _load_fits_header_if_available(
 def _resolve_wavelength_medium(
     wavelength_medium: str | None,
     header: Mapping[str, object] | None,
+    *,
+    wavelength_col: int | str | None = None,
 ) -> str:
     if wavelength_medium is not None:
         return wavelength_medium
 
-    inferred = _infer_wavelength_medium_from_header(header)
+    inferred = _infer_wavelength_medium_from_header(
+        header,
+        wavelength_col=wavelength_col,
+    )
     if inferred is not None:
         return inferred
 
-    raise ValueError(
+    raise WavelengthMetadataError(
         "PyMolFit stopped the correction because wavelength_medium was not "
         "provided and no reliable air/vacuum wavelength convention was found "
         "in the FITS metadata. Pass wavelength_medium='air' or "
@@ -4603,81 +4922,6 @@ def _resolve_wavelength_medium(
         "describes the velocity reference frame, not whether wavelengths are "
         "in air or vacuum."
     )
-
-
-def _infer_wavelength_medium_from_header(
-    header: Mapping[str, object] | None,
-) -> str | None:
-    """Return an unambiguous air/vacuum declaration from FITS metadata."""
-
-    if header is None:
-        return None
-
-    declarations: set[str] = set()
-    instrument = str(header.get("INSTRUME", "")).strip().upper()
-    table_column_names = {
-        str(value).strip().upper()
-        for raw_key, value in header.items()
-        if str(raw_key).strip().upper().startswith("TTYPE")
-    }
-
-    # ESO ESPRESSO Phase 3 products define WAVE as vacuum wavelength and
-    # WAVE_AIR as its standard-air counterpart. The default table loader
-    # selects WAVE when it is available.
-    if instrument == "ESPRESSO":
-        if "WAVE" in table_column_names:
-            declarations.add("vacuum")
-        elif "WAVE_AIR" in table_column_names:
-            declarations.add("air")
-
-    explicit_keys = {
-        "AIRORVAC",
-        "AIRVAC",
-        "WAVEMED",
-        "WAVE_MED",
-        "WAVEMEDIUM",
-        "PYMOLFIT WAVE",
-        "GENMOLFIT WAVE",
-        "VACUUM",
-    }
-    for raw_key, value in header.items():
-        key = str(raw_key).strip().upper()
-        if key.startswith("HIERARCH "):
-            key = key.removeprefix("HIERARCH ").strip()
-
-        if key in explicit_keys:
-            if key == "VACUUM":
-                text = str(value).strip().lower()
-                if value is True or text in {"1", "true", "t", "yes", "y"}:
-                    declarations.add("vacuum")
-                    continue
-                if value is False or text in {"0", "false", "f", "no", "n"}:
-                    declarations.add("air")
-                    continue
-            text = str(value).strip().lower()
-            tokens = {
-                token
-                for token in text.replace("-", " ").replace("_", " ").replace("/", " ").split()
-            }
-            if "vacuum" in tokens or "vac" in tokens:
-                declarations.add("vacuum")
-            if "air" in tokens:
-                declarations.add("air")
-
-        if key.startswith("CTYPE") or key.startswith("TCTYP"):
-            spectral_code = str(value).strip().upper().split("-", 1)[0]
-            if spectral_code == "AWAV":
-                declarations.add("air")
-            elif spectral_code == "WAVE":
-                declarations.add("vacuum")
-
-    if len(declarations) > 1:
-        raise ValueError(
-            "conflicting FITS metadata declares both air and vacuum wavelength "
-            "conventions; pass wavelength_medium='air' or 'vacuum' explicitly"
-        )
-    return next(iter(declarations), None)
-
 
 def _resolve_partition_table(partition_table: PartitionTable | str | Path | None) -> PartitionTable | None:
     if partition_table is None:

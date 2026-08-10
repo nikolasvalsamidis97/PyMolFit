@@ -39,6 +39,15 @@ wavelength = result.corrected.wavelength
 corrected_flux = result.corrected.flux
 ```
 
+The same function accepts a previously loaded spectrum:
+
+```python
+from pymolfit import correct, load_spectrum
+
+spectrum = load_spectrum("spectrum.fits", wavelength_medium="air")
+result = correct(spectrum=spectrum)
+```
+
 Use `wavelength_medium="vacuum"` for vacuum wavelengths. The argument may be
 omitted only when the FITS metadata declares the wavelength medium
 unambiguously.
@@ -52,10 +61,11 @@ share one smooth wavelength-alignment model for their physical order.
 Results remain in memory unless an output is requested:
 
 ```python
-from pymolfit import save_corrected_txt, save_fit_product_ecsv
+from pymolfit import load_fit_product, save_corrected_txt, save_fit_product
 
 save_corrected_txt(result, "corrected_spectrum.txt")
-save_fit_product_ecsv(result, "fit_product.ecsv")
+save_fit_product(result, "fit_product.ecsv")
+reloaded = load_fit_product("fit_product.ecsv")
 ```
 
 The text file contains a compact corrected spectrum. The ECSV product also
@@ -168,6 +178,15 @@ cover:
 
 Start with Tutorial 1 for a short example or Tutorial 2 for a complete
 one-dimensional echelle spectrum.
+
+## Documentation
+
+- [Software guide and public API](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/software_guide.md)
+- [Troubleshooting](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/troubleshooting.md)
+- [Scientific-readiness validation](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/science_readiness_validation.md)
+- [Physics parity audit](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/physics_parity_audit.md)
+- [Changelog](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/CHANGELOG.md)
+- [Contributing](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/CONTRIBUTING.md)
 
 ## Molecular And Atmospheric Data
 

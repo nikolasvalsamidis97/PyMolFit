@@ -52,6 +52,16 @@ def _format_ranges(value: object) -> str:
     return ", ".join(ranges)
 
 
+def _summarize_ranges(value: object, *, automatic_label: str) -> str:
+    if value is None:
+        return automatic_label
+    if not isinstance(value, (tuple, list)):
+        return _format_scalar(value)
+    if not value:
+        return "none"
+    return f"custom ({len(value)} intervals)"
+
+
 def _class_label(value: object) -> str:
     details = _mapping(value)
     qualified_name = details.get("class")
@@ -157,10 +167,10 @@ def format_fit_summary(
             f"alt={_format_scalar(atmosphere.get('observatory_altitude_m'))} m",
             *_format_airmass_lines(atmosphere, config),
             "Fit masks and segmentation",
-            "  fit ranges (observatory vacuum micron): "
-            f"{_format_ranges(config.get('fit_ranges'))}",
+            "  fit ranges: "
+            f"{_summarize_ranges(config.get('fit_ranges'), automatic_label='automatic (all valid pixels)')}",
             "  excluded ranges (observatory vacuum micron): "
-            f"{_format_ranges(config.get('exclude_ranges')) if config.get('exclude_ranges') is not None else 'none'}",
+            f"{_summarize_ranges(config.get('exclude_ranges'), automatic_label='none')}",
             "  segmentation: "
             + (
                 f"{_format_scalar(segmentation.get('segment_count'))} automatic segments; "
@@ -238,7 +248,6 @@ def format_fit_summary(
         lines.append("  species scales: none")
     lines.extend(
         (
-            f"  continuum coefficients: {_format_sequence(result.continuum_coefficients)}",
             f"  parameter bounds reached: "
             f"{_format_scalar(result.parameter_bound_status or 'none')}",
             "Result",

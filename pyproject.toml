@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymolfit"
-version = "0.5.1"
+dynamic = ["version"]
 description = "Independent pure-Python telluric correction based on the ESO Molecfit workflow."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -17,7 +17,7 @@ keywords = [
     "telluric correction",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -40,7 +40,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.2",
     "pytest>=7.0",
+    "ruff>=0.8",
+    "twine>=5.1",
 ]
 examples = [
     "matplotlib>=3.7",
@@ -60,6 +63,11 @@ pymolfit = "pymolfit.cli:main"
 Homepage = "https://github.com/nikolasvalsamidis97/PyMolFit"
 Issues = "https://github.com/nikolasvalsamidis97/PyMolFit/issues"
 Repository = "https://github.com/nikolasvalsamidis97/PyMolFit.git"
+Changelog = "https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/nikolasvalsamidis97/PyMolFit#readme"
+
+[tool.setuptools.dynamic]
+version = { attr = "pymolfit._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -75,3 +83,10 @@ pymolfit = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from .hitran import HITRAN_MOLECULES
 from .linelist import LineList
 from .provenance import file_sha256
+from .errors import ExternalDataError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ _DEFAULT_SPECIES = ("H2O", "CO2", "O3", "N2O", "CO", "CH4", "O2")
 _OpenUrl = Callable[..., Any]
 
 
-class AERDataError(RuntimeError):
+class AERDataError(ExternalDataError):
     """The versioned AER catalogue could not be acquired or verified."""
 
 

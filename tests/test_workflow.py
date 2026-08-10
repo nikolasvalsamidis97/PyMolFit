@@ -32,6 +32,7 @@ from pymolfit.workflow import (
     _infer_wavelength_medium_from_header,
     _ranges_to_observatory_vacuum,
     _resolve_initial_wavelength_shift,
+    _resolve_lsf_sigma,
     _resolve_line_list,
     _split_spectrum,
     _spectrum_to_observatory_vacuum,
@@ -345,6 +346,26 @@ def test_lsf_sigma_estimate_uses_resolving_power_and_spectrum_sampling():
         0.5005 / 100_000.0 / 1.0e-6 / 2.354820045,
         rel=2.0e-3,
     )
+
+
+def test_automatic_lsf_sigma_keeps_fits_resolution_within_physical_bounds():
+    wavelength = np.linspace(0.500, 0.501, 1001)
+    spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
+
+    initial, fitted, bounds, _, details = _resolve_lsf_sigma(
+        spectrum,
+        lsf_sigma_pixels="auto",
+        fit_lsf_sigma="auto",
+        lsf_sigma_bounds=None,
+        fit_ranges=None,
+        exclude_ranges=None,
+        atmosphere_header={"SPEC_RES": 100_000.0},
+        has_telluric_lines=True,
+    )
+
+    assert fitted is True
+    assert details["source"] == "fits_resolving_power"
+    assert bounds == pytest.approx((0.5 * initial, 2.0 * initial))
 
 
 def test_lsf_sigma_estimate_uses_narrow_spectral_features_without_metadata():
@@ -1066,6 +1087,7 @@ def test_correct_arrays_auto_selects_wavelength_dependent_pixel_shift():
         (0.0, "none"),
         (1.2, "constant_pixel_shift"),
         (-1.2, "constant_pixel_shift"),
+        (7.0, "constant_pixel_shift"),
     ],
 )
 def test_correct_arrays_auto_selects_simplest_supported_wavelength_model(
@@ -1113,6 +1135,11 @@ def test_correct_arrays_auto_selects_simplest_supported_wavelength_model(
             [true_pixel_shift],
             atol=0.12,
         )
+    if abs(true_pixel_shift) > 3.0:
+        expansion = alignment["wavelength_shift_bound_expansion"]
+        assert expansion["triggered"] is True
+        assert expansion["expanded_bounds_pixels"] == [-12.0, 12.0]
+        assert alignment["bounds"] == [-12.0, 12.0]
 
 
 def test_correct_file_writes_outputs(tmp_path):
@@ -1326,6 +1353,43 @@ def test_explicit_fits_metadata_infers_wavelength_medium():
     assert _infer_wavelength_medium_from_header({"VACUUM": True}) == "vacuum"
     assert _infer_wavelength_medium_from_header({"VACUUM": False}) == "air"
     assert _infer_wavelength_medium_from_header({"SPECSYS": "BARYCENT"}) is None
+
+
+def test_tucd_infers_air_and_vacuum_wavelength_medium():
+    air_header = {
+        "TFIELDS": 1,
+        "TTYPE1": "WAVE",
+        "TUCD1": "em.wl;obs.atmos",
+    }
+    vacuum_header = {
+        "TFIELDS": 1,
+        "TTYPE1": "WAVE",
+        "TUCD1": "em.wl;meta.main",
+    }
+
+    assert _infer_wavelength_medium_from_header(air_header) == "air"
+    assert _infer_wavelength_medium_from_header(vacuum_header) == "vacuum"
+
+
+def test_tucd_inference_follows_selected_wavelength_column():
+    header = {
+        "TFIELDS": 3,
+        "TTYPE1": "WAVE",
+        "TUCD1": "em.wl;meta.main",
+        "TTYPE2": "WAVE_AIR",
+        "TUCD2": "em.wl;obs.atmos",
+        "TTYPE3": "FLUX",
+        "TUCD3": "phot.flux.density;em.wl;meta.main",
+    }
+
+    assert (
+        _infer_wavelength_medium_from_header(header, wavelength_col="WAVE")
+        == "vacuum"
+    )
+    assert (
+        _infer_wavelength_medium_from_header(header, wavelength_col="WAVE_AIR")
+        == "air"
+    )
 
 
 def test_espresso_wave_column_infers_vacuum_wavelength():
@@ -1651,6 +1715,15 @@ def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_pat
         observation=observation,
         **options,
     )
+    spectrum_result = correct(
+        spectrum=Spectrum(
+            wavelength=wavelength,
+            flux=flux,
+            wavelength_medium="vacuum",
+        ),
+        observation=observation,
+        **options,
+    )
 
     np.testing.assert_allclose(
         file_result.spectrum.wavelength,
@@ -1671,6 +1744,12 @@ def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_pat
         atol=1.0e-12,
     )
     np.testing.assert_allclose(
+        file_result.transmission,
+        spectrum_result.transmission,
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
         file_result.corrected.flux,
         array_result.corrected.flux,
         rtol=0.0,
@@ -1679,6 +1758,23 @@ def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_pat
     )
     assert file_result.spectrum.meta["original_spectral_frame"] == "BARYCENTRIC"
     assert array_result.spectrum.meta["original_spectral_frame"] == "BARYCENTRIC"
+    assert spectrum_result.spectrum.meta["original_spectral_frame"] == "BARYCENTRIC"
+
+
+def test_unified_correct_validates_options_before_model_work():
+    spectrum = Spectrum(
+        wavelength=np.linspace(2.31, 2.32, 10),
+        flux=np.ones(10),
+    )
+
+    with pytest.raises(ValueError, match="continuum_order"):
+        correct(spectrum=spectrum, continuum_order=-1)
+    with pytest.raises(ValueError, match="only one explicit wavelength model"):
+        correct(
+            spectrum=spectrum,
+            fit_segment_wavelength_shifts=True,
+            fit_segment_wavelength_polynomial=True,
+        )
 
 
 def test_unified_correct_arrays_preserves_mask_and_writes_products(tmp_path):

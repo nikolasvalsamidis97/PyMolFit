@@ -253,10 +253,37 @@ def test_cli_wavelength_alignment_defaults_to_auto_and_accepts_overrides():
     )
 
     assert automatic.fit_wavelength_shift == "auto"
+    assert automatic.initial_wavelength_shift is None
     assert automatic.wavelength_shift_bounds is None
     assert forced.fit_wavelength_shift is True
     assert disabled.fit_wavelength_shift is False
     assert bounded.wavelength_shift_bounds == [-2.0, 2.0]
+
+
+def test_cli_exposes_segment_wavelength_alignment_controls():
+    args = build_parser().parse_args(
+        [
+            "fit",
+            "input.txt",
+            "output.txt",
+            "--fit-segment-wavelength-shifts",
+            "--fit-segment-wavelength-polynomial",
+            "--segment-wavelength-polynomial-order",
+            "2",
+        ]
+    )
+
+    assert args.fit_segment_wavelength_shifts is True
+    assert args.fit_segment_wavelength_polynomial is True
+    assert args.segment_wavelength_polynomial_order == 2
+
+
+def test_cli_reports_version(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+
+    assert exc_info.value.code == 0
+    assert "pymolfit 0.6.0" in capsys.readouterr().out
 
 
 def test_cli_refuses_implicit_synthetic_line_data(tmp_path):

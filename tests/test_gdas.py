@@ -69,3 +69,19 @@ def test_auto_mode_returns_none_when_download_fails(tmp_path):
     )
 
     assert resolution is None
+
+
+def test_strict_cache_mode_reports_corrupt_archive(tmp_path):
+    site = "C-70.4-24.6"
+    tarball = tmp_path / "tarballs" / f"gdas_profiles_{site}.tar.gz"
+    tarball.parent.mkdir(parents=True)
+    tarball.write_bytes(b"partial download")
+
+    with pytest.raises(GDASProfileUnavailable, match="corrupt"):
+        resolve_time_local_gdas_profile(
+            observation_time="2022-01-02T01:30:00",
+            longitude_deg=-70.4,
+            latitude_deg=-24.6,
+            mode="cache",
+            cache_dir=tmp_path,
+        )

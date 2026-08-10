@@ -26,6 +26,16 @@ def test_spectrum_owns_input_arrays():
     np.testing.assert_array_equal(spectrum.group_id, [1, 2])
 
 
+def test_to_unit_returns_same_object_when_unit_is_unchanged():
+    spectrum = Spectrum(
+        wavelength=np.array([1.0, 1.1]),
+        flux=np.array([10.0, 8.0]),
+        wavelength_unit="micron",
+    )
+
+    assert spectrum.to_unit("micron") is spectrum
+
+
 def test_correct_spectrum_propagates_flux_and_transmission_uncertainty():
     spectrum = Spectrum(
         wavelength=np.array([1.0, 1.1]),

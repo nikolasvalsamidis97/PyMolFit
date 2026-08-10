@@ -35,8 +35,9 @@ def test_format_fit_summary_reports_effective_configuration():
     assert report.startswith("PyMolFit effective fit configuration")
     assert "input: spectrum.fits" in report
     assert "wavelength frame: observatory-frame vacuum" in report
-    assert "fit ranges (observatory vacuum micron): (2.31, 2.35)" in report
-    assert "excluded ranges (observatory vacuum micron): (2.32, 2.321)" in report
+    assert "fit ranges: custom (1 intervals)" in report
+    assert "fit ranges (observatory vacuum micron)" not in report
+    assert "excluded ranges (observatory vacuum micron): custom (1 intervals)" in report
     assert "continuum solver: linear (requested=auto, fallback=no)" in report
     assert "Gaussian LSF sigma: 0 pixels (source=user, fitted=no" in report
     assert "wavelength alignment: none" in report
@@ -44,6 +45,7 @@ def test_format_fit_summary_reports_effective_configuration():
     assert "radiative-transfer airmass: 1" in report
     assert "success: yes" in report
     assert "residual alignment: median=" in report
+    assert "continuum coefficients:" not in report
     assert "fit_quality" in result.provenance
 
 

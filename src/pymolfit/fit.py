@@ -14,6 +14,7 @@ from scipy.sparse import lil_matrix
 from .atmosphere import AtmosphereProfile
 from .components import AbsorptionComponent, HitranLineAbsorption, line_wing_effective_cutoff_cm
 from .continuum import MTCKDH2OContinuum
+from .errors import ProductFormatError
 from .linelist import LineList
 from .model import (
     PiecewiseConstantRebinPlan,
@@ -43,6 +44,8 @@ from .spectrum import Spectrum, correct_spectrum
 
 
 DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH = 5.0e-3
+FIT_PRODUCT_SCHEMA = "pymolfit.telluric_fit"
+FIT_PRODUCT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,8 @@ class TelluricFitResult:
     provenance: dict[str, object] = field(default_factory=dict)
 
     def to_table(self) -> Table:
+        """Return the complete correction as a versioned Astropy table."""
+
         table = Table()
         table["wavelength"] = self.spectrum.wavelength
         table["wavelength"].unit = self.spectrum.wavelength_unit
@@ -188,12 +193,19 @@ class TelluricFitResult:
         table["corrected_mask"] = self.corrected.valid
         table.meta.update(
             {
+                "product_schema": FIT_PRODUCT_SCHEMA,
+                "product_schema_version": FIT_PRODUCT_SCHEMA_VERSION,
                 "wavelength_medium": self.spectrum.wavelength_medium,
                 "fit_success": bool(self.success),
                 "fit_message": self.message,
                 "fit_cost": float(self.cost),
                 "fit_nfev": int(self.nfev),
                 "species_scales": json.dumps(self.species_scales, sort_keys=True),
+                "species_scale_uncertainties": json.dumps(
+                    self.species_scale_uncertainties,
+                    sort_keys=True,
+                ),
+                "metrics": json.dumps(self.metrics, sort_keys=True),
                 "wavelength_shift_micron": float(self.wavelength_shift),
                 "wavelength_coefficients": json.dumps(self.wavelength_coefficients.tolist()),
                 "wavelength_coefficient_unit": str(
@@ -222,13 +234,255 @@ class TelluricFitResult:
                     self.parameter_bound_status,
                     sort_keys=True,
                 ),
+                "parameter_covariance": json.dumps(
+                    None
+                    if self.parameter_covariance is None
+                    else self.parameter_covariance.tolist()
+                ),
+                "wavelength_group_coefficients": json.dumps(
+                    {
+                        str(key): np.asarray(value, dtype=float).tolist()
+                        for key, value in self.wavelength_group_coefficients.items()
+                    },
+                    sort_keys=True,
+                ),
+                "wavelength_group_bounds": json.dumps(
+                    {
+                        str(key): [float(value[0]), float(value[1])]
+                        for key, value in self.wavelength_group_bounds.items()
+                    },
+                    sort_keys=True,
+                ),
                 "provenance_json": provenance_json(self.provenance),
             }
         )
         return table
 
     def write(self, path: str | Path, *, format: str = "ascii.ecsv") -> None:
+        """Write a complete, reloadable correction product."""
+
         self.to_table().write(path, format=format, overwrite=True)
+
+    @classmethod
+    def from_table(cls, table: Table) -> "TelluricFitResult":
+        """Reconstruct a correction result from a PyMolFit product table."""
+
+        required = {
+            "wavelength",
+            "flux",
+            "model_flux",
+            "continuum",
+            "transmission",
+            "corrected_flux",
+        }
+        missing = sorted(required.difference(table.colnames))
+        if missing:
+            raise ProductFormatError(
+                "not a complete PyMolFit fit product; missing columns: "
+                + ", ".join(missing)
+            )
+
+        schema = table.meta.get("product_schema")
+        if schema not in {None, FIT_PRODUCT_SCHEMA}:
+            raise ProductFormatError(
+                f"unsupported product schema {schema!r}; expected {FIT_PRODUCT_SCHEMA!r}"
+            )
+        version = int(table.meta.get("product_schema_version", 0))
+        if version > FIT_PRODUCT_SCHEMA_VERSION:
+            raise ProductFormatError(
+                f"fit product schema version {version} is newer than the supported "
+                f"version {FIT_PRODUCT_SCHEMA_VERSION}; upgrade PyMolFit"
+            )
+
+        wavelength_column = table["wavelength"]
+        wavelength_unit = getattr(wavelength_column, "unit", None)
+        if wavelength_unit is None:
+            wavelength_unit = table.meta.get("wavelength_unit", "micron")
+        medium = str(table.meta.get("wavelength_medium", "vacuum"))
+        input_mask = _optional_bool_column(table, "input_mask")
+        corrected_mask = _optional_bool_column(table, "corrected_mask")
+        group_id = _optional_array_column(table, "physical_group")
+        uncertainty = _optional_float_column(table, "uncertainty")
+        corrected_uncertainty = _optional_float_column(
+            table,
+            "corrected_uncertainty",
+        )
+        source_meta = {
+            "io_type": "pymolfit_product",
+            "product_schema": FIT_PRODUCT_SCHEMA,
+            "product_schema_version": version,
+        }
+        spectrum = Spectrum(
+            wavelength=np.asarray(wavelength_column, dtype=float),
+            flux=np.asarray(table["flux"], dtype=float),
+            uncertainty=uncertainty,
+            mask=input_mask,
+            group_id=group_id,
+            wavelength_unit=str(wavelength_unit),
+            wavelength_medium=medium,
+            meta=source_meta,
+        )
+        corrected = Spectrum(
+            wavelength=np.asarray(wavelength_column, dtype=float),
+            flux=np.asarray(table["corrected_flux"], dtype=float),
+            uncertainty=corrected_uncertainty,
+            mask=corrected_mask,
+            group_id=group_id,
+            wavelength_unit=str(wavelength_unit),
+            wavelength_medium=medium,
+            meta=source_meta,
+        )
+
+        covariance_value = _json_meta(table, "parameter_covariance", None)
+        covariance = (
+            None
+            if covariance_value is None
+            else np.asarray(covariance_value, dtype=float)
+        )
+        group_coefficients = {
+            int(key): np.asarray(value, dtype=float)
+            for key, value in _json_meta(
+                table,
+                "wavelength_group_coefficients",
+                {},
+            ).items()
+        }
+        group_bounds = {
+            int(key): (float(value[0]), float(value[1]))
+            for key, value in _json_meta(
+                table,
+                "wavelength_group_bounds",
+                {},
+            ).items()
+        }
+        return cls(
+            spectrum=spectrum,
+            corrected=corrected,
+            transmission=np.asarray(table["transmission"], dtype=float),
+            continuum=np.asarray(table["continuum"], dtype=float),
+            model_flux=np.asarray(table["model_flux"], dtype=float),
+            species_scales=_float_dict(_json_meta(table, "species_scales", {})),
+            wavelength_shift=float(table.meta.get("wavelength_shift_micron", 0.0)),
+            wavelength_coefficients=np.asarray(
+                _json_meta(table, "wavelength_coefficients", []),
+                dtype=float,
+            ),
+            lsf_sigma_pixels=float(table.meta.get("lsf_sigma_pixels", 0.0)),
+            lsf_box_width_pixels=float(
+                table.meta.get("lsf_box_width_pixels", 0.0)
+            ),
+            lsf_lorentz_fwhm_pixels=float(
+                table.meta.get("lsf_lorentz_fwhm_pixels", 0.0)
+            ),
+            lsf_wavelength_exponent=float(
+                table.meta.get("lsf_wavelength_exponent", 0.0)
+            ),
+            continuum_coefficients=np.asarray(
+                _json_meta(table, "continuum_coefficients", []),
+                dtype=float,
+            ),
+            metrics=_float_dict(_json_meta(table, "metrics", {})),
+            success=bool(table.meta.get("fit_success", False)),
+            message=str(table.meta.get("fit_message", "loaded product")),
+            cost=float(table.meta.get("fit_cost", np.nan)),
+            nfev=int(table.meta.get("fit_nfev", 0)),
+            parameter_names=tuple(
+                str(value)
+                for value in _json_meta(table, "parameter_names", [])
+            ),
+            parameter_covariance=covariance,
+            parameter_standard_errors=_float_dict(
+                _json_meta(table, "parameter_standard_errors", {})
+            ),
+            species_scale_uncertainties=_float_dict(
+                _json_meta(table, "species_scale_uncertainties", {})
+            ),
+            transmission_uncertainty=_optional_float_column(
+                table,
+                "transmission_uncertainty",
+            ),
+            reduced_chi_square=float(
+                table.meta.get("reduced_chi_square", np.nan)
+            ),
+            covariance_rank=int(table.meta.get("covariance_rank", 0)),
+            fit_mask=_optional_bool_column(table, "fit_mask"),
+            parameter_bound_status={
+                str(key): str(value)
+                for key, value in _json_meta(
+                    table,
+                    "parameter_bound_status",
+                    {},
+                ).items()
+            },
+            wavelength_group_coefficients=group_coefficients,
+            wavelength_group_bounds=group_bounds,
+            provenance=dict(_json_meta(table, "provenance_json", {})),
+        )
+
+    @classmethod
+    def read(
+        cls,
+        path: str | Path,
+        *,
+        format: str | None = None,
+    ) -> "TelluricFitResult":
+        """Load a complete result written by :meth:`write`."""
+
+        source = Path(path)
+        if not source.is_file():
+            raise FileNotFoundError(f"fit product does not exist: {source}")
+        try:
+            table = Table.read(source, format=format)
+        except Exception as exc:
+            raise ProductFormatError(
+                f"could not read PyMolFit fit product {source}: {exc}"
+            ) from exc
+        result = cls.from_table(table)
+        product_meta = {
+            **dict(result.spectrum.meta),
+            "source": str(source.resolve()),
+        }
+        return replace(
+            result,
+            spectrum=replace(result.spectrum, meta=product_meta),
+            corrected=replace(result.corrected, meta=product_meta),
+        )
+
+
+def _json_meta(table: Table, key: str, default: object) -> object:
+    value = table.meta.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProductFormatError(
+            f"invalid JSON metadata field {key!r} in PyMolFit product"
+        ) from exc
+
+
+def _float_dict(value: object) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        raise ProductFormatError("expected a metadata mapping")
+    return {str(key): float(item) for key, item in value.items()}
+
+
+def _optional_array_column(table: Table, name: str) -> np.ndarray | None:
+    if name not in table.colnames:
+        return None
+    return np.asarray(table[name])
+
+
+def _optional_float_column(table: Table, name: str) -> np.ndarray | None:
+    value = _optional_array_column(table, name)
+    return None if value is None else np.asarray(value, dtype=float)
+
+
+def _optional_bool_column(table: Table, name: str) -> np.ndarray | None:
+    value = _optional_array_column(table, name)
+    return None if value is None else np.asarray(value, dtype=bool)
 
 
 @dataclass(frozen=True)

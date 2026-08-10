@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from ._version import __version__
 from .aer_data import AERDataError, aer_catalog_status, install_aer_catalog
 from .io import load_spectrum
 from .linelist import LineList
@@ -23,6 +24,11 @@ def _auto_or_float(value: str) -> str | float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pymolfit")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     fit_parser = subparsers.add_parser("fit", help="fit and remove telluric absorption")
@@ -111,10 +117,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=PATH",
         help="generic HITRAN CIA file, e.g. CO2-H2O_CIA=CO2-H2O_2024.cia; may be repeated",
     )
-    fit_parser.add_argument("--format", choices=["ascii", "fits"], help="input spectrum format")
+    fit_parser.add_argument(
+        "--format",
+        choices=["txt", "dat", "csv", "ascii", "ecsv", "fits", "fit", "fz"],
+        help="input spectrum format; omitted means infer from the filename",
+    )
     fit_parser.add_argument("--wavelength-col", default=None, help="wavelength column name or index")
     fit_parser.add_argument("--flux-col", default=None, help="flux column name or index")
     fit_parser.add_argument("--uncertainty-col", default=None, help="uncertainty column name or index")
+    fit_parser.add_argument("--hdu", type=int, default=1, help="FITS HDU containing the spectrum")
+    fit_parser.add_argument(
+        "--image-index",
+        type=int,
+        help="row to extract from a two-dimensional FITS image spectrum",
+    )
     fit_parser.add_argument("--wavelength-unit", default="micron", help="input wavelength unit: micron, nm, angstrom")
     fit_parser.add_argument(
         "--wavelength-medium",
@@ -126,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     fit_parser.add_argument("--airmass", type=float, default=1.0)
+    fit_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress the resolved fit-configuration report",
+    )
     fit_parser.add_argument("--continuum-order", type=int, default=1)
     fit_parser.add_argument(
         "--solve-continuum-linear",
@@ -318,7 +339,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="order of --fit-wavelength-polynomial in a normalized global coordinate",
     )
-    fit_parser.add_argument("--initial-wavelength-shift", type=float, default=0.0)
+    fit_parser.add_argument(
+        "--fit-segment-wavelength-shifts",
+        action="store_true",
+        help="fit one constant detector-pixel shift per physical order/group",
+    )
+    fit_parser.add_argument(
+        "--fit-segment-wavelength-polynomial",
+        action="store_true",
+        help="fit one detector-pixel wavelength polynomial per physical order/group",
+    )
+    fit_parser.add_argument(
+        "--segment-wavelength-polynomial-order",
+        type=int,
+        default=1,
+        help="order of each per-group wavelength polynomial",
+    )
+    fit_parser.add_argument(
+        "--initial-wavelength-shift",
+        type=float,
+        help="initial shift in microns; omitted means derive it from spectral-frame metadata",
+    )
     fit_parser.add_argument(
         "--wavelength-shift-bounds",
         nargs=2,
@@ -634,9 +675,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "fit":
-        if args.fit_wavelength_shift is True and args.fit_wavelength_polynomial:
+        explicit_wavelength_models = sum(
+            bool(value)
+            for value in (
+                args.fit_wavelength_polynomial,
+                args.fit_segment_wavelength_shifts,
+                args.fit_segment_wavelength_polynomial,
+            )
+        )
+        if explicit_wavelength_models > 1:
+            parser.error("choose only one explicit wavelength-correction model")
+        if args.fit_wavelength_shift is True and explicit_wavelength_models:
             parser.error(
-                "use either --fit-wavelength-shift or --fit-wavelength-polynomial, not both"
+                "--fit-wavelength-shift cannot be combined with another "
+                "wavelength-correction model"
             )
         if args.hitran_par is not None and args.line_list is not None:
             parser.error("use either --hitran-par or --line-list, not both")
@@ -688,6 +740,8 @@ def main(argv: list[str] | None = None) -> int:
             wavelength_col=_column_arg(args.wavelength_col),
             flux_col=_column_arg(args.flux_col),
             uncertainty_col=_column_arg(args.uncertainty_col),
+            hdu=args.hdu,
+            image_index=args.image_index,
             wavelength_unit=args.wavelength_unit,
             wavelength_medium=args.wavelength_medium,
             line_list_path=args.line_list,
@@ -777,6 +831,9 @@ def main(argv: list[str] | None = None) -> int:
             fit_wavelength_shift=args.fit_wavelength_shift,
             fit_wavelength_polynomial=args.fit_wavelength_polynomial,
             wavelength_polynomial_order=args.wavelength_polynomial_order,
+            fit_segment_wavelength_shifts=args.fit_segment_wavelength_shifts,
+            fit_segment_wavelength_polynomial=args.fit_segment_wavelength_polynomial,
+            segment_wavelength_polynomial_order=args.segment_wavelength_polynomial_order,
             initial_wavelength_shift=args.initial_wavelength_shift,
             wavelength_shift_bounds=(
                 None
@@ -809,6 +866,7 @@ def main(argv: list[str] | None = None) -> int:
             product_path=args.product,
             product_format=args.product_format,
             plot_path=args.plot,
+            report=not args.quiet,
         )
         return 0
 

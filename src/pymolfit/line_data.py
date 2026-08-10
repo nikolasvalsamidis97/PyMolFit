@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
+from .errors import ExternalDataError
 from .hitran import HITRAN_MOLECULES, parse_hitran_local_iso_id
 from .linelist import LineList
 from .provenance import file_sha256
@@ -30,7 +31,7 @@ _SPECIES_TO_MOLECULE_ID = {name.upper(): mol_id for mol_id, (name, _) in HITRAN_
 _OpenUrl = Callable[..., Any]
 
 
-class HitranAcquisitionError(RuntimeError):
+class HitranAcquisitionError(ExternalDataError):
     """A HITRAN line-data request failed or returned unusable data."""
 
 

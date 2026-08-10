@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 from astropy.table import Table
 
+from .errors import ProductFormatError
 from .fit import TelluricFitResult
+from .io import load_fit_product
 
 
 def plot_fit(
@@ -122,25 +124,38 @@ def _fit_plot_data(
             str(result.spectrum.wavelength_unit),
         )
 
-    product_path = Path(result)
-    if not product_path.is_file():
-        raise FileNotFoundError(f"fit product does not exist: {product_path}")
+    try:
+        loaded = load_fit_product(result)
+    except ProductFormatError:
+        return _legacy_product_plot_data(Path(result))
+    return (
+        np.asarray(loaded.spectrum.wavelength, dtype=float),
+        np.asarray(loaded.spectrum.flux, dtype=float),
+        np.asarray(loaded.corrected.flux, dtype=float),
+        np.asarray(loaded.transmission, dtype=float),
+        str(loaded.spectrum.wavelength_unit),
+    )
+
+
+def _legacy_product_plot_data(
+    product_path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """Read plotting columns from an unversioned pre-0.6 product."""
+
     try:
         table = Table.read(product_path, format="ascii.ecsv")
     except Exception as exc:
-        raise ValueError(
-            f"{product_path} is not a readable PyMolFit product ECSV; "
-            "save the correction with product_path=..., not output_path=..."
+        raise ProductFormatError(
+            f"{product_path} is not a readable PyMolFit product ECSV; save "
+            "the correction with product_path=..., not output_path=..."
         ) from exc
-
     required = {"wavelength", "flux", "corrected_flux", "transmission"}
     missing = sorted(required.difference(table.colnames))
     if missing:
-        raise ValueError(
+        raise ProductFormatError(
             f"{product_path} is not a full PyMolFit product ECSV; missing "
-            f"columns: {', '.join(missing)}"
+            f"columns: {', '.join(missing)}; use product_path=... when saving"
         )
-
     wavelength_column = table["wavelength"]
     wavelength_unit = getattr(wavelength_column, "unit", None)
     if wavelength_unit is None:
