@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import get_args, get_type_hints
+from typing import Literal, get_args, get_origin, get_type_hints
 
 from pymolfit import (
     Observation,
@@ -10,6 +10,20 @@ from pymolfit import (
     save_corrected_txt,
     save_fit_product_ecsv,
 )
+
+
+def _string_choices(annotation: object) -> set[str | None]:
+    choices: set[str | None] = set()
+    pending = [annotation]
+    while pending:
+        item = pending.pop()
+        if item is type(None):
+            choices.add(None)
+        elif get_origin(item) is Literal:
+            choices.update(get_args(item))
+        else:
+            pending.extend(get_args(item))
+    return choices
 
 
 def test_unified_correct_documents_every_explicit_parameter_for_editor_hover() -> None:
@@ -51,7 +65,7 @@ def test_correct_file_documents_every_parameter_for_editor_hover() -> None:
 def test_correct_file_exposes_canonical_string_choices() -> None:
     hints = get_type_hints(correct_file)
 
-    assert set(get_args(hints["wavelength_medium"])) == {
+    assert _string_choices(hints["wavelength_medium"]) == {
         "vacuum",
         "vac",
         "air",

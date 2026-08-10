@@ -101,7 +101,7 @@ AUTO_WAVELENGTH_MIN_REGION_FRACTION = 0.5
 
 InputSpectrumFormat = Literal["txt", "dat", "csv", "ascii", "ecsv", "fits", "fit", "fz"]
 WavelengthMedium = Literal["vacuum", "vac", "air"]
-OptionalWavelengthMedium = Literal["vacuum", "vac", "air", None]
+OptionalWavelengthMedium = Literal["vacuum", "vac", "air"] | None
 ContinuumSolveMode = bool | Literal["auto"]
 LSFSigmaInput = float | Literal["auto"]
 LSFLorentzInput = float | Literal["auto"]
