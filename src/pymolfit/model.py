@@ -372,6 +372,56 @@ def transmission_from_high_resolution_basis(
         species_scales=species_scales,
         airmass=airmass,
     )
+    observed_transmission = observe_high_resolution_values(
+        observed,
+        highres,
+        raw_highres_transmission,
+        lsf_sigma_pixels=lsf_sigma_pixels,
+        lsf_box_width_pixels=lsf_box_width_pixels,
+        lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
+        highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
+        lsf_variable_width=lsf_variable_width,
+        lsf_reference_wavelength_micron=lsf_reference_wavelength_micron,
+        lsf_wavelength_exponent=lsf_wavelength_exponent,
+        lsf_kernel_width_fwhm=lsf_kernel_width_fwhm,
+        lsf_molecfit_voigt=lsf_molecfit_voigt,
+        rebin_mode=mode,
+        rebin_plan=rebin_plan,
+        model_wavelength_micron=model_wavelength_micron,
+        native_to_model_plan=native_to_model_plan,
+    )
+    return np.clip(observed_transmission, 0.0, 1.0)
+
+
+def observe_high_resolution_values(
+    observed_wavelength_micron: np.ndarray,
+    highres_wavelength_micron: np.ndarray,
+    highres_values: np.ndarray,
+    *,
+    lsf_sigma_pixels: float = 0.0,
+    lsf_box_width_pixels: float = 0.0,
+    lsf_lorentz_fwhm_pixels: float = 0.0,
+    highres_pixels_per_observed_pixel: float,
+    lsf_variable_width: bool = False,
+    lsf_reference_wavelength_micron: float | None = None,
+    lsf_wavelength_exponent: float = 1.0,
+    lsf_kernel_width_fwhm: float = 3.0,
+    lsf_molecfit_voigt: bool = False,
+    rebin_mode: str = "integrate",
+    rebin_plan: PiecewiseConstantRebinPlan | None = None,
+    model_wavelength_micron: np.ndarray | None = None,
+    native_to_model_plan: SampleAverageRebinPlan | None = None,
+) -> np.ndarray:
+    """Apply the configured detector rebinning and LSF to arbitrary values."""
+
+    if highres_pixels_per_observed_pixel <= 0:
+        raise ValueError("highres_pixels_per_observed_pixel must be positive")
+    observed = np.asarray(observed_wavelength_micron, dtype=float)
+    highres = np.asarray(highres_wavelength_micron, dtype=float)
+    values = np.asarray(highres_values, dtype=float)
+    if values.shape != highres.shape:
+        raise ValueError("highres_values must match highres_wavelength_micron")
+    mode = _normalized_high_resolution_rebin_mode(rebin_mode)
     if mode == "molecfit_overlap":
         # mf_convolution first overlap-rebins the LBLRTM model directly onto
         # detector wavelengths and only then applies the synthetic kernel.
@@ -380,9 +430,9 @@ def transmission_from_high_resolution_basis(
             and rebin_plan.input_indices.size == highres.size
         )
         rebinned = (
-            rebin_plan.apply(raw_highres_transmission)
+            rebin_plan.apply(values)
             if plan_matches_native_grid
-            else rebin_piecewise_constant_values(observed, highres, raw_highres_transmission)
+            else rebin_piecewise_constant_values(observed, highres, values)
         )
         detector_wavelength = observed
         trim_start = 0
@@ -418,24 +468,24 @@ def transmission_from_high_resolution_basis(
             raise RuntimeError(
                 "overlap rebin/convolution output does not match the observed grid"
             )
-        return np.clip(convolved, 0.0, 1.0)
+        return convolved
 
     if model_wavelength_micron is None:
         model_wavelength = highres
-        model_transmission = raw_highres_transmission
+        model_values = values
     else:
         model_wavelength = np.asarray(model_wavelength_micron, dtype=float)
         if native_to_model_plan is None:
-            model_transmission = average_high_resolution_values(
+            model_values = average_high_resolution_values(
                 model_wavelength,
                 highres,
-                raw_highres_transmission,
+                values,
             )
         else:
-            model_transmission = native_to_model_plan.apply(raw_highres_transmission)
+            model_values = native_to_model_plan.apply(values)
 
-    model_transmission = convolve_lsf(
-        model_transmission,
+    model_values = convolve_lsf(
+        model_values,
         gaussian_sigma_pixels=lsf_sigma_pixels * highres_pixels_per_observed_pixel,
         box_width_pixels=lsf_box_width_pixels * highres_pixels_per_observed_pixel,
         lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels * highres_pixels_per_observed_pixel,
@@ -447,11 +497,11 @@ def transmission_from_high_resolution_basis(
         molecfit_voigt=lsf_molecfit_voigt,
     )
     if mode == "integrate":
-        return rebin_high_resolution_values(observed, model_wavelength, model_transmission)
+        return rebin_high_resolution_values(observed, model_wavelength, model_values)
     if mode == "center":
-        return sample_high_resolution_values(observed, model_wavelength, model_transmission)
+        return sample_high_resolution_values(observed, model_wavelength, model_values)
     if mode == "sample_average":
-        return average_high_resolution_values(observed, model_wavelength, model_transmission)
+        return average_high_resolution_values(observed, model_wavelength, model_values)
     raise AssertionError(f"unhandled high-resolution rebin mode {mode!r}")
 
 

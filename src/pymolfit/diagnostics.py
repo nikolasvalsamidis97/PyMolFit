@@ -114,6 +114,41 @@ def format_fit_summary(
     wavelength_alignment = _mapping(provenance.get("wavelength_alignment"))
     segmentation = _mapping(provenance.get("segmentation"))
     fit_quality = _mapping(provenance.get("fit_quality"))
+    stellar_template = _mapping(provenance.get("stellar_template"))
+    stellar_template_lines: tuple[str, ...] = ()
+    if stellar_template:
+        weighted_stellar_mask = bool(
+            stellar_template.get("confidence_weighted_masking", False)
+        )
+        stellar_template_lines = (
+            "  stellar template: "
+            f"{_format_scalar(stellar_template.get('source'))}",
+            "  stellar use: "
+            + (
+                "joint stellar x atmosphere forward model"
+                if stellar_template.get("joint_forward_model", False)
+                else "confidence-weighted telluric fit mask"
+            ),
+            "  stellar broadening/alignment: "
+            f"RV={_format_scalar(stellar_template.get('radial_velocity_kms'))} km/s, "
+            f"v sin(i)={_format_scalar(stellar_template.get('vsini_kms'))} km/s, "
+            "residual="
+            f"{_format_scalar(stellar_template.get('residual_velocity_kms'))} km/s",
+            (
+                "  stellar confidence weights: "
+                f"floor={_format_scalar(stellar_template.get('confidence_weight_floor'))}, "
+                f"median={_format_scalar(stellar_template.get('fit_weight_median'))}, "
+                f"template regions={_format_scalar(stellar_template.get('exclude_region_count'))}"
+                if weighted_stellar_mask
+                else
+                "  stellar exclusions: "
+                f"{_format_scalar(stellar_template.get('exclude_region_count'))} regions, "
+                f"{_format_scalar(stellar_template.get('masked_pixel_count'))} pixels "
+                f"(depth >= {_format_scalar(stellar_template.get('mask_depth'))}, "
+                f"padding={_format_scalar(stellar_template.get('mask_padding_kms'))} "
+                f"km/s, {_format_scalar(stellar_template.get('mask_padding_mode'))})"
+            ),
+        )
 
     wavelength = result.spectrum.to_unit("micron").wavelength
     finite_wavelength = wavelength[np.isfinite(wavelength)]
@@ -171,6 +206,7 @@ def format_fit_summary(
             f"{_summarize_ranges(config.get('fit_ranges'), automatic_label='automatic (all valid pixels)')}",
             "  excluded ranges (observatory vacuum micron): "
             f"{_summarize_ranges(config.get('exclude_ranges'), automatic_label='none')}",
+            *stellar_template_lines,
             "  segmentation: "
             + (
                 f"{_format_scalar(segmentation.get('segment_count'))} automatic segments; "

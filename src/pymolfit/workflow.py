@@ -42,6 +42,7 @@ from .fit import (
     DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH,
     FitConfig,
     MultiTelluricFitResult,
+    StellarForwardModel,
     TelluricFitResult,
     _apply_multi_fit_to_segment,
     _fit_metrics,
@@ -69,8 +70,9 @@ from .physics import (
     wavelength_micron_to_wavenumber_cm,
 )
 from .plotting import plot_fit
-from .regions import load_region_file
+from .regions import RegionSelection, load_region_file
 from .spectrum import Spectrum, normalize_wavelength_medium
+from .theoretical import StellarMaskResult, TheoreticalSpectrum
 
 
 DEFAULT_SEGMENT_SIZE_MICRON = 0.005
@@ -237,6 +239,8 @@ def correct_arrays(
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     region_file: str | Path | None = None,
+    theoretical_spectrum: TheoreticalSpectrum | None = None,
+    stellar_mask_path: str | Path | None = None,
     loss: LeastSquaresLoss = "linear",
     f_scale: float = 1.0,
     ftol: float = 1.0e-10,
@@ -379,6 +383,9 @@ def correct_arrays(
         lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
         fit_ranges=fit_ranges,
         exclude_ranges=exclude_ranges,
+        theoretical_spectrum=theoretical_spectrum,
+        stellar_mask_path=stellar_mask_path,
+        joint_stellar_model=False,
         loss=loss,
         f_scale=f_scale,
         ftol=ftol,
@@ -496,6 +503,8 @@ def correct_file(
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     region_file: str | Path | None = None,
+    theoretical_spectrum: TheoreticalSpectrum | None = None,
+    stellar_mask_path: str | Path | None = None,
     loss: LeastSquaresLoss = "linear",
     f_scale: float = 1.0,
     ftol: float = 1.0e-10,
@@ -618,6 +627,8 @@ def correct_file(
     :param fit_ranges: Wavelength intervals whose observed telluric features constrain molecular columns, wavelength alignment, LSF, and continuum; supply ``((start, stop), ...)`` in microns and the declared input medium, or ``None`` to let every valid pixel influence those fitted parameters.
     :param exclude_ranges: Wavelength intervals ignored only while estimating fit parameters, normally to protect stellar/circumstellar lines, detector defects, or saturated pixels; values are in microns/input medium and the final atmospheric correction is still evaluated there.
     :param region_file: Optional PyMolFit ECSV file created by ``select_telluric_regions``. Its native wavelength unit and air/vacuum medium are converted to the input spectrum coordinates. Do not combine it with ``fit_ranges`` or ``exclude_ranges``.
+    :param theoretical_spectrum: Optional ``TheoreticalSpectrum`` used to identify stellar features represented by the supplied model that must not constrain atmospheric parameters. The broadened template creates additional exclusion regions only; it never replaces science flux and correction is still evaluated at those wavelengths.
+    :param stellar_mask_path: Optional ECSV path for the automatically generated stellar exclusion regions in the input spectrum's native wavelength coordinates.
     :param loss: Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
     :param f_scale: Residual scale separating normal points from downweighted outliers for robust losses; larger values treat more residuals as normal and smaller values reject deviations more aggressively. It has no effect for ``loss="linear"``.
     :param ftol: Positive relative cost-change tolerance for optimizer termination.
@@ -761,6 +772,9 @@ def correct_file(
         lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
         fit_ranges=fit_ranges,
         exclude_ranges=exclude_ranges,
+        theoretical_spectrum=theoretical_spectrum,
+        stellar_mask_path=stellar_mask_path,
+        joint_stellar_model=False,
         loss=loss,
         f_scale=f_scale,
         ftol=ftol,
@@ -894,6 +908,9 @@ def correct(
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     region_file: str | Path | None = None,
+    theoretical_spectrum: TheoreticalSpectrum | None = None,
+    stellar_mask_path: str | Path | None = None,
+    joint_stellar_model: bool = False,
     loss: LeastSquaresLoss = "linear",
     f_scale: float = 1.0,
     ftol: float = 1.0e-10,
@@ -947,6 +964,16 @@ def correct(
         exclusion regions selected in the input spectrum's wavelength
         coordinates. Do not combine it with explicit ``fit_ranges`` or
         ``exclude_ranges``.
+    :param theoretical_spectrum: Optional broadened stellar template whose
+        predicted astrophysical features are excluded from telluric parameter
+        estimation without changing the science flux.
+    :param stellar_mask_path: Optional ECSV output for the generated stellar
+        exclusions in the input spectrum's native wavelength coordinates.
+    :param joint_stellar_model: When ``True``, fit the supplied theoretical
+        spectrum multiplicatively with the atmospheric transmission and
+        continuum. This can separate overlapping stellar and telluric lines.
+        It requires ``theoretical_spectrum`` and is disabled by default. The
+        corrected science flux still divides out only atmospheric transmission.
     :param output_path: Optional compact text output containing wavelength and
         corrected flux.
     :param product_path: Optional full fit-product output containing model,
@@ -1074,6 +1101,8 @@ def correct(
         "lsf_lorentz_fwhm_bounds": lsf_lorentz_fwhm_bounds,
         "fit_ranges": fit_ranges,
         "exclude_ranges": exclude_ranges,
+        "theoretical_spectrum": theoretical_spectrum,
+        "stellar_mask_path": stellar_mask_path,
         "loss": loss,
         "f_scale": f_scale,
         "ftol": ftol,
@@ -1082,12 +1111,13 @@ def correct(
         "estimate_uncertainties": estimate_uncertainties,
     }
 
-    if has_path:
-        if uncertainty is not None or mask is not None or group_id is not None:
-            raise ValueError(
-                "uncertainty, mask, and group_id arrays cannot be combined with input_path; "
-                "load the file as arrays or identify its uncertainty column"
-            )
+    if has_path and any(value is not None for value in (uncertainty, mask, group_id)):
+        raise ConfigurationError(
+            "uncertainty, mask, and group_id arrays cannot be combined with input_path; "
+            "load the file as arrays or identify its uncertainty column"
+        )
+
+    if has_path and not joint_stellar_model:
         return correct_file(
             input_path=input_path,
             output_path=output_path,
@@ -1105,6 +1135,64 @@ def correct(
             show_plot=show_plot,
             report=report,
             **fit_options,
+        )
+
+    if has_path:
+        atmosphere_header = _load_fits_header_if_available(
+            input_path,
+            input_format,
+            hdu=hdu,
+        )
+        if observation is not None:
+            atmosphere_header = observation.to_header(atmosphere_header)
+        resolved_medium = _resolve_wavelength_medium(
+            wavelength_medium,
+            atmosphere_header,
+            wavelength_col=wavelength_col,
+        )
+        loaded = load_spectrum(
+            input_path,
+            format=input_format,
+            wavelength_col=wavelength_col,
+            flux_col=flux_col,
+            uncertainty_col=uncertainty_col,
+            hdu=hdu,
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=resolved_medium,
+            image_index=image_index,
+            save_header=False,
+        )
+        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+            region_file=region_file,
+            fit_ranges=fit_ranges,
+            exclude_ranges=exclude_ranges,
+            spectrum=loaded,
+        )
+        path_options = {
+            **fit_options,
+            "fit_ranges": resolved_fit_ranges,
+            "exclude_ranges": resolved_exclude_ranges,
+            "pwv_mm": (
+                observation.pwv_mm
+                if pwv_mm is None and observation is not None
+                else pwv_mm
+            ),
+        }
+        result = _correct_spectrum_workflow(
+            loaded,
+            atmosphere_header=atmosphere_header,
+            joint_stellar_model=True,
+            **path_options,
+        )
+        return _finalize_correction(
+            result,
+            input_label=input_path,
+            output_path=output_path,
+            product_path=product_path,
+            product_format=product_format,
+            plot_path=plot_path,
+            show_plot=show_plot,
+            report=report,
         )
 
     if has_spectrum:
@@ -1158,6 +1246,7 @@ def correct(
         result = _correct_spectrum_workflow(
             spectrum,
             atmosphere_header=atmosphere_header,
+            joint_stellar_model=joint_stellar_model,
             **spectrum_options,
         )
         return _finalize_correction(
@@ -1193,18 +1282,48 @@ def correct(
             "input_format and column selectors apply only to input_path"
         )
 
-    result = correct_arrays(
-        wavelength=np.asarray(wavelength, dtype=float),
-        flux=np.asarray(flux, dtype=float),
-        uncertainty=uncertainty,
-        mask=mask,
-        group_id=group_id,
-        wavelength_unit=wavelength_unit,
-        wavelength_medium=wavelength_medium,
-        observation=observation,
-        region_file=region_file,
-        **fit_options,
-    )
+    if joint_stellar_model:
+        array_spectrum = Spectrum(
+            wavelength=np.asarray(wavelength, dtype=float),
+            flux=np.asarray(flux, dtype=float),
+            uncertainty=uncertainty,
+            mask=mask,
+            group_id=group_id,
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=wavelength_medium,
+            meta={"observation": observation.to_header()},
+        )
+        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+            region_file=region_file,
+            fit_ranges=fit_ranges,
+            exclude_ranges=exclude_ranges,
+            spectrum=array_spectrum,
+        )
+        array_options = {
+            **fit_options,
+            "fit_ranges": resolved_fit_ranges,
+            "exclude_ranges": resolved_exclude_ranges,
+            "pwv_mm": observation.pwv_mm if pwv_mm is None else pwv_mm,
+        }
+        result = _correct_spectrum_workflow(
+            array_spectrum,
+            atmosphere_header=observation.to_header(),
+            joint_stellar_model=True,
+            **array_options,
+        )
+    else:
+        result = correct_arrays(
+            wavelength=np.asarray(wavelength, dtype=float),
+            flux=np.asarray(flux, dtype=float),
+            uncertainty=uncertainty,
+            mask=mask,
+            group_id=group_id,
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=wavelength_medium,
+            observation=observation,
+            region_file=region_file,
+            **fit_options,
+        )
     return _finalize_correction(
         result,
         input_label="<wavelength/flux arrays>",
@@ -1360,6 +1479,9 @@ def _correct_spectrum_workflow(
     lsf_lorentz_fwhm_bounds: tuple[float, float] | None,
     fit_ranges: tuple[tuple[float, float], ...] | None,
     exclude_ranges: tuple[tuple[float, float], ...] | None,
+    theoretical_spectrum: TheoreticalSpectrum | None,
+    stellar_mask_path: str | Path | None,
+    joint_stellar_model: bool,
     loss: str,
     f_scale: float,
     ftol: float,
@@ -1367,6 +1489,15 @@ def _correct_spectrum_workflow(
     gtol: float,
     estimate_uncertainties: bool,
 ) -> TelluricFitResult:
+    if stellar_mask_path is not None and theoretical_spectrum is None:
+        raise ConfigurationError(
+            "stellar_mask_path requires theoretical_spectrum=TheoreticalSpectrum(...)"
+        )
+    if joint_stellar_model and theoretical_spectrum is None:
+        raise ConfigurationError(
+            "joint_stellar_model=True requires "
+            "theoretical_spectrum=TheoreticalSpectrum(...)"
+        )
     _validate_correction_options(
         spectrum,
         continuum_order=continuum_order,
@@ -1390,10 +1521,68 @@ def _correct_spectrum_workflow(
         aer_timeout_s=aer_timeout_s,
         gdas_download_timeout_s=gdas_download_timeout_s,
     )
+    input_spectrum = spectrum
     input_medium = spectrum.wavelength_medium
     fit_ranges = _ranges_to_observatory_vacuum(fit_ranges, input_medium, atmosphere_header)
     exclude_ranges = _ranges_to_observatory_vacuum(exclude_ranges, input_medium, atmosphere_header)
     spectrum = _spectrum_to_observatory_vacuum(spectrum, atmosphere_header)
+    stellar_mask_result: StellarMaskResult | None = None
+    stellar_fit_weights: np.ndarray | None = None
+    stellar_forward_model: StellarForwardModel | None = None
+    if theoretical_spectrum is not None:
+        resolution = _estimate_lsf_sigma_from_resolving_power(
+            spectrum,
+            atmosphere_header,
+        )
+        resolving_power = (
+            None
+            if resolution is None
+            else float(resolution["resolving_power"])
+        )
+        stellar_mask_result = theoretical_spectrum.build_mask(
+            spectrum,
+            frame_correction_factor=_stellar_template_frame_correction_factor(
+                spectrum,
+                atmosphere_header,
+            ),
+            resolving_power=resolving_power,
+        )
+        if joint_stellar_model:
+            stellar_forward_model = StellarForwardModel(
+                wavelength_micron=np.asarray(
+                    stellar_mask_result.intrinsic_wavelength_micron,
+                    dtype=float,
+                ),
+                normalized_flux=np.asarray(
+                    stellar_mask_result.intrinsic_normalized_flux,
+                    dtype=float,
+                ),
+            )
+        if theoretical_spectrum.confidence_weighted_masking:
+            stellar_fit_weights = stellar_mask_result.fit_weights
+            if stellar_fit_weights is None:
+                raise RuntimeError(
+                    "confidence-weighted stellar masking did not produce weights"
+                )
+        else:
+            exclude_ranges = _merge_exclusion_ranges(
+                exclude_ranges,
+                stellar_mask_result.selection.exclude_ranges,
+            )
+        masked_fraction = float(
+            stellar_mask_result.diagnostics.get("masked_fraction_of_covered", 0.0)
+        )
+        if masked_fraction > 0.75:
+            warnings.warn(
+                "The theoretical stellar template excludes more than 75 percent "
+                "of covered pixels; consider increasing mask_depth.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        if stellar_mask_path is not None:
+            stellar_mask_result.selection_for_spectrum(input_spectrum).write(
+                stellar_mask_path
+            )
     spectrum_wavenumber = wavelength_micron_to_wavenumber_cm(
         spectrum.to_unit("micron").wavelength
     )
@@ -1808,6 +1997,18 @@ def _correct_spectrum_workflow(
         auto_select_wavelength_model = False
 
     def run_fit(config: FitConfig) -> TelluricFitResult:
+        single_fit_options = {
+            **(
+                {}
+                if stellar_fit_weights is None
+                else {"fit_weights": stellar_fit_weights}
+            ),
+            **(
+                {}
+                if stellar_forward_model is None
+                else {"stellar_model": stellar_forward_model}
+            ),
+        }
         per_segment_wavelength_fit = bool(
             config.fit_segment_wavelength_shifts
             or config.fit_segment_wavelength_polynomial
@@ -1821,12 +2022,14 @@ def _correct_spectrum_workflow(
                 spectrum,
                 line_list=resolved_line_list,
                 config=config,
+                **single_fit_options,
             )
         if not resolved_high_resolution_grid and not per_segment_wavelength_fit:
             return fit_tellurics(
                 spectrum,
                 line_list=resolved_line_list,
                 config=config,
+                **single_fit_options,
             )
         segments = physical_group_preview or _split_spectrum(
             spectrum,
@@ -1844,6 +2047,7 @@ def _correct_spectrum_workflow(
                 spectrum,
                 line_list=resolved_line_list,
                 config=config,
+                **single_fit_options,
             )
         active = tuple(
             _segment_has_fit_pixels(segment, config)
@@ -1860,6 +2064,28 @@ def _correct_spectrum_workflow(
                 zip(segments, active, strict=True)
             )
             if is_active
+        )
+        active_fit_weights = (
+            None
+            if stellar_fit_weights is None
+            else tuple(
+                _weights_for_segment(
+                    spectrum,
+                    stellar_fit_weights,
+                    segment,
+                )
+                for segment, is_active in zip(segments, active, strict=True)
+                if is_active
+            )
+        )
+        active_stellar_models = (
+            None
+            if stellar_forward_model is None
+            else tuple(
+                stellar_forward_model
+                for segment, is_active in zip(segments, active, strict=True)
+                if is_active
+            )
         )
         physical_group_bounds = {
             int(segment.meta.get("physical_group_index", index)): tuple(
@@ -1887,6 +2113,8 @@ def _correct_spectrum_workflow(
             active_segments,
             line_list=resolved_line_list,
             config=config,
+            fit_weights=active_fit_weights,
+            stellar_models=active_stellar_models,
             global_wavelength_bounds=full_bounds,
             wavelength_group_ids=active_group_ids,
             wavelength_group_bounds=physical_group_bounds,
@@ -1900,6 +2128,11 @@ def _correct_spectrum_workflow(
                 line_list=resolved_line_list,
                 config=config,
                 fit_result=multi_result,
+                stellar_model=(
+                    None
+                    if stellar_forward_model is None
+                    else stellar_forward_model
+                ),
                 global_wavelength_bounds=full_bounds,
                 wavelength_group_id=int(
                     segment.meta.get("physical_group_index", segment_index)
@@ -1936,16 +2169,33 @@ def _correct_spectrum_workflow(
             "selection_reason": "detected_independent_order_or_detector_groups",
             "physical_group_count": len(physical_group_ids),
         }
+    pilot_fit_config = fit_config
+    if stellar_fit_weights is not None and stellar_mask_result is not None:
+        pilot_fit_config = replace(
+            fit_config,
+            exclude_ranges=_merge_exclusion_ranges(
+                fit_config.exclude_ranges,
+                stellar_mask_result.selection.exclude_ranges,
+            ),
+        )
     if auto_select_wavelength_model:
         try:
-            fit_config, wavelength_model_resolution = (
+            selected_config, wavelength_model_resolution = (
                 _select_wavelength_model_from_pilots(
                     spectrum,
                     line_list=resolved_line_list,
-                    config=fit_config,
+                    config=pilot_fit_config,
                     segment_size=segment_size,
                     resolution=wavelength_model_resolution,
                 )
+            )
+            fit_config = replace(
+                selected_config,
+                exclude_ranges=fit_config.exclude_ranges,
+            )
+            pilot_fit_config = replace(
+                selected_config,
+                exclude_ranges=pilot_fit_config.exclude_ranges,
             )
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
             fit_config = replace(
@@ -1978,14 +2228,22 @@ def _correct_spectrum_workflow(
 
     if auto_select_lsf_variable_width:
         try:
-            fit_config, lsf_variable_width_resolution = (
+            selected_config, lsf_variable_width_resolution = (
                 _select_lsf_variable_width_from_pilots(
                     spectrum,
                     line_list=resolved_line_list,
-                    config=fit_config,
+                    config=pilot_fit_config,
                     segment_size=segment_size,
                     resolution=lsf_variable_width_resolution,
                 )
+            )
+            fit_config = replace(
+                selected_config,
+                exclude_ranges=fit_config.exclude_ranges,
+            )
+            pilot_fit_config = replace(
+                selected_config,
+                exclude_ranges=pilot_fit_config.exclude_ranges,
             )
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
             fit_config = replace(
@@ -2009,12 +2267,20 @@ def _correct_spectrum_workflow(
 
     if auto_select_lsf_lorentz:
         try:
-            fit_config, lsf_lorentz_resolution = _select_lsf_lorentz_from_pilots(
+            selected_config, lsf_lorentz_resolution = _select_lsf_lorentz_from_pilots(
                 spectrum,
                 line_list=resolved_line_list,
-                config=fit_config,
+                config=pilot_fit_config,
                 segment_size=segment_size,
                 resolution=lsf_lorentz_resolution,
+            )
+            fit_config = replace(
+                selected_config,
+                exclude_ranges=fit_config.exclude_ranges,
+            )
+            pilot_fit_config = replace(
+                selected_config,
+                exclude_ranges=pilot_fit_config.exclude_ranges,
             )
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
             lsf_lorentz_resolution = {
@@ -2176,6 +2442,16 @@ def _correct_spectrum_workflow(
         provenance={
             **dict(selected_result.provenance),
             "fit_quality": quality,
+            **(
+                {}
+                if stellar_mask_result is None
+                else {
+                    "stellar_template": dict(
+                        stellar_mask_result.diagnostics
+                    )
+                    | {"joint_forward_model": bool(joint_stellar_model)}
+                }
+            ),
         },
     )
 
@@ -4037,6 +4313,51 @@ def _split_spectrum(
     )
 
 
+def _weights_for_segment(
+    parent: Spectrum,
+    parent_weights: np.ndarray,
+    segment: Spectrum,
+) -> np.ndarray:
+    """Map parent-grid fit weights onto a sorted numerical segment."""
+
+    weights = np.asarray(parent_weights, dtype=float)
+    if weights.shape != parent.wavelength.shape:
+        raise ValueError("parent fit weights must match the parent spectrum")
+    parent_unit = parent.to_unit("micron")
+    segment_unit = segment.to_unit("micron")
+    if parent_unit.group_id is None or segment_unit.group_id is None:
+        candidate_indices = np.arange(parent_unit.wavelength.size)
+    else:
+        segment_groups = np.unique(segment_unit.group_id)
+        candidate_indices = np.flatnonzero(
+            np.isin(parent_unit.group_id, segment_groups)
+        )
+        if candidate_indices.size == 0:
+            raise RuntimeError("segment group was not found on the parent spectrum")
+    order = candidate_indices[
+        np.argsort(parent_unit.wavelength[candidate_indices], kind="stable")
+    ]
+    parent_wavelength = parent_unit.wavelength[order]
+    sorted_weights = weights[order]
+    indices = np.searchsorted(parent_wavelength, segment_unit.wavelength)
+    indices = np.clip(indices, 0, parent_wavelength.size - 1)
+    left = np.maximum(indices - 1, 0)
+    choose_left = (
+        np.abs(parent_wavelength[left] - segment_unit.wavelength)
+        < np.abs(parent_wavelength[indices] - segment_unit.wavelength)
+    )
+    indices = np.where(choose_left, left, indices)
+    tolerance = 32.0 * np.finfo(float).eps * np.maximum(
+        1.0,
+        np.abs(segment_unit.wavelength),
+    )
+    if np.any(
+        np.abs(parent_wavelength[indices] - segment_unit.wavelength) > tolerance
+    ):
+        raise RuntimeError("could not map stellar fit weights onto a segment")
+    return sorted_weights[indices]
+
+
 def _width_chunk_ranges(
     wavelength: np.ndarray,
     *,
@@ -4287,6 +4608,16 @@ def _stitch_segment_results(
     transmission = np.concatenate([item.transmission for item in segment_results])
     continuum = np.concatenate([item.continuum for item in segment_results])
     model_flux = np.concatenate([item.model_flux for item in segment_results])
+    stellar_model = None
+    if any(item.stellar_model is not None for item in segment_results):
+        stellar_model = np.concatenate(
+            [
+                np.ones(item.spectrum.wavelength.size, dtype=float)
+                if item.stellar_model is None
+                else np.asarray(item.stellar_model, dtype=float)
+                for item in segment_results
+            ]
+        )
     fit_mask = np.concatenate(
         [
             np.zeros(item.spectrum.wavelength.size, dtype=bool)
@@ -4295,6 +4626,16 @@ def _stitch_segment_results(
             for item in segment_results
         ]
     )
+    fit_weights = None
+    if any(item.fit_weights is not None for item in segment_results):
+        fit_weights = np.concatenate(
+            [
+                np.ones(item.spectrum.wavelength.size, dtype=float)
+                if item.fit_weights is None
+                else np.asarray(item.fit_weights, dtype=float)
+                for item in segment_results
+            ]
+        )
     transmission_uncertainty = None
     if all(item.transmission_uncertainty is not None for item in segment_results):
         transmission_uncertainty = np.concatenate(
@@ -4366,6 +4707,8 @@ def _stitch_segment_results(
         reduced_chi_square=float(result.reduced_chi_square),
         covariance_rank=int(result.covariance_rank),
         fit_mask=fit_mask,
+        fit_weights=fit_weights,
+        stellar_model=stellar_model,
         parameter_bound_status=dict(result.parameter_bound_status),
         wavelength_group_coefficients={
             key: np.asarray(value, dtype=float)
@@ -4767,6 +5110,53 @@ def _resolve_region_file_ranges(
         converted.fit_ranges or None,
         converted.exclude_ranges or None,
     )
+
+
+def _merge_exclusion_ranges(
+    first: tuple[tuple[float, float], ...] | None,
+    second: tuple[tuple[float, float], ...] | None,
+) -> tuple[tuple[float, float], ...] | None:
+    combined = tuple(first or ()) + tuple(second or ())
+    if not combined:
+        return None
+    return RegionSelection(
+        exclude_ranges=combined,
+        wavelength_unit="micron",
+        wavelength_medium="vacuum",
+    ).exclude_ranges
+
+
+def _stellar_template_frame_correction_factor(
+    observatory_spectrum: Spectrum,
+    header: Mapping[str, object] | None,
+) -> float:
+    """Return the barycentric-to-observatory factor for a stellar template."""
+
+    applied = observatory_spectrum.meta.get("observatory_erf_factor")
+    try:
+        applied_value = float(applied)
+    except (TypeError, ValueError):
+        applied_value = np.nan
+    if np.isfinite(applied_value) and applied_value > 0:
+        return applied_value
+    if header is None:
+        return 1.0
+
+    velocity_km_s = _first_header_float(
+        header,
+        (
+            "ESO DRS BERV",
+            "HIERARCH ESO DRS BERV",
+            "BERV",
+            "BARYCORR",
+        ),
+    )
+    if not np.isfinite(velocity_km_s):
+        velocity_km_s = _barycentric_velocity_from_header_km_s(header)
+    if not np.isfinite(velocity_km_s):
+        return 1.0
+    speed_of_light_km_s = SPEED_OF_LIGHT_M_PER_S / 1000.0
+    return float((1.0 + 1.55e-8) * (1.0 + velocity_km_s / speed_of_light_km_s))
 
 
 def _first_header_float(header: Mapping[str, object], keys: tuple[str, ...]) -> float:

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from astropy.table import Table
@@ -20,6 +20,9 @@ from .spectrum import (
     vacuum_to_air_wavelength,
     wavelength_scale_to_micron,
 )
+
+if TYPE_CHECKING:
+    from .theoretical import StellarMaskResult, TheoreticalSpectrum
 
 RegionKind = Literal["fit", "exclude"]
 RegionRanges = tuple[tuple[float, float], ...]
@@ -241,6 +244,7 @@ class InteractiveRegionSelector:
         self,
         spectrum: Spectrum,
         *,
+        theoretical_spectrum: TheoreticalSpectrum | None = None,
         output_path: str | Path | None = None,
         initial_regions: RegionSelection | None = None,
         title: str | None = None,
@@ -250,6 +254,7 @@ class InteractiveRegionSelector:
         automatic_region_half_width_pixels: float = (
             DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS
         ),
+        enable_theoretical_controls: bool = False,
         show: bool = True,
     ) -> None:
         try:
@@ -283,7 +288,13 @@ class InteractiveRegionSelector:
         self._plt = plt
         self._mode: RegionKind | Literal["delete"] = "fit"
         self._records: list[tuple[RegionKind, float, float]] = []
-        self._history: list[list[tuple[RegionKind, float, float]]] = []
+        self._stellar_records: list[tuple[RegionKind, float, float]] = []
+        self._history: list[
+            tuple[
+                list[tuple[RegionKind, float, float]],
+                list[tuple[RegionKind, float, float]],
+            ]
+        ] = []
         self._patches: list[object] = []
         self._region_labels: list[object] = []
         self._telluric_marker_count = 0
@@ -292,6 +303,18 @@ class InteractiveRegionSelector:
         self._automatic_region_half_width_pixels = float(
             automatic_region_half_width_pixels
         )
+        self._theoretical_spectrum = theoretical_spectrum
+        self._stellar_mask_result: StellarMaskResult | None = None
+        self.stellar_rv_box = None
+        self.stellar_vsini_box = None
+        self.stellar_resolving_power_box = None
+        self.stellar_mask_depth_box = None
+        self.stellar_padding_box = None
+        self.stellar_limb_darkening_box = None
+        self.stellar_continuum_window_box = None
+        self.stellar_velocity_search_box = None
+        self.stellar_alignment_checkbox = None
+        self.stellar_update_button = None
 
         if initial_regions is not None:
             converted = initial_regions.converted(
@@ -307,10 +330,15 @@ class InteractiveRegionSelector:
                 for lower, upper in converted.exclude_ranges
             )
 
-        self.figure, self.axis = plt.subplots(figsize=(13, 6))
+        has_stellar_controls = (
+            theoretical_spectrum is not None and enable_theoretical_controls
+        )
+        self.figure, self.axis = plt.subplots(
+            figsize=(17, 8) if has_stellar_controls else (13, 6)
+        )
         self.figure.subplots_adjust(
             left=0.08,
-            right=0.80,
+            right=0.72 if has_stellar_controls else 0.80,
             top=0.92,
             bottom=0.12,
         )
@@ -328,7 +356,16 @@ class InteractiveRegionSelector:
             title if title is not None else "Select telluric fitting regions"
         )
 
-        mode_axis = self.figure.add_axes((0.83, 0.72, 0.14, 0.17))
+        panel_left = 0.76 if has_stellar_controls else 0.83
+        panel_width = 0.21 if has_stellar_controls else 0.14
+        mode_axis = self.figure.add_axes(
+            (
+                panel_left,
+                0.77 if has_stellar_controls else 0.72,
+                panel_width,
+                0.14 if has_stellar_controls else 0.17,
+            )
+        )
         self.mode_buttons = RadioButtons(
             mode_axis,
             ("Fit", "Exclude", "Delete"),
@@ -336,13 +373,23 @@ class InteractiveRegionSelector:
         )
         self.mode_buttons.on_clicked(self._set_mode)
 
-        draw_axis = self.figure.add_axes((0.83, 0.645, 0.14, 0.055))
-        auto_count_axis = self.figure.add_axes((0.83, 0.575, 0.14, 0.05))
-        auto_axis = self.figure.add_axes((0.83, 0.51, 0.14, 0.05))
-        undo_axis = self.figure.add_axes((0.83, 0.445, 0.14, 0.05))
-        clear_axis = self.figure.add_axes((0.83, 0.38, 0.14, 0.05))
-        save_axis = self.figure.add_axes((0.83, 0.315, 0.14, 0.05))
-        save_name_axis = self.figure.add_axes((0.83, 0.245, 0.14, 0.05))
+        if has_stellar_controls:
+            draw_axis = self.figure.add_axes((panel_left, 0.705, panel_width, 0.045))
+            auto_count_axis = self.figure.add_axes((panel_left, 0.645, 0.10, 0.04))
+            auto_axis = self.figure.add_axes((0.87, 0.645, 0.10, 0.04))
+            undo_axis = self.figure.add_axes((panel_left, 0.25, 0.10, 0.04))
+            clear_axis = self.figure.add_axes((0.87, 0.25, 0.10, 0.04))
+            save_axis = self.figure.add_axes((panel_left, 0.135, panel_width, 0.04))
+            save_name_axis = self.figure.add_axes((panel_left, 0.19, panel_width, 0.04))
+            self.figure.text(panel_left, 0.233, "Output filename", fontsize=8)
+        else:
+            draw_axis = self.figure.add_axes((0.83, 0.645, 0.14, 0.055))
+            auto_count_axis = self.figure.add_axes((0.83, 0.575, 0.14, 0.05))
+            auto_axis = self.figure.add_axes((0.83, 0.51, 0.14, 0.05))
+            undo_axis = self.figure.add_axes((0.83, 0.445, 0.14, 0.05))
+            clear_axis = self.figure.add_axes((0.83, 0.38, 0.14, 0.05))
+            save_axis = self.figure.add_axes((0.83, 0.315, 0.14, 0.05))
+            save_name_axis = self.figure.add_axes((0.83, 0.245, 0.14, 0.05))
         self.draw_checkbox = CheckButtons(
             draw_axis,
             ("Draw regions",),
@@ -359,7 +406,7 @@ class InteractiveRegionSelector:
         self.save_button = Button(save_axis, "Save All")
         self.save_name_box = TextBox(
             save_name_axis,
-            "Filename ",
+            "" if has_stellar_controls else "Filename ",
             initial=(
                 self.output_path.name
                 if self.output_path is not None
@@ -374,9 +421,17 @@ class InteractiveRegionSelector:
         self.save_button.on_clicked(self._save_event)
         self.save_name_box.on_submit(self._set_output_filename)
 
+        if has_stellar_controls:
+            self._create_stellar_controls(
+                theoretical_spectrum,
+                text_box_type=TextBox,
+                check_buttons_type=CheckButtons,
+                button_type=Button,
+            )
+
         self.status_text = self.figure.text(
-            0.83,
-            0.205,
+            panel_left,
+            0.105 if has_stellar_controls else 0.205,
             "",
             ha="left",
             va="top",
@@ -405,6 +460,11 @@ class InteractiveRegionSelector:
         self.axis.set_ylim(data_ylim)
         self.axis.set_autoscalex_on(False)
         self.axis.set_autoscaley_on(False)
+        if theoretical_spectrum is not None:
+            self._replace_stellar_exclusions(
+                theoretical_spectrum,
+                remember=False,
+            )
         self._redraw_regions()
         if show:
             plt.show()
@@ -428,6 +488,229 @@ class InteractiveRegionSelector:
             wavelength_medium=self.spectrum.wavelength_medium,
             output_path=self.output_path,
         )
+
+    @property
+    def theoretical_spectrum(self) -> TheoreticalSpectrum | None:
+        """Return the template with the parameters currently shown in the UI."""
+
+        return self._theoretical_spectrum
+
+    @property
+    def stellar_mask_result(self) -> StellarMaskResult | None:
+        """Return the most recently prepared theoretical stellar mask."""
+
+        return self._stellar_mask_result
+
+    def update_stellar_mask(self) -> RegionRanges:
+        """Rebuild automatic stellar exclusions from the editable controls.
+
+        The existing automatic stellar exclusions are replaced while manually
+        selected fit and exclusion regions are preserved. ``mask_padding_kms``
+        controls the extra width around each detected stellar feature.
+        """
+
+        if self._theoretical_spectrum is None:
+            raise ValueError(
+                "the selector was not created with theoretical_spectrum"
+            )
+        if self.stellar_rv_box is None:
+            raise ValueError(
+                "theoretical controls are disabled; create the selector with "
+                "enable_theoretical_controls=True"
+            )
+        candidate = replace(
+            self._theoretical_spectrum,
+            radial_velocity_kms=self._stellar_float(
+                self.stellar_rv_box,
+                "radial velocity",
+            ),
+            vsini_kms=self._stellar_float(
+                self.stellar_vsini_box,
+                "v sin(i)",
+            ),
+            resolving_power=self._stellar_optional_float(
+                self.stellar_resolving_power_box,
+                "resolving power",
+            ),
+            mask_depth=self._stellar_auto_or_float(
+                self.stellar_mask_depth_box,
+                "mask depth",
+            ),
+            mask_padding_kms=self._stellar_auto_or_float(
+                self.stellar_padding_box,
+                "mask padding",
+            ),
+            limb_darkening=self._stellar_float(
+                self.stellar_limb_darkening_box,
+                "limb darkening",
+            ),
+            continuum_window_kms=self._stellar_float(
+                self.stellar_continuum_window_box,
+                "continuum window",
+            ),
+            velocity_search_kms=self._stellar_float(
+                self.stellar_velocity_search_box,
+                "velocity search",
+            ),
+            fit_velocity_offset=bool(
+                self.stellar_alignment_checkbox.get_status()[0]
+            ),
+        )
+        return self._replace_stellar_exclusions(candidate, remember=False)
+
+    def _create_stellar_controls(
+        self,
+        theoretical_spectrum: TheoreticalSpectrum,
+        *,
+        text_box_type: object,
+        check_buttons_type: object,
+        button_type: object,
+    ) -> None:
+        self.figure.text(
+            0.76,
+            0.615,
+            "Theoretical stellar mask",
+            fontsize=9,
+            fontweight="bold",
+        )
+        left = 0.76
+        right = 0.875
+        width = 0.095
+        height = 0.035
+        rows = (0.555, 0.495, 0.435, 0.375)
+
+        def text_box(
+            x_position: float,
+            y_position: float,
+            label: str,
+            initial: str,
+        ) -> object:
+            self.figure.text(
+                x_position,
+                y_position + height + 0.003,
+                label,
+                fontsize=8,
+            )
+            return text_box_type(
+                self.figure.add_axes(
+                    (x_position, y_position, width, height)
+                ),
+                "",
+                initial=initial,
+            )
+
+        self.stellar_rv_box = text_box(
+            left,
+            rows[0],
+            "Radial velocity [km/s]",
+            f"{theoretical_spectrum.radial_velocity_kms:g}",
+        )
+        self.stellar_vsini_box = text_box(
+            right,
+            rows[0],
+            "v sin(i) [km/s]",
+            f"{theoretical_spectrum.vsini_kms:g}",
+        )
+        self.stellar_resolving_power_box = text_box(
+            left,
+            rows[1],
+            "Resolving power R",
+            _optional_parameter_text(theoretical_spectrum.resolving_power),
+        )
+        self.stellar_mask_depth_box = text_box(
+            right,
+            rows[1],
+            "Minimum mask depth",
+            _parameter_text(theoretical_spectrum.mask_depth),
+        )
+        self.stellar_padding_box = text_box(
+            left,
+            rows[2],
+            "Extra padding [km/s]",
+            _parameter_text(theoretical_spectrum.mask_padding_kms),
+        )
+        self.stellar_limb_darkening_box = text_box(
+            right,
+            rows[2],
+            "Limb darkening",
+            f"{theoretical_spectrum.limb_darkening:g}",
+        )
+        self.stellar_continuum_window_box = text_box(
+            left,
+            rows[3],
+            "Continuum window [km/s]",
+            f"{theoretical_spectrum.continuum_window_kms:g}",
+        )
+        self.stellar_velocity_search_box = text_box(
+            right,
+            rows[3],
+            "Velocity search [km/s]",
+            f"{theoretical_spectrum.velocity_search_kms:g}",
+        )
+        self.stellar_alignment_checkbox = check_buttons_type(
+            self.figure.add_axes((left, 0.31, width, 0.045)),
+            ("Refine velocity",),
+            (theoretical_spectrum.fit_velocity_offset,),
+        )
+        self.stellar_update_button = button_type(
+            self.figure.add_axes((right, 0.31, width, 0.045)),
+            "Update mask",
+        )
+        self.stellar_update_button.on_clicked(self._update_stellar_mask_event)
+
+    def _replace_stellar_exclusions(
+        self,
+        theoretical_spectrum: TheoreticalSpectrum,
+        *,
+        remember: bool,
+    ) -> RegionRanges:
+        result = _prepare_stellar_mask_for_selector(
+            self.spectrum,
+            theoretical_spectrum,
+        )
+        selection = result.selection_for_spectrum(self.spectrum)
+        new_records = [
+            ("exclude", lower, upper)
+            for lower, upper in selection.exclude_ranges
+        ]
+        if remember:
+            self._remember()
+        old_stellar = set(self._stellar_records)
+        self._records = [
+            record for record in self._records if record not in old_stellar
+        ]
+        self._records.extend(new_records)
+        self._stellar_records = new_records
+        self._theoretical_spectrum = theoretical_spectrum
+        self._stellar_mask_result = result
+        if hasattr(self, "rectangle_selector"):
+            self._redraw_regions()
+        return selection.exclude_ranges
+
+    @staticmethod
+    def _stellar_float(widget: object, label: str) -> float:
+        value = getattr(widget, "text", "")
+        try:
+            parsed = float(str(value).strip())
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a finite number") from exc
+        if not np.isfinite(parsed):
+            raise ValueError(f"{label} must be a finite number")
+        return parsed
+
+    @staticmethod
+    def _stellar_optional_float(widget: object, label: str) -> float | None:
+        value = str(getattr(widget, "text", "")).strip().lower()
+        if value in {"", "auto", "none"}:
+            return None
+        return InteractiveRegionSelector._stellar_float(widget, label)
+
+    @staticmethod
+    def _stellar_auto_or_float(widget: object, label: str) -> str | float:
+        value = str(getattr(widget, "text", "")).strip().lower()
+        if value == "auto":
+            return "auto"
+        return InteractiveRegionSelector._stellar_float(widget, label)
 
     def add_region(
         self,
@@ -458,6 +741,9 @@ class InteractiveRegionSelector:
             return
         self._remember()
         self._records = retained
+        self._stellar_records = [
+            record for record in self._stellar_records if record in retained
+        ]
         self._redraw_regions()
 
     def mark_visible_region(self, *, kind: RegionKind | None = None) -> None:
@@ -516,7 +802,7 @@ class InteractiveRegionSelector:
 
         if not self._history:
             return
-        self._records = self._history.pop()
+        self._records, self._stellar_records = self._history.pop()
         self._redraw_regions()
 
     def clear(self) -> None:
@@ -526,6 +812,7 @@ class InteractiveRegionSelector:
             return
         self._remember()
         self._records = []
+        self._stellar_records = []
         self._redraw_regions()
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -633,7 +920,9 @@ class InteractiveRegionSelector:
         return lower, upper
 
     def _remember(self) -> None:
-        self._history.append(list(self._records))
+        self._history.append(
+            (list(self._records), list(self._stellar_records))
+        )
 
     def _on_rectangle(self, click_event: object, release_event: object) -> None:
         lower = getattr(click_event, "xdata", None)
@@ -720,6 +1009,16 @@ class InteractiveRegionSelector:
             self.add_automatic_fit_regions()
         except (OSError, ValueError) as exc:
             self._update_status(str(exc))
+
+    def _update_stellar_mask_event(self, _event: object) -> None:
+        try:
+            ranges = self.update_stellar_mask()
+        except (OSError, ValueError) as exc:
+            self._update_status(str(exc))
+            return
+        self._update_status(
+            f"Updated theoretical stellar mask: {len(ranges)} exclusions."
+        )
 
     def _clear_event(self, _event: object) -> None:
         self.clear()
@@ -821,12 +1120,25 @@ class InteractiveRegionSelector:
             )
         elif self._telluric_marker_error is not None:
             lines.append("AER markers unavailable")
-        for index, (kind, lower, upper) in enumerate(display_regions[:5], start=1):
+        if self._stellar_mask_result is not None:
+            diagnostics = self._stellar_mask_result.diagnostics
+            lines.append(
+                "Stellar exclusions: "
+                f"{len(self._stellar_records)} "
+                f"(padding {diagnostics.get('mask_padding_kms', 0.0):g} km/s)"
+            )
+        display_limit = 0 if self._theoretical_spectrum is not None else 5
+        for index, (kind, lower, upper) in enumerate(
+            display_regions[:display_limit],
+            start=1,
+        ):
             lines.append(f"R{index} {kind}:")
             lines.append(f"  {lower:.6g} - {upper:.6g}")
-        if len(display_regions) > 5:
-            lines.append(f"... plus {len(display_regions) - 5} more")
-        if display_regions:
+        if display_limit and len(display_regions) > display_limit:
+            lines.append(
+                f"... plus {len(display_regions) - display_limit} more"
+            )
+        if display_regions and self._theoretical_spectrum is None:
             lines.append("Save All writes every region.")
         self.status_text.set_text("\n".join(lines))
         self.figure.canvas.draw_idle()
@@ -835,6 +1147,7 @@ class InteractiveRegionSelector:
 def select_telluric_regions(
     spectrum: Spectrum | None = None,
     *,
+    theoretical_spectrum: TheoreticalSpectrum | None = None,
     wavelength: np.ndarray | None = None,
     flux: np.ndarray | None = None,
     wavelength_unit: str = "micron",
@@ -848,6 +1161,7 @@ def select_telluric_regions(
     automatic_region_half_width_pixels: float = (
         DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS
     ),
+    enable_theoretical_controls: bool = False,
     reuse_existing: bool = True,
     show: bool = True,
 ) -> InteractiveRegionSelector | RegionSelection:
@@ -868,6 +1182,16 @@ def select_telluric_regions(
     to write every region together as ECSV. In Jupyter, enable
     ``%matplotlib widget`` and install ``pymolfit[interactive]``. The returned
     selector exposes ``selection`` and ``save()`` for notebook and scripted use.
+
+    Pass ``theoretical_spectrum=TheoreticalSpectrum(...)`` to generate stellar
+    exclusion regions before the window opens. Set
+    ``enable_theoretical_controls=True`` to expose the template's radial
+    velocity, projected rotation, resolution, mask depth, mask padding, limb
+    darkening, continuum window, and residual-alignment controls. Edit values
+    and press ``Update mask`` to replace the automatic stellar exclusions
+    without changing selected telluric fit regions. ``Save All`` writes fit
+    and exclusion intervals together in the same ECSV file, which can be
+    passed directly to :func:`pymolfit.correct` as ``region_file``.
 
     When ``output_path`` already exists and ``reuse_existing`` is ``True``, the
     saved :class:`RegionSelection` is loaded and returned without opening a new
@@ -915,6 +1239,7 @@ def select_telluric_regions(
         initial_regions = load_region_file(existing_path)
     return InteractiveRegionSelector(
         spectrum,
+        theoretical_spectrum=theoretical_spectrum,
         output_path=output_path,
         initial_regions=initial_regions,
         title=title,
@@ -922,7 +1247,59 @@ def select_telluric_regions(
         max_telluric_markers=max_telluric_markers,
         automatic_region_count=automatic_region_count,
         automatic_region_half_width_pixels=automatic_region_half_width_pixels,
+        enable_theoretical_controls=enable_theoretical_controls,
         show=show,
+    )
+
+
+def _parameter_text(value: str | float) -> str:
+    return value if isinstance(value, str) else f"{value:g}"
+
+
+def _optional_parameter_text(value: float | None) -> str:
+    return "auto" if value is None else f"{value:g}"
+
+
+def _prepare_stellar_mask_for_selector(
+    spectrum: Spectrum,
+    theoretical_spectrum: TheoreticalSpectrum,
+) -> StellarMaskResult:
+    """Prepare a template mask through the correction workflow's frame path."""
+
+    # Import lazily because workflow imports this module to resolve region
+    # files. Calling the shared helpers here keeps selector and correction
+    # frame/resolution handling mathematically identical.
+    from .workflow import (
+        _estimate_lsf_sigma_from_resolving_power,
+        _load_fits_header_if_available,
+        _spectrum_to_observatory_vacuum,
+        _stellar_template_frame_correction_factor,
+    )
+
+    source = spectrum.meta.get("source")
+    header = None
+    if source:
+        hdu_value = spectrum.meta.get("hdu", 1)
+        try:
+            hdu = int(hdu_value)
+        except (TypeError, ValueError):
+            hdu = 1
+        header = _load_fits_header_if_available(str(source), None, hdu=hdu)
+    observatory_spectrum = _spectrum_to_observatory_vacuum(spectrum, header)
+    resolution = _estimate_lsf_sigma_from_resolving_power(
+        observatory_spectrum,
+        header,
+    )
+    resolving_power = (
+        None if resolution is None else float(resolution["resolving_power"])
+    )
+    return theoretical_spectrum.build_mask(
+        observatory_spectrum,
+        frame_correction_factor=_stellar_template_frame_correction_factor(
+            observatory_spectrum,
+            header,
+        ),
+        resolving_power=resolving_power,
     )
 
 

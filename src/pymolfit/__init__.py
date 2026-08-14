@@ -148,6 +148,7 @@ from .systematics import (
     fit_telluric_segments_with_systematics,
     fit_tellurics_with_systematics,
 )
+from .theoretical import StellarMaskResult, TheoreticalSpectrum
 from .validation import (
     ScienceReadinessReport,
     SpectrumComparison,
@@ -219,6 +220,8 @@ __all__ = [
     "TabulatedContinuum",
     "TabulatedContinuumAbsorption",
     "TelluricFitResult",
+    "TheoreticalSpectrum",
+    "StellarMaskResult",
     "ValidationCheck",
     "WavelengthFrame",
     "WavelengthMetadataError",

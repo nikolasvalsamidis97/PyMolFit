@@ -9,11 +9,13 @@ from pymolfit import (
     LineList,
     ModelConfig,
     Spectrum,
+    TelluricFitResult,
     fit_telluric_segments,
     fit_tellurics,
     transmission_model,
 )
-from pymolfit.fit import _linearized_parameter_covariance
+from pymolfit.fit import StellarForwardModel, _linearized_parameter_covariance
+from pymolfit.model import convolve_lsf
 
 
 def test_fit_tellurics_improves_synthetic_spectrum():
@@ -42,6 +44,81 @@ def test_fit_tellurics_improves_synthetic_spectrum():
     assert all(scale > 0 for scale in result.species_scales.values())
 
 
+def test_joint_stellar_model_recovers_blended_telluric_line_and_round_trips():
+    wavelength = np.linspace(0.4997, 0.5003, 1_201)
+    line_list = LineList(
+        wavelength=np.array([0.5]),
+        strength=np.array([3.0e-5]),
+        sigma=np.array([8.0e-6]),
+        gamma=np.array([2.0e-6]),
+        species=np.array(["H2O"]),
+    )
+    true_scale = 0.8
+    raw_transmission = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(
+            species_scales={"H2O": true_scale},
+            lsf_sigma_pixels=0.0,
+            lsf_lorentz_fwhm_pixels=0.0,
+        ),
+    )
+    intrinsic_stellar = 1.0 - 0.35 * np.exp(
+        -0.5 * ((wavelength - 0.500006) / 1.4e-5) ** 2
+    )
+    lsf_sigma = 2.0
+    observed = convolve_lsf(
+        intrinsic_stellar * raw_transmission,
+        gaussian_sigma_pixels=lsf_sigma,
+        box_width_pixels=0.0,
+        lorentz_fwhm_pixels=0.0,
+    )
+    observed_stellar = convolve_lsf(
+        intrinsic_stellar,
+        gaussian_sigma_pixels=lsf_sigma,
+        box_width_pixels=0.0,
+        lorentz_fwhm_pixels=0.0,
+    )
+    config = FitConfig(
+        continuum_order=0,
+        solve_continuum_linear=True,
+        lsf_sigma_pixels=lsf_sigma,
+        lsf_lorentz_fwhm_pixels=0.0,
+        fit_lsf_sigma=False,
+        fit_lsf_lorentz_fwhm=False,
+        fit_wavelength_shift=False,
+        high_resolution_grid=False,
+        min_transmission=0.001,
+    )
+
+    ordinary = fit_tellurics(
+        Spectrum(wavelength, observed),
+        line_list=line_list,
+        config=config,
+    )
+    joint = fit_tellurics(
+        Spectrum(wavelength, observed),
+        line_list=line_list,
+        config=config,
+        stellar_model=StellarForwardModel(wavelength, intrinsic_stellar),
+    )
+
+    assert abs(joint.species_scales["H2O"] - true_scale) < 1.0e-8
+    assert abs(ordinary.species_scales["H2O"] - true_scale) > 0.1
+    np.testing.assert_allclose(joint.model_flux, observed, rtol=0.0, atol=1.0e-11)
+    np.testing.assert_allclose(
+        joint.corrected.flux,
+        observed_stellar,
+        rtol=0.0,
+        atol=1.0e-11,
+    )
+    assert joint.stellar_model is not None
+
+    loaded = TelluricFitResult.from_table(joint.to_table())
+    np.testing.assert_allclose(loaded.stellar_model, observed_stellar)
+    np.testing.assert_allclose(loaded.transmission, joint.transmission)
+
+
 def test_fit_tellurics_accepts_fit_mask():
     wavelength = np.linspace(2.31, 2.36, 300)
     line_list = LineList.demo_near_ir()
@@ -62,6 +139,46 @@ def test_fit_tellurics_accepts_fit_mask():
     assert provenance["selected_line_count"] <= provenance["line_count"]
     assert len(provenance["line_list_sha256"]) == 64
     assert len(provenance["fit_config_sha256"]) == 64
+
+
+def test_fit_weights_downweight_a_biased_pixel():
+    wavelength = np.linspace(1.0, 1.01, 801)
+    line_list = LineList(
+        wavelength=np.array([1.005]),
+        strength=np.array([5.0e-4]),
+        sigma=np.array([2.0e-5]),
+        gamma=np.array([5.0e-6]),
+        species=np.array(["H2O"]),
+    )
+    transmission = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.0}),
+    )
+    biased = transmission.copy()
+    center = int(np.argmin(np.abs(wavelength - 1.005)))
+    biased[center + 5:center + 14] *= 0.7
+    spectrum = Spectrum(wavelength, biased)
+    config = FitConfig(
+        continuum_order=0,
+        lsf_sigma_pixels=0.0,
+        lsf_lorentz_fwhm_pixels=0.0,
+    )
+    weights = np.ones_like(wavelength)
+    weights[center + 5:center + 14] = 0.01
+
+    unweighted = fit_tellurics(spectrum, line_list=line_list, config=config)
+    weighted = fit_tellurics(
+        spectrum,
+        line_list=line_list,
+        config=config,
+        fit_weights=weights,
+    )
+
+    assert abs(weighted.species_scales["H2O"] - 1.0) < abs(
+        unweighted.species_scales["H2O"] - 1.0
+    )
+    np.testing.assert_allclose(weighted.fit_weights, weights)
 
 
 def test_fit_ranges_do_not_limit_lines_applied_to_full_correction():

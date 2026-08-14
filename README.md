@@ -112,7 +112,13 @@ PyMolFit can save fit and exclusion windows without manually copying
 wavelength values from a plot:
 
 ```python
-from pymolfit import load_spectrum, select_telluric_regions
+from pymolfit import TheoreticalSpectrum, load_spectrum, select_telluric_regions
+
+stellar_template = TheoreticalSpectrum(
+    path="stellar_model.dat",
+    radial_velocity_kms=21.3,
+    vsini_kms=124.0,
+)
 
 spectrum = load_spectrum(
     "spectrum.fits",
@@ -121,6 +127,7 @@ spectrum = load_spectrum(
 
 selector = select_telluric_regions(
     spectrum,
+    theoretical_spectrum=stellar_template,
     output_path="telluric_regions.ecsv",
 )
 ```
@@ -144,6 +151,13 @@ plot and listed in the side panel. Edit the filename field if needed, then press
 **Save All** once to write the complete collection. In a Jupyter notebook, run
 `%matplotlib widget` before opening the selector.
 
+When a theoretical spectrum is supplied, automatically identified stellar
+features appear immediately as red exclusion regions. To edit the physical
+template parameters in the selector, pass
+`enable_theoretical_controls=True`. The optional panel then exposes radial
+velocity, `v sin(i)`, resolving power, mask depth, mask padding, limb
+darkening, continuum window, and residual velocity search.
+
 On later runs, the same `output_path` is detected and loaded automatically, so
 the selector window is skipped. Pass `reuse_existing=False` to reopen the
 saved regions for editing.
@@ -163,6 +177,71 @@ result = correct(
 
 `region_file` cannot be combined with explicit `fit_ranges` or
 `exclude_ranges`.
+
+## Protect Stellar Features With A Theoretical Spectrum
+
+An optional theoretical stellar spectrum can identify astrophysical lines that
+must not bias the telluric fit. The recommended workflow is to pass it to the
+region selector as shown above, producing one file containing telluric fit
+intervals and stellar exclusions. It can also be supplied directly to
+`correct()` when an interactive selector is not needed:
+
+```python
+from pymolfit import TheoreticalSpectrum, correct
+
+stellar_template = TheoreticalSpectrum(
+    path="stellar_model.dat",
+    radial_velocity_kms=21.3,
+    vsini_kms=124.0,
+    mask_padding_kms="auto",
+)
+
+result = correct(
+    input_path="spectrum.fits",
+    theoretical_spectrum=stellar_template,
+    stellar_mask_path="stellar_exclusions.ecsv",
+)
+```
+
+The input is a two-column ASCII wavelength/flux table. Files from the
+[SVO Theoretical Spectra server](https://svo2.cab.inta-csic.es/theory/newov2/)
+are supported directly. PyMolFit reads their coordinate metadata, normalizes
+physical flux, applies the supplied radial velocity and projected rotation,
+and detects stellar features automatically. Those features become hard
+exclusions from atmospheric parameter estimation by default. Set
+`confidence_weighted_masking=True` on `TheoreticalSpectrum` to opt into
+continuous confidence weighting instead. PyMolFit uses
+observation metadata for frame and instrumental broadening, and checks a small
+residual alignment. The generated stellar model affects parameter estimation
+only. It does not replace the observed flux, and atmospheric transmission is
+still evaluated inside downweighted or excluded stellar regions.
+Automatic mask padding scales with the rotational and instrumental broadening
+so the fitted mask also protects broad stellar-line wings. A numeric
+`mask_padding_kms` can override that width.
+
+`stellar_mask_path` is optional. When supplied, it saves the generated
+exclusions in the input spectrum's original wavelength unit and air/vacuum
+medium for inspection.
+
+The selector displays the automatically detected exclusions when a template
+is supplied. Its editable theoretical-parameter panel is disabled by default;
+pass `enable_theoretical_controls=True` to the selector to show it.
+
+For blended stellar and telluric lines, `correct()` also provides an opt-in
+joint forward model:
+
+```python
+result = correct(
+    input_path="spectrum.fits",
+    theoretical_spectrum=stellar_template,
+    joint_stellar_model=True,
+)
+```
+
+This evaluates `continuum * LSF(stellar * atmosphere)` rather than using the
+stellar template only as fit weights. The correction divides by the
+stellar-aware atmospheric effect, preserving the convolved stellar spectrum.
+The mode is disabled by default and is available only through `correct()`.
 
 ## Tutorials
 

@@ -283,7 +283,7 @@ def test_cli_reports_version(capsys):
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert "pymolfit 0.6.0" in capsys.readouterr().out
+    assert "pymolfit 0.7.0" in capsys.readouterr().out
 
 
 def test_cli_refuses_implicit_synthetic_line_data(tmp_path):

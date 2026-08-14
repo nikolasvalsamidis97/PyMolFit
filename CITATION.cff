@@ -8,8 +8,8 @@ authors:
 repository-code: "https://github.com/nikolasvalsamidis97/PyMolFit"
 url: "https://pypi.org/project/pymolfit/"
 license: BSD-3-Clause
-version: 0.6.0
-date-released: 2026-08-10
+version: 0.7.0
+date-released: 2026-08-14
 keywords:
   - astronomy
   - spectroscopy

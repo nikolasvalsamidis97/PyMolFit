@@ -3,6 +3,32 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.0 - 2026-08-14
+
+### Added
+
+- Optional `correct(..., joint_stellar_model=True)` forward modelling of a
+  theoretical stellar spectrum multiplied by atmospheric transmission before
+  instrumental convolution. This mode is disabled by default and is exposed
+  only by the unified `correct()` API.
+- Integrated theoretical stellar masking into the interactive telluric-region
+  selector. Stellar exclusions are plotted immediately, their physical mask
+  parameters can be edited in the window, and fit plus exclusion regions are
+  saved together for `correct(region_file=...)`.
+- Optional `TheoreticalSpectrum` stellar-feature masking for two-column ASCII
+  and SVO model spectra, including wavelength-coordinate handling,
+  pseudo-continuum normalization, relativistic radial velocity, rotational and
+  instrumental broadening, guarded residual alignment, ECSV mask export, and
+  provenance diagnostics.
+- Added opt-in confidence-weighted stellar masking for theoretical templates.
+  Automatic stellar-feature detection uses binary fit exclusions by default.
+- Made the selector's editable theoretical-template controls opt-in through
+  `enable_theoretical_controls=True`; automatic stellar exclusions still
+  appear whenever a theoretical template is supplied.
+- Velocity-aware automatic padding for theoretical stellar masks, based on the
+  rotational and instrumental broadening, so broad line wings do not constrain
+  the telluric fit.
+
 ## 0.6.0 - 2026-08-10
 
 ### Added

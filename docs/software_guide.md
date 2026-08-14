@@ -76,6 +76,95 @@ this saved product.
 that only needs wavelength and corrected flux, but it cannot reproduce the
 fit result.
 
+## Optional Theoretical Stellar Masking
+
+Create a `TheoreticalSpectrum` when a stellar model is available. The preferred
+interactive workflow builds stellar exclusions in the same selector used for
+telluric fit intervals and saves both kinds of region in one ECSV file:
+
+```python
+from pymolfit import (
+    TheoreticalSpectrum,
+    correct,
+    load_spectrum,
+    select_telluric_regions,
+)
+
+template = TheoreticalSpectrum(
+    "stellar_model.dat",
+    radial_velocity_kms=21.3,
+    vsini_kms=124.0,
+    mask_padding_kms="auto",
+)
+observed = load_spectrum("spectrum.fits")
+selector = select_telluric_regions(
+    observed,
+    theoretical_spectrum=template,
+    output_path="regions.ecsv",
+)
+result = correct(
+    input_path="spectrum.fits",
+    region_file="regions.ecsv",
+)
+```
+
+When a theoretical template is supplied directly to `correct()`, stellar
+features are detected automatically and excluded from atmospheric parameter
+estimation by default:
+
+```python
+template = TheoreticalSpectrum(
+    "stellar_model.dat",
+    radial_velocity_kms=21.3,
+    vsini_kms=124.0,
+)
+
+result = correct(
+    spectrum=spectrum,
+    region_file="telluric_regions.ecsv",
+    theoretical_spectrum=template,
+    continuum_order=2,
+)
+```
+
+Set `confidence_weighted_masking=True` on `TheoreticalSpectrum` to opt into
+confidence weighting. It replaces binary stellar exclusions during parameter
+estimation with residual weights between `confidence_weight_floor` and one.
+Pixels dominated by predicted stellar structure contribute less to the
+atmospheric fit, while continuum pixels retain full weight.
+
+When confidence weighting is enabled, pass the template to `correct()` to
+apply the continuous weights. A saved ECSV region file stores fit/exclusion
+intervals, but it cannot store continuous weights; therefore the template must
+also be supplied during correction when confidence weighting is required.
+
+The template predicts pixels dominated by stellar features represented by that
+model. During direct correction those pixels are excluded by default; the
+interactive selector represents them as editable exclusion intervals in its
+saved region file. In either mode, the final atmospheric model and corrected
+spectrum still cover them. The implementation
+supports SVO two-column ASCII spectra, pseudo-continuum normalization,
+relativistic radial velocity, Gray rotational broadening, FITS-derived
+resolving power, and a guarded residual velocity alignment. The selector's
+parameter fields can update radial velocity, rotation, resolution, mask depth
+and width, limb darkening, continuum estimation, and residual velocity
+alignment before the combined region file is saved. These controls are hidden
+by default; pass `enable_theoretical_controls=True` to
+`select_telluric_regions()` to expose them.
+
+For non-interactive work, `theoretical_spectrum=template` can still be passed
+directly to `correct()`; `stellar_mask_path` optionally saves that generated
+mask separately.
+
+Set `joint_stellar_model=True` on `correct()` to include the normalized
+theoretical spectrum directly in the forward model. PyMolFit then evaluates
+`continuum * LSF(stellar * atmosphere)`. The returned `transmission` is the
+effective atmospheric divisor `LSF(stellar * atmosphere) / LSF(stellar)`, so
+correction removes the atmosphere without dividing out the stellar spectrum.
+This mode requires a `TheoreticalSpectrum`, is disabled by default, and is
+intentionally exposed only by the unified `correct()` API while it receives
+broader scientific validation.
+
 ## Errors
 
 All expected package failures inherit from `PyMolFitError`:
