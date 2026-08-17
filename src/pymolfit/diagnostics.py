@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from pathlib import Path
-import sys
 from typing import TextIO
 
 import numpy as np
@@ -34,24 +34,6 @@ def _format_sequence(value: object) -> str:
     return "[" + ", ".join(_format_scalar(item) for item in value) + "]"
 
 
-def _format_ranges(value: object) -> str:
-    if value is None:
-        return "all valid pixels"
-    if not isinstance(value, (tuple, list)):
-        return _format_scalar(value)
-    if not value:
-        return "none"
-    ranges = []
-    for bounds in value:
-        if isinstance(bounds, (tuple, list)) and len(bounds) == 2:
-            ranges.append(
-                f"({_format_scalar(bounds[0])}, {_format_scalar(bounds[1])})"
-            )
-        else:
-            ranges.append(_format_scalar(bounds))
-    return ", ".join(ranges)
-
-
 def _summarize_ranges(value: object, *, automatic_label: str) -> str:
     if value is None:
         return automatic_label
@@ -77,16 +59,12 @@ def _format_airmass_lines(
     observation_airmass = atmosphere.get("airmass")
     transfer_multiplier = config.get("airmass")
     if observation_airmass is None:
-        return (
-            "  radiative-transfer airmass: "
-            f"{_format_scalar(transfer_multiplier)}",
-        )
+        return (f"  radiative-transfer airmass: {_format_scalar(transfer_multiplier)}",)
     return (
         "  observation airmass: "
         f"{_format_scalar(observation_airmass)} "
         "(incorporated into atmospheric layer path lengths)",
-        "  additional opacity airmass multiplier: "
-        f"{_format_scalar(transfer_multiplier)}",
+        f"  additional opacity airmass multiplier: {_format_scalar(transfer_multiplier)}",
     )
 
 
@@ -117,12 +95,9 @@ def format_fit_summary(
     stellar_template = _mapping(provenance.get("stellar_template"))
     stellar_template_lines: tuple[str, ...] = ()
     if stellar_template:
-        weighted_stellar_mask = bool(
-            stellar_template.get("confidence_weighted_masking", False)
-        )
+        weighted_stellar_mask = bool(stellar_template.get("confidence_weighted_masking", False))
         stellar_template_lines = (
-            "  stellar template: "
-            f"{_format_scalar(stellar_template.get('source'))}",
+            f"  stellar template: {_format_scalar(stellar_template.get('source'))}",
             "  stellar use: "
             + (
                 "joint stellar x atmosphere forward model"
@@ -140,8 +115,7 @@ def format_fit_summary(
                 f"median={_format_scalar(stellar_template.get('fit_weight_median'))}, "
                 f"template regions={_format_scalar(stellar_template.get('exclude_region_count'))}"
                 if weighted_stellar_mask
-                else
-                "  stellar exclusions: "
+                else "  stellar exclusions: "
                 f"{_format_scalar(stellar_template.get('exclude_region_count'))} regions, "
                 f"{_format_scalar(stellar_template.get('masked_pixel_count'))} pixels "
                 f"(depth >= {_format_scalar(stellar_template.get('mask_depth'))}, "
@@ -154,8 +128,7 @@ def format_fit_summary(
     finite_wavelength = wavelength[np.isfinite(wavelength)]
     if finite_wavelength.size:
         wavelength_range = (
-            f"{np.nanmin(finite_wavelength):.8g} to "
-            f"{np.nanmax(finite_wavelength):.8g} micron"
+            f"{np.nanmin(finite_wavelength):.8g} to {np.nanmax(finite_wavelength):.8g} micron"
         )
     else:
         wavelength_range = "no finite wavelengths"
@@ -174,8 +147,7 @@ def format_fit_summary(
     lines.extend(
         (
             f"  wavelength range: {wavelength_range}",
-            "  wavelength frame: observatory-frame "
-            f"{result.spectrum.wavelength_medium}",
+            f"  wavelength frame: observatory-frame {result.spectrum.wavelength_medium}",
             f"  pixels: {result.spectrum.wavelength.size} total, {fit_pixels} fitted",
             f"  invalid/quality-masked pixels: "
             f"{result.spectrum.wavelength.size - int(np.count_nonzero(result.spectrum.valid))}",
@@ -186,10 +158,7 @@ def format_fit_summary(
             f"{_format_scalar(provenance.get('selected_line_count'))} selected from "
             f"{_format_scalar(provenance.get('line_count'))}",
             "  species: "
-            + (
-                ", ".join(str(item) for item in provenance.get("line_species", ()))
-                or "none"
-            ),
+            + (", ".join(str(item) for item in provenance.get("line_species", ())) or "none"),
             "Atmosphere",
             f"  physical layers: {_format_scalar(provenance.get('atmosphere_layer_count'))}",
             f"  MIPAS profile: {_format_scalar(atmosphere.get('mipas_profile'))}",
@@ -455,13 +424,9 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
             {
                 "name": label,
                 "pixel_count": int(residual.size),
-                "median_residual": (
-                    float(np.nanmedian(residual)) if residual.size else np.nan
-                ),
+                "median_residual": (float(np.nanmedian(residual)) if residual.size else np.nan),
                 "rmse": (
-                    float(np.sqrt(np.nanmean(residual * residual)))
-                    if residual.size
-                    else np.nan
+                    float(np.sqrt(np.nanmean(residual * residual))) if residual.size else np.nan
                 ),
             }
         )
@@ -472,9 +437,7 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
             float(np.nanmedian(measured_shifts)) if measured_shifts.size else np.nan
         ),
         "p90_absolute_residual_shift_pixels": (
-            float(np.nanpercentile(measured_shifts, 90))
-            if measured_shifts.size
-            else np.nan
+            float(np.nanpercentile(measured_shifts, 90)) if measured_shifts.size else np.nan
         ),
         "transmission_bins": transmission_bins,
         "parameter_bounds_reached": dict(result.parameter_bound_status),

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
 
 import numpy as np
 from astropy.table import Table
@@ -227,9 +227,9 @@ def cross_validate_telluric_segments(
             continuum_z[weighted] = (
                 spectrum.flux[weighted] - continuum[weighted]
             ) / spectrum.uncertainty[weighted]
-            model_z[weighted] = (
-                spectrum.flux[weighted] - model[weighted]
-            ) / spectrum.uncertainty[weighted]
+            model_z[weighted] = (spectrum.flux[weighted] - model[weighted]) / spectrum.uncertainty[
+                weighted
+            ]
 
         raw_rms = _masked_rms(raw_relative, telluric)
         corrected_rms = _masked_rms(corrected_residual, telluric)
@@ -318,7 +318,9 @@ def _array_rms(values: np.ndarray) -> float:
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
-    return float(numerator / denominator) if np.isfinite(denominator) and denominator > 0 else np.nan
+    return (
+        float(numerator / denominator) if np.isfinite(denominator) and denominator > 0 else np.nan
+    )
 
 
 def _concatenate_finite(parts: Sequence[np.ndarray]) -> np.ndarray:
@@ -374,7 +376,7 @@ class ScienceReadinessReport:
         checks: Sequence[ValidationCheck],
         *,
         metadata: Mapping[str, object] | None = None,
-    ) -> "ScienceReadinessReport":
+    ) -> ScienceReadinessReport:
         return cls(
             checks=tuple(checks),
             metadata={} if metadata is None else dict(metadata),
@@ -440,8 +442,12 @@ def compare_spectra(
 
     candidate = candidate.to_unit("micron").sorted()
     reference = reference.to_unit("micron").sorted()
-    overlap_min = max(float(np.nanmin(candidate.wavelength)), float(np.nanmin(reference.wavelength)))
-    overlap_max = min(float(np.nanmax(candidate.wavelength)), float(np.nanmax(reference.wavelength)))
+    overlap_min = max(
+        float(np.nanmin(candidate.wavelength)), float(np.nanmin(reference.wavelength))
+    )
+    overlap_max = min(
+        float(np.nanmax(candidate.wavelength)), float(np.nanmax(reference.wavelength))
+    )
     if overlap_max <= overlap_min:
         raise ValueError("spectra do not overlap in wavelength")
 
@@ -485,6 +491,8 @@ def compare_spectra(
         rms=float(np.sqrt(np.nanmean(delta**2))),
         median_abs=float(np.nanmedian(np.abs(delta))),
         max_abs=float(np.nanmax(np.abs(delta))),
-        relative_rms=float(np.sqrt(np.nanmean(delta**2)) / reference_scale) if reference_scale != 0 else np.nan,
+        relative_rms=float(np.sqrt(np.nanmean(delta**2)) / reference_scale)
+        if reference_scale != 0
+        else np.nan,
         correlation=float(correlation),
     )

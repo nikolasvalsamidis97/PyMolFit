@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from importlib import resources
-from html import unescape
-from pathlib import Path
-from typing import Mapping
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from html import unescape
+from importlib import resources
+from pathlib import Path
 
 import numpy as np
 from astropy.table import Table
@@ -79,7 +79,7 @@ class IsotopologueMetadata:
         q296_col: str = "q296",
         q_file_col: str = "q_file",
         formula_col: str = "formula",
-    ) -> "IsotopologueMetadata":
+    ) -> IsotopologueMetadata:
         table = Table.read(path)
         return cls(
             global_iso_id=np.asarray(table[global_iso_id_col], dtype=int),
@@ -88,12 +88,16 @@ class IsotopologueMetadata:
             abundance=np.asarray(table[abundance_col], dtype=float),
             molar_mass=np.asarray(table[molar_mass_col], dtype=float),
             q296=np.asarray(table[q296_col], dtype=float),
-            q_file=np.asarray(table[q_file_col], dtype=str) if q_file_col in table.colnames else None,
-            formula=np.asarray(table[formula_col], dtype=str) if formula_col in table.colnames else None,
+            q_file=np.asarray(table[q_file_col], dtype=str)
+            if q_file_col in table.colnames
+            else None,
+            formula=np.asarray(table[formula_col], dtype=str)
+            if formula_col in table.colnames
+            else None,
         )
 
     @classmethod
-    def from_hitran_iso_meta_html(cls, path: str | Path) -> "IsotopologueMetadata":
+    def from_hitran_iso_meta_html(cls, path: str | Path) -> IsotopologueMetadata:
         """Read HITRAN's isotopologue metadata HTML page.
 
         This supports a saved copy of ``https://hitran.org/docs/iso-meta/``.
@@ -121,7 +125,9 @@ class IsotopologueMetadata:
         for section in section_pattern.finditer(text):
             mol_id = int(section.group("mol"))
             for row_match in row_pattern.finditer(section.group("body")):
-                cells = [match.group("cell") for match in cell_pattern.finditer(row_match.group("row"))]
+                cells = [
+                    match.group("cell") for match in cell_pattern.finditer(row_match.group("row"))
+                ]
                 if len(cells) < 8:
                     continue
                 global_ids.append(int(_html_cell_text(cells[0])))
@@ -201,7 +207,10 @@ class IsotopologueMetadata:
     def q_file_map(self) -> Mapping[int, str]:
         if self.q_file is None:
             return {}
-        return {int(global_id): str(path) for global_id, path in zip(self.global_iso_id, self.q_file, strict=True)}
+        return {
+            int(global_id): str(path)
+            for global_id, path in zip(self.global_iso_id, self.q_file, strict=True)
+        }
 
 
 @dataclass(frozen=True)
@@ -255,7 +264,7 @@ class PartitionTable:
         object.__setattr__(self, "_value_cache", {})
 
     @classmethod
-    def from_lblrtm_package_data(cls) -> "PartitionTable":
+    def from_lblrtm_package_data(cls) -> PartitionTable:
         """Load the TIPS tables embedded in LBLRTM 12.11.
 
         The packaged data are extracted from LBLRTM's ``TIPS_2011`` source at
@@ -282,7 +291,7 @@ class PartitionTable:
         iso_id_col: str = "iso_id",
         temperature_col: str = "temperature_k",
         q_col: str = "q",
-    ) -> "PartitionTable":
+    ) -> PartitionTable:
         table = Table.read(path)
         return cls(
             mol_id=np.asarray(table[mol_id_col], dtype=int),
@@ -309,7 +318,7 @@ class PartitionTable:
         *,
         mol_id: int,
         iso_id: int,
-    ) -> "PartitionTable":
+    ) -> PartitionTable:
         """Read one HITRAN TIPS ``q*.txt`` file.
 
         HITRAN q files are simple two-column text files: temperature in K and
@@ -337,14 +346,14 @@ class PartitionTable:
         metadata: IsotopologueMetadata,
         *,
         global_iso_ids: np.ndarray | list[int] | tuple[int, ...] | None = None,
-    ) -> "PartitionTable":
+    ) -> PartitionTable:
         """Read HITRAN TIPS q files for the isotopologues in ``metadata``."""
 
         q_dir = Path(q_dir)
         selected_global_ids = (
-            set(int(value) for value in global_iso_ids)
+            {int(value) for value in global_iso_ids}
             if global_iso_ids is not None
-            else set(int(value) for value in metadata.global_iso_id)
+            else {int(value) for value in metadata.global_iso_id}
         )
         q_file_map = metadata.q_file_map()
         tables = []
@@ -355,7 +364,9 @@ class PartitionTable:
             filename = q_file_map.get(global_id, f"q{global_id}.txt")
             path = q_dir / filename
             if not path.exists():
-                raise FileNotFoundError(f"missing HITRAN q file for global isotopologue {global_id}: {path}")
+                raise FileNotFoundError(
+                    f"missing HITRAN q file for global isotopologue {global_id}: {path}"
+                )
             tables.append(
                 cls.from_hitran_q_file(
                     path,
@@ -368,7 +379,9 @@ class PartitionTable:
         return cls.concatenate(tables)
 
     @classmethod
-    def concatenate(cls, tables: list["PartitionTable"] | tuple["PartitionTable", ...]) -> "PartitionTable":
+    def concatenate(
+        cls, tables: list[PartitionTable] | tuple[PartitionTable, ...]
+    ) -> PartitionTable:
         if not tables:
             raise ValueError("tables must not be empty")
         return cls(
@@ -391,7 +404,9 @@ class PartitionTable:
             raise ValueError("mol_id and iso_id must have the same shape")
 
         values = np.full(mol_id.shape, np.nan, dtype=float)
-        pair_codes = (mol_id.astype(np.int64, copy=False) << 32) | iso_id.astype(np.int64, copy=False)
+        pair_codes = (mol_id.astype(np.int64, copy=False) << 32) | iso_id.astype(
+            np.int64, copy=False
+        )
         for code in np.unique(pair_codes):
             mol = int(code >> 32)
             iso = int(code & 0xFFFFFFFF)

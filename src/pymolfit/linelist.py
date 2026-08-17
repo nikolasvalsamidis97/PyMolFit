@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 from astropy.table import Table
@@ -165,7 +166,7 @@ class LineList:
             if value is None:
                 continue
             dtype = int if name in {"global_iso_id", "line_flags"} else float
-            array = np.asarray(value, dtype=dtype)
+            array: np.ndarray = np.asarray(value, dtype=dtype)
             if array.shape != wavelength.shape:
                 raise ValueError(f"{name} must have the same shape as wavelength")
             object.__setattr__(self, name, array)
@@ -175,7 +176,9 @@ class LineList:
             dtype = int if name == "broadener_flags" else float
             array = np.asarray(value, dtype=dtype)
             if array.shape != (wavelength.size, len(LBLRTM_BROADENER_SPECIES)):
-                raise ValueError(f"{name} must have shape (n_lines, {len(LBLRTM_BROADENER_SPECIES)})")
+                raise ValueError(
+                    f"{name} must have shape (n_lines, {len(LBLRTM_BROADENER_SPECIES)})"
+                )
             object.__setattr__(self, name, array)
         for name, value in coupling_optional.items():
             if value is None:
@@ -233,16 +236,20 @@ class LineList:
             )
         )
 
-    def select_range(self, wavelength_min: float, wavelength_max: float, *, margin: float = 0.0) -> "LineList":
-        keep = (self.wavelength >= wavelength_min - margin) & (self.wavelength <= wavelength_max + margin)
+    def select_range(
+        self, wavelength_min: float, wavelength_max: float, *, margin: float = 0.0
+    ) -> LineList:
+        keep = (self.wavelength >= wavelength_min - margin) & (
+            self.wavelength <= wavelength_max + margin
+        )
         return self.select(keep)
 
-    def select_species(self, species: Iterable[str]) -> "LineList":
+    def select_species(self, species: Iterable[str]) -> LineList:
         wanted = set(species)
         keep = np.array([name in wanted for name in self.species], dtype=bool)
         return self.select(keep)
 
-    def select(self, keep: np.ndarray) -> "LineList":
+    def select(self, keep: np.ndarray) -> LineList:
         keep = np.asarray(keep, dtype=bool)
         optional = {
             "wavenumber": self.wavenumber,
@@ -283,7 +290,7 @@ class LineList:
         metadata,
         *,
         abundance_overrides: Mapping[tuple[int, int] | int, float] | None = None,
-    ) -> "LineList":
+    ) -> LineList:
         """Attach HITRAN isotopologue metadata and optional abundance overrides.
 
         ``abundance_overrides`` values are absolute isotopologue abundances.
@@ -300,7 +307,9 @@ class LineList:
         natural_abundance = metadata.abundance_for_pair(mol_id, iso_id)
         molar_mass = metadata.molar_mass_for_pair(mol_id, iso_id)
 
-        finite_metadata = np.isfinite(global_ids) & np.isfinite(natural_abundance) & np.isfinite(molar_mass)
+        finite_metadata = (
+            np.isfinite(global_ids) & np.isfinite(natural_abundance) & np.isfinite(molar_mass)
+        )
         global_iso_id = np.full(mol_id.shape, -1, dtype=int)
         global_iso_id[finite_metadata] = global_ids[finite_metadata].astype(int)
         updated_mass = (
@@ -410,10 +419,10 @@ class LineList:
         sigma_col: str = "sigma",
         gamma_col: str = "gamma",
         species_col: str = "species",
-    ) -> "LineList":
+    ) -> LineList:
         input_path = Path(path)
         table = Table.read(input_path)
-        optional = {}
+        optional: dict[str, np.ndarray | None] = {}
         for name in (
             "wavenumber",
             "mol_id",
@@ -466,7 +475,7 @@ class LineList:
         max_lines: int | None = None,
         isotopologue_metadata=None,
         abundance_overrides: Mapping[tuple[int, int] | int, float] | None = None,
-    ) -> "LineList":
+    ) -> LineList:
         from .hitran import read_hitran_par
 
         return read_hitran_par(
@@ -495,7 +504,7 @@ class LineList:
         abundance_overrides: Mapping[tuple[int, int] | int, float] | None = None,
         extra_broadener_dir: str | Path | None = None,
         assume_sorted: bool = False,
-    ) -> "LineList":
+    ) -> LineList:
         from .hitran import read_aer_line_file
 
         return read_aer_line_file(
@@ -513,7 +522,7 @@ class LineList:
         )
 
     @classmethod
-    def empty_hitran(cls, *, reference_temperature: float = 296.0) -> "LineList":
+    def empty_hitran(cls, *, reference_temperature: float = 296.0) -> LineList:
         """Return an empty physical line list for continuum-only modelling."""
 
         empty_float = np.array([], dtype=float)
@@ -538,7 +547,9 @@ class LineList:
             isotopologue_abundance_scale=empty_float,
             broadener_flags=np.zeros((0, len(LBLRTM_BROADENER_SPECIES)), dtype=int),
             broadener_widths=np.zeros((0, len(LBLRTM_BROADENER_SPECIES)), dtype=float),
-            broadener_temperature_exponents=np.zeros((0, len(LBLRTM_BROADENER_SPECIES)), dtype=float),
+            broadener_temperature_exponents=np.zeros(
+                (0, len(LBLRTM_BROADENER_SPECIES)), dtype=float
+            ),
             broadener_pressure_shifts=np.zeros((0, len(LBLRTM_BROADENER_SPECIES)), dtype=float),
             line_flags=empty_int,
             line_coupling_a=np.zeros((0, 4), dtype=float),
@@ -549,7 +560,7 @@ class LineList:
         )
 
     @classmethod
-    def demo_near_ir(cls) -> "LineList":
+    def demo_near_ir(cls) -> LineList:
         """Small synthetic line list for development tests.
 
         These are not real HITRAN values. They only let the package exercise the

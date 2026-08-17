@@ -101,8 +101,16 @@ def main() -> None:
     print("Metrics:", result.metrics)
 
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
-    axes[0].plot(result.spectrum.wavelength, result.spectrum.flux, color="0.35", lw=0.9, label="synthetic observed")
-    axes[0].plot(result.spectrum.wavelength, result.model_flux, color="tab:red", lw=1.0, label="fit")
+    axes[0].plot(
+        result.spectrum.wavelength,
+        result.spectrum.flux,
+        color="0.35",
+        lw=0.9,
+        label="synthetic observed",
+    )
+    axes[0].plot(
+        result.spectrum.wavelength, result.model_flux, color="tab:red", lw=1.0, label="fit"
+    )
     axes[0].set_ylabel("flux")
     axes[0].legend()
 

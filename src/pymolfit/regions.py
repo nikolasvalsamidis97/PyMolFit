@@ -92,7 +92,7 @@ class RegionSelection:
         *,
         wavelength_unit: str,
         wavelength_medium: str,
-    ) -> "RegionSelection":
+    ) -> RegionSelection:
         """Return these regions in another wavelength unit and medium."""
 
         target_medium = normalize_wavelength_medium(wavelength_medium)
@@ -114,10 +114,7 @@ class RegionSelection:
                     unit="micron",
                 )
             converted_values = values_micron / target_scale
-            return tuple(
-                (float(lower), float(upper))
-                for lower, upper in converted_values
-            )
+            return tuple((float(lower), float(upper)) for lower, upper in converted_values)
 
         return RegionSelection(
             fit_ranges=convert_ranges(self.fit_ranges),
@@ -142,10 +139,7 @@ def save_region_file(selection: RegionSelection, path: str | Path) -> Path:
     """
 
     destination = Path(path)
-    region_types = (
-        ["fit"] * len(selection.fit_ranges)
-        + ["exclude"] * len(selection.exclude_ranges)
-    )
+    region_types = ["fit"] * len(selection.fit_ranges) + ["exclude"] * len(selection.exclude_ranges)
     ranges = selection.fit_ranges + selection.exclude_ranges
     starts = [region[0] for region in ranges]
     ends = [region[1] for region in ranges]
@@ -174,26 +168,18 @@ def load_region_file(path: str | Path) -> RegionSelection:
     table = Table.read(source, format="ascii.ecsv")
     missing = [name for name in _REGION_COLUMNS if name not in table.colnames]
     if missing:
-        raise ValueError(
-            f"region file {source} is missing columns: {', '.join(missing)}"
-        )
+        raise ValueError(f"region file {source} is missing columns: {', '.join(missing)}")
     if table.meta.get("pymolfit_schema") != REGION_FILE_SCHEMA:
-        raise ValueError(
-            f"region file {source} does not declare the PyMolFit region schema"
-        )
+        raise ValueError(f"region file {source} does not declare the PyMolFit region schema")
     if int(table.meta.get("schema_version", -1)) != REGION_FILE_VERSION:
         raise ValueError(
-            f"unsupported region-file version in {source}: "
-            f"{table.meta.get('schema_version')!r}"
+            f"unsupported region-file version in {source}: {table.meta.get('schema_version')!r}"
         )
 
     wavelength_unit = table.meta.get("wavelength_unit")
     wavelength_medium = table.meta.get("wavelength_medium")
     if not wavelength_unit or not wavelength_medium:
-        raise ValueError(
-            f"region file {source} must declare wavelength_unit and "
-            "wavelength_medium"
-        )
+        raise ValueError(f"region file {source} must declare wavelength_unit and wavelength_medium")
 
     fit_ranges: list[tuple[float, float]] = []
     exclude_ranges: list[tuple[float, float]] = []
@@ -208,10 +194,7 @@ def load_region_file(path: str | Path) -> RegionSelection:
         elif kind == "exclude":
             exclude_ranges.append(interval)
         else:
-            raise ValueError(
-                f"region file {source} contains unsupported region_type "
-                f"{kind!r}"
-            )
+            raise ValueError(f"region file {source} contains unsupported region_type {kind!r}")
 
     return RegionSelection(
         fit_ranges=tuple(fit_ranges),
@@ -251,9 +234,7 @@ class InteractiveRegionSelector:
         show_telluric_lines: bool = True,
         max_telluric_markers: int = DEFAULT_TELLURIC_MARKER_LIMIT,
         automatic_region_count: int = DEFAULT_AUTOMATIC_REGION_COUNT,
-        automatic_region_half_width_pixels: float = (
-            DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS
-        ),
+        automatic_region_half_width_pixels: float = (DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS),
         enable_theoretical_controls: bool = False,
         show: bool = True,
     ) -> None:
@@ -268,8 +249,7 @@ class InteractiveRegionSelector:
             )
         except ImportError as exc:
             raise ImportError(
-                "interactive region selection requires Matplotlib; install "
-                "'pymolfit[interactive]'"
+                "interactive region selection requires Matplotlib; install 'pymolfit[interactive]'"
             ) from exc
         if max_telluric_markers <= 0:
             raise ValueError("max_telluric_markers must be positive")
@@ -279,9 +259,7 @@ class InteractiveRegionSelector:
             not np.isfinite(automatic_region_half_width_pixels)
             or automatic_region_half_width_pixels <= 0
         ):
-            raise ValueError(
-                "automatic_region_half_width_pixels must be positive and finite"
-            )
+            raise ValueError("automatic_region_half_width_pixels must be positive and finite")
 
         self.spectrum = spectrum.sorted()
         self.output_path = None if output_path is None else Path(output_path)
@@ -300,9 +278,7 @@ class InteractiveRegionSelector:
         self._telluric_marker_count = 0
         self._telluric_marker_error: str | None = None
         self._automatic_max_lines = int(max_telluric_markers)
-        self._automatic_region_half_width_pixels = float(
-            automatic_region_half_width_pixels
-        )
+        self._automatic_region_half_width_pixels = float(automatic_region_half_width_pixels)
         self._theoretical_spectrum = theoretical_spectrum
         self._stellar_mask_result: StellarMaskResult | None = None
         self.stellar_rv_box = None
@@ -321,21 +297,13 @@ class InteractiveRegionSelector:
                 wavelength_unit=self.spectrum.wavelength_unit,
                 wavelength_medium=self.spectrum.wavelength_medium,
             )
+            self._records.extend(("fit", lower, upper) for lower, upper in converted.fit_ranges)
             self._records.extend(
-                ("fit", lower, upper)
-                for lower, upper in converted.fit_ranges
-            )
-            self._records.extend(
-                ("exclude", lower, upper)
-                for lower, upper in converted.exclude_ranges
+                ("exclude", lower, upper) for lower, upper in converted.exclude_ranges
             )
 
-        has_stellar_controls = (
-            theoretical_spectrum is not None and enable_theoretical_controls
-        )
-        self.figure, self.axis = plt.subplots(
-            figsize=(17, 8) if has_stellar_controls else (13, 6)
-        )
+        has_stellar_controls = theoretical_spectrum is not None and enable_theoretical_controls
+        self.figure, self.axis = plt.subplots(figsize=(17, 8) if has_stellar_controls else (13, 6))
         self.figure.subplots_adjust(
             left=0.08,
             right=0.72 if has_stellar_controls else 0.80,
@@ -352,9 +320,7 @@ class InteractiveRegionSelector:
             f"[{self.spectrum.wavelength_unit}]"
         )
         self.axis.set_ylabel("Flux")
-        self.axis.set_title(
-            title if title is not None else "Select telluric fitting regions"
-        )
+        self.axis.set_title(title if title is not None else "Select telluric fitting regions")
 
         panel_left = 0.76 if has_stellar_controls else 0.83
         panel_width = 0.21 if has_stellar_controls else 0.14
@@ -408,9 +374,7 @@ class InteractiveRegionSelector:
             save_name_axis,
             "" if has_stellar_controls else "Filename ",
             initial=(
-                self.output_path.name
-                if self.output_path is not None
-                else "telluric_regions.ecsv"
+                self.output_path.name if self.output_path is not None else "telluric_regions.ecsv"
             ),
         )
         self.draw_checkbox.on_clicked(self._toggle_rectangle)
@@ -475,14 +439,10 @@ class InteractiveRegionSelector:
 
         return RegionSelection(
             fit_ranges=tuple(
-                (lower, upper)
-                for kind, lower, upper in self._records
-                if kind == "fit"
+                (lower, upper) for kind, lower, upper in self._records if kind == "fit"
             ),
             exclude_ranges=tuple(
-                (lower, upper)
-                for kind, lower, upper in self._records
-                if kind == "exclude"
+                (lower, upper) for kind, lower, upper in self._records if kind == "exclude"
             ),
             wavelength_unit=self.spectrum.wavelength_unit,
             wavelength_medium=self.spectrum.wavelength_medium,
@@ -510,9 +470,7 @@ class InteractiveRegionSelector:
         """
 
         if self._theoretical_spectrum is None:
-            raise ValueError(
-                "the selector was not created with theoretical_spectrum"
-            )
+            raise ValueError("the selector was not created with theoretical_spectrum")
         if self.stellar_rv_box is None:
             raise ValueError(
                 "theoretical controls are disabled; create the selector with "
@@ -552,9 +510,7 @@ class InteractiveRegionSelector:
                 self.stellar_velocity_search_box,
                 "velocity search",
             ),
-            fit_velocity_offset=bool(
-                self.stellar_alignment_checkbox.get_status()[0]
-            ),
+            fit_velocity_offset=bool(self.stellar_alignment_checkbox.get_status()[0]),
         )
         return self._replace_stellar_exclusions(candidate, remember=False)
 
@@ -592,9 +548,7 @@ class InteractiveRegionSelector:
                 fontsize=8,
             )
             return text_box_type(
-                self.figure.add_axes(
-                    (x_position, y_position, width, height)
-                ),
+                self.figure.add_axes((x_position, y_position, width, height)),
                 "",
                 initial=initial,
             )
@@ -669,16 +623,11 @@ class InteractiveRegionSelector:
             theoretical_spectrum,
         )
         selection = result.selection_for_spectrum(self.spectrum)
-        new_records = [
-            ("exclude", lower, upper)
-            for lower, upper in selection.exclude_ranges
-        ]
+        new_records = [("exclude", lower, upper) for lower, upper in selection.exclude_ranges]
         if remember:
             self._remember()
         old_stellar = set(self._stellar_records)
-        self._records = [
-            record for record in self._records if record not in old_stellar
-        ]
+        self._records = [record for record in self._records if record not in old_stellar]
         self._records.extend(new_records)
         self._stellar_records = new_records
         self._theoretical_spectrum = theoretical_spectrum
@@ -732,18 +681,12 @@ class InteractiveRegionSelector:
         """Delete every selected interval overlapping ``lower`` to ``upper``."""
 
         lower, upper = self._bounded_interval(lower, upper)
-        retained = [
-            record
-            for record in self._records
-            if record[2] < lower or record[1] > upper
-        ]
+        retained = [record for record in self._records if record[2] < lower or record[1] > upper]
         if len(retained) == len(self._records):
             return
         self._remember()
         self._records = retained
-        self._stellar_records = [
-            record for record in self._stellar_records if record in retained
-        ]
+        self._stellar_records = [record for record in self._stellar_records if record in retained]
         self._redraw_regions()
 
     def mark_visible_region(self, *, kind: RegionKind | None = None) -> None:
@@ -784,9 +727,7 @@ class InteractiveRegionSelector:
             half_width_pixels=self._automatic_region_half_width_pixels,
         )
         if not ranges:
-            raise ValueError(
-                "no covered positive-strength AER transitions were found"
-            )
+            raise ValueError("no covered positive-strength AER transitions were found")
         self._remember()
         self._records.extend(("fit", lower, upper) for lower, upper in ranges)
         self._redraw_regions()
@@ -819,9 +760,7 @@ class InteractiveRegionSelector:
         """Save the current selection to ECSV."""
 
         if path is None:
-            destination = self._output_path_from_filename(
-                self.save_name_box.text
-            )
+            destination = self._output_path_from_filename(self.save_name_box.text)
         else:
             destination = Path(path)
         if destination is None:
@@ -853,9 +792,7 @@ class InteractiveRegionSelector:
             positive = spacing[np.isfinite(spacing) & (spacing > 0)]
             if positive.size:
                 gap_limit = 20.0 * float(np.nanmedian(positive))
-                breaks = np.flatnonzero(
-                    ~np.isfinite(spacing) | (spacing > gap_limit)
-                ) + 1
+                breaks = np.flatnonzero(~np.isfinite(spacing) | (spacing > gap_limit)) + 1
                 sections = tuple(np.split(indices, breaks))
             else:
                 sections = (indices,)
@@ -908,9 +845,7 @@ class InteractiveRegionSelector:
             raise ValueError("region endpoints must be finite")
         if lower > upper:
             lower, upper = upper, lower
-        finite = self.spectrum.wavelength[
-            np.isfinite(self.spectrum.wavelength)
-        ]
+        finite = self.spectrum.wavelength[np.isfinite(self.spectrum.wavelength)]
         minimum = float(np.nanmin(finite))
         maximum = float(np.nanmax(finite))
         lower = max(lower, minimum)
@@ -920,9 +855,7 @@ class InteractiveRegionSelector:
         return lower, upper
 
     def _remember(self) -> None:
-        self._history.append(
-            (list(self._records), list(self._stellar_records))
-        )
+        self._history.append((list(self._records), list(self._stellar_records)))
 
     def _on_rectangle(self, click_event: object, release_event: object) -> None:
         lower = getattr(click_event, "xdata", None)
@@ -940,11 +873,7 @@ class InteractiveRegionSelector:
 
     def _set_mode(self, label: str) -> None:
         self._mode = label.strip().lower()  # type: ignore[assignment]
-        color = (
-            _REGION_COLORS[self._mode]
-            if self._mode in _REGION_COLORS
-            else "#666666"
-        )
+        color = _REGION_COLORS.get(self._mode, "#666666")
         self.rectangle_selector.set_props(facecolor=color, alpha=0.25)
         self._update_status()
 
@@ -974,8 +903,7 @@ class InteractiveRegionSelector:
             self._update_status(str(exc))
             return
         self._update_status(
-            f"Automatic selection will use the {count} strongest expected "
-            "telluric lines."
+            f"Automatic selection will use the {count} strongest expected telluric lines."
         )
 
     @staticmethod
@@ -994,11 +922,7 @@ class InteractiveRegionSelector:
             raise ValueError("enter a filename without a directory")
         if Path(name).suffix.lower() != ".ecsv":
             name += ".ecsv"
-        directory = (
-            self.output_path.parent
-            if self.output_path is not None
-            else Path.cwd()
-        )
+        directory = self.output_path.parent if self.output_path is not None else Path.cwd()
         return directory / name
 
     def _undo_event(self, _event: object) -> None:
@@ -1016,9 +940,7 @@ class InteractiveRegionSelector:
         except (OSError, ValueError) as exc:
             self._update_status(str(exc))
             return
-        self._update_status(
-            f"Updated theoretical stellar mask: {len(ranges)} exclusions."
-        )
+        self._update_status(f"Updated theoretical stellar mask: {len(ranges)} exclusions.")
 
     def _clear_event(self, _event: object) -> None:
         self.clear()
@@ -1053,13 +975,15 @@ class InteractiveRegionSelector:
                     linewidth=1.0,
                     label=(
                         "Fit region"
-                        if kind == "fit" and not any(
+                        if kind == "fit"
+                        and not any(
                             record.get_label() == "Fit region"
                             for record in self._patches  # type: ignore[attr-defined]
                         )
                         else (
                             "Excluded region"
-                            if kind == "exclude" and not any(
+                            if kind == "exclude"
+                            and not any(
                                 record.get_label() == "Excluded region"
                                 for record in self._patches  # type: ignore[attr-defined]
                             )
@@ -1093,31 +1017,21 @@ class InteractiveRegionSelector:
 
     def _update_status(self, message: str | None = None) -> None:
         selection = self.selection
-        display_regions = (
-            tuple(("fit", lower, upper) for lower, upper in selection.fit_ranges)
-            + tuple(
-                ("exclude", lower, upper)
-                for lower, upper in selection.exclude_ranges
-            )
-        )
+        display_regions = tuple(
+            ("fit", lower, upper) for lower, upper in selection.fit_ranges
+        ) + tuple(("exclude", lower, upper) for lower, upper in selection.exclude_ranges)
         lines = []
         if message is not None:
             lines.append(message)
         lines.extend(
             (
                 f"Mode: {self._mode}",
-                (
-                    "Drawing: on"
-                    if self.rectangle_selector.active
-                    else "Drawing: off"
-                ),
+                ("Drawing: on" if self.rectangle_selector.active else "Drawing: off"),
                 f"Regions in memory: {len(display_regions)}",
             )
         )
         if self._telluric_marker_count:
-            lines.append(
-                f"AER markers: {self._telluric_marker_count}"
-            )
+            lines.append(f"AER markers: {self._telluric_marker_count}")
         elif self._telluric_marker_error is not None:
             lines.append("AER markers unavailable")
         if self._stellar_mask_result is not None:
@@ -1135,9 +1049,7 @@ class InteractiveRegionSelector:
             lines.append(f"R{index} {kind}:")
             lines.append(f"  {lower:.6g} - {upper:.6g}")
         if display_limit and len(display_regions) > display_limit:
-            lines.append(
-                f"... plus {len(display_regions) - display_limit} more"
-            )
+            lines.append(f"... plus {len(display_regions) - display_limit} more")
         if display_regions and self._theoretical_spectrum is None:
             lines.append("Save All writes every region.")
         self.status_text.set_text("\n".join(lines))
@@ -1158,9 +1070,7 @@ def select_telluric_regions(
     show_telluric_lines: bool = True,
     max_telluric_markers: int = DEFAULT_TELLURIC_MARKER_LIMIT,
     automatic_region_count: int = DEFAULT_AUTOMATIC_REGION_COUNT,
-    automatic_region_half_width_pixels: float = (
-        DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS
-    ),
+    automatic_region_half_width_pixels: float = (DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS),
     enable_theoretical_controls: bool = False,
     reuse_existing: bool = True,
     show: bool = True,
@@ -1203,14 +1113,10 @@ def select_telluric_regions(
 
     has_arrays = wavelength is not None or flux is not None
     if spectrum is not None and has_arrays:
-        raise ValueError(
-            "provide either spectrum or wavelength/flux arrays, not both"
-        )
+        raise ValueError("provide either spectrum or wavelength/flux arrays, not both")
     if spectrum is None:
         if wavelength is None or flux is None:
-            raise ValueError(
-                "provide spectrum or both wavelength and flux arrays"
-            )
+            raise ValueError("provide spectrum or both wavelength and flux arrays")
         spectrum = Spectrum(
             wavelength=np.asarray(wavelength, dtype=float),
             flux=np.asarray(flux, dtype=float),
@@ -1290,9 +1196,7 @@ def _prepare_stellar_mask_for_selector(
         observatory_spectrum,
         header,
     )
-    resolving_power = (
-        None if resolution is None else float(resolution["resolving_power"])
-    )
+    resolving_power = None if resolution is None else float(resolution["resolving_power"])
     return theoretical_spectrum.build_mask(
         observatory_spectrum,
         frame_correction_factor=_stellar_template_frame_correction_factor(
@@ -1351,18 +1255,14 @@ def _aer_catalog_for_spectrum(
     marker_micron = np.asarray(line_list.wavelength, dtype=float) * erf_factor
     if spectrum.wavelength_medium == "air":
         marker_micron = vacuum_to_air_wavelength(marker_micron, unit="micron")
-    marker_wavelength = (
-        marker_micron / wavelength_scale_to_micron(spectrum.wavelength_unit)
-    )
+    marker_wavelength = marker_micron / wavelength_scale_to_micron(spectrum.wavelength_unit)
     species = np.asarray(line_list.species, dtype=str)
     strength = np.asarray(line_list.strength, dtype=float)
 
     lower = float(np.nanmin(spectrum.wavelength))
     upper = float(np.nanmax(spectrum.wavelength))
     keep = (
-        np.isfinite(marker_wavelength)
-        & (marker_wavelength >= lower)
-        & (marker_wavelength <= upper)
+        np.isfinite(marker_wavelength) & (marker_wavelength >= lower) & (marker_wavelength <= upper)
     )
     return marker_wavelength[keep], species[keep], strength[keep]
 
@@ -1394,9 +1294,8 @@ def _automatic_fit_regions(
         insertion = np.searchsorted(sampled_wavelength, marker_wavelength)
         right = np.clip(insertion, 0, sampled_wavelength.size - 1)
         left = np.clip(insertion - 1, 0, sampled_wavelength.size - 1)
-        choose_right = (
-            np.abs(sampled_wavelength[right] - marker_wavelength)
-            < np.abs(sampled_wavelength[left] - marker_wavelength)
+        choose_right = np.abs(sampled_wavelength[right] - marker_wavelength) < np.abs(
+            sampled_wavelength[left] - marker_wavelength
         )
         nearest = np.where(choose_right, right, left)
         local_steps = _local_selector_pixel_steps(sampled_wavelength)
@@ -1421,9 +1320,9 @@ def _automatic_fit_regions(
     eligible_indices = np.flatnonzero(eligible)
     if eligible_indices.size == 0:
         return ()
-    ranking = eligible_indices[
-        np.argsort(-absorption_score[eligible_indices], kind="stable")
-    ][:count]
+    ranking = eligible_indices[np.argsort(-absorption_score[eligible_indices], kind="stable")][
+        :count
+    ]
 
     raw_ranges: list[tuple[float, float]] = []
     for index in ranking:
@@ -1481,13 +1380,15 @@ def _selector_sampling_sections(spectrum: Spectrum) -> tuple[np.ndarray, ...]:
         grouped_wavelengths.append(np.asarray(spectrum.wavelength[valid], dtype=float))
     else:
         group_id = np.asarray(spectrum.group_id)
-        for value in np.unique(group_id[valid]):
-            grouped_wavelengths.append(
+        grouped_wavelengths.extend(
+            [
                 np.asarray(
                     spectrum.wavelength[valid & (group_id == value)],
                     dtype=float,
                 )
-            )
+                for value in np.unique(group_id[valid])
+            ]
+        )
 
     sections: list[np.ndarray] = []
     for raw_wavelength in grouped_wavelengths:
@@ -1501,9 +1402,7 @@ def _selector_sampling_sections(spectrum: Spectrum) -> tuple[np.ndarray, ...]:
         gap_limit = 20.0 * float(np.nanmedian(positive))
         boundaries = np.flatnonzero(steps > gap_limit) + 1
         sections.extend(
-            section
-            for section in np.split(wavelength, boundaries)
-            if section.size >= 2
+            section for section in np.split(wavelength, boundaries) if section.size >= 2
         )
     return tuple(sections)
 
@@ -1540,9 +1439,7 @@ def _selector_erf_factor(spectrum: Spectrum) -> float:
     if frame_velocity is None:
         return 1.0
     _, velocity_km_s = frame_velocity
-    return (1.0 + 1.55e-8) * (
-        1.0 + velocity_km_s / (SPEED_OF_LIGHT_M_PER_S / 1_000.0)
-    )
+    return (1.0 + 1.55e-8) * (1.0 + velocity_km_s / (SPEED_OF_LIGHT_M_PER_S / 1_000.0))
 
 
 def _selector_header(spectrum: Spectrum) -> Mapping[str, object] | None:

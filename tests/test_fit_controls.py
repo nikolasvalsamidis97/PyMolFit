@@ -11,8 +11,8 @@ from pymolfit import (
     fit_tellurics,
     transmission_model,
 )
-from pymolfit.diagnostics import correction_summary, residual_by_window
 from pymolfit.atmosphere import AtmosphereProfile
+from pymolfit.diagnostics import correction_summary, residual_by_window
 from pymolfit.fit import _shift_basis
 from pymolfit.model import optical_depth_basis, transmission_from_basis
 
@@ -149,9 +149,7 @@ def test_fit_recovers_wavelength_dependent_detector_pixel_shift():
         gamma=np.full(5, 7.0e-6),
         species=np.full(5, "H2O"),
     )
-    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(
-        wavelength
-    )
+    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(wavelength)
     true_coefficients = np.array([0.4, 1.1])
     pixel_shift = true_coefficients[0] + true_coefficients[1] * x
     species_names, basis = optical_depth_basis(wavelength, line_list)
@@ -289,11 +287,8 @@ def test_multi_segment_fit_recovers_lsf_wavelength_exponent():
         true_exponent,
         atol=0.03,
     )
-    assert (
-        result.segment_results[0].to_table().meta[
-            "lsf_wavelength_exponent"
-        ]
-        == pytest.approx(true_exponent, abs=0.03)
+    assert result.segment_results[0].to_table().meta["lsf_wavelength_exponent"] == pytest.approx(
+        true_exponent, abs=0.03
     )
 
 
@@ -523,13 +518,17 @@ def test_fit_telluric_segments_can_solve_continuum_linearly():
     spectra = []
     for center, continuum_scale in [(2.331, 1.2), (2.351, 2.1)]:
         wavelength = np.linspace(center - 0.004, center + 0.004, 500)
-        continuum = continuum_scale + 0.03 * (wavelength - np.nanmean(wavelength)) / np.ptp(wavelength)
+        continuum = continuum_scale + 0.03 * (wavelength - np.nanmean(wavelength)) / np.ptp(
+            wavelength
+        )
         flux = continuum * transmission_model(
             wavelength,
             line_list,
             ModelConfig(species_scales={"H2O": 1.7}),
         )
-        spectra.append(Spectrum(wavelength=wavelength, flux=flux, uncertainty=np.full_like(flux, 0.01)))
+        spectra.append(
+            Spectrum(wavelength=wavelength, flux=flux, uncertainty=np.full_like(flux, 0.01))
+        )
 
     result = fit_telluric_segments(
         spectra,
@@ -631,10 +630,7 @@ def test_fit_chunks_can_share_one_physical_group_wavelength_solution():
         true_shift,
         atol=3.0e-5,
     )
-    assert all(
-        segment.transmission_uncertainty is not None
-        for segment in result.segment_results
-    )
+    assert all(segment.transmission_uncertainty is not None for segment in result.segment_results)
 
 
 def test_unobservable_species_scale_is_fixed_automatically():
@@ -660,9 +656,7 @@ def test_unobservable_species_scale_is_fixed_automatically():
     assert result.success
     assert result.species_scales["O2"] == pytest.approx(1.0)
     assert "log_scale:O2" not in result.parameter_names
-    assert result.provenance["species_observability"]["automatically_fixed"] == {
-        "O2": 1.0
-    }
+    assert result.provenance["species_observability"]["automatically_fixed"] == {"O2": 1.0}
 
 
 def test_fit_telluric_segments_can_fit_segment_wavelength_polynomial():
@@ -674,7 +668,11 @@ def test_fit_telluric_segments_can_fit_segment_wavelength_polynomial():
         species=np.array(["H2O", "H2O", "H2O"]),
     )
     wavelength = np.linspace(2.322, 2.340, 900)
-    x = 2.0 * (wavelength - 0.5 * (wavelength[0] + wavelength[-1])) / (wavelength[-1] - wavelength[0])
+    x = (
+        2.0
+        * (wavelength - 0.5 * (wavelength[0] + wavelength[-1]))
+        / (wavelength[-1] - wavelength[0])
+    )
     true_coefficients = np.array([2.0e-5, 8.0e-5])
     true_shift = true_coefficients[0] + true_coefficients[1] * x
     species_names, basis = optical_depth_basis(wavelength, line_list)

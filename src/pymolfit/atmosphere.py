@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
-from typing import Mapping
 
 import numpy as np
 from astropy.table import Table
@@ -92,12 +92,39 @@ DEFAULT_METEO_MIXING_HEIGHT_M = 5_000.0
 _LAYER_QUADRATURE_NODES, _LAYER_QUADRATURE_WEIGHTS = np.polynomial.legendre.leggauss(16)
 MOLECFIT_FIXED_LOW_LEVELS_M = np.asarray(
     [
-        0.0, 500.0, 1_000.0, 1_500.0, 2_000.0, 2_500.0, 3_000.0,
-        3_500.0, 4_000.0, 4_500.0, 5_000.0, 5_500.0, 6_000.0,
-        6_500.0, 7_000.0, 7_500.0, 8_000.0, 8_500.0, 9_000.0,
-        9_500.0, 10_000.0, 11_000.0, 12_000.0, 13_000.0, 14_000.0,
-        15_000.0, 16_000.0, 17_000.0, 18_000.0, 20_000.0, 22_000.0,
-        24_000.0, 26_000.0,
+        0.0,
+        500.0,
+        1_000.0,
+        1_500.0,
+        2_000.0,
+        2_500.0,
+        3_000.0,
+        3_500.0,
+        4_000.0,
+        4_500.0,
+        5_000.0,
+        5_500.0,
+        6_000.0,
+        6_500.0,
+        7_000.0,
+        7_500.0,
+        8_000.0,
+        8_500.0,
+        9_000.0,
+        9_500.0,
+        10_000.0,
+        11_000.0,
+        12_000.0,
+        13_000.0,
+        14_000.0,
+        15_000.0,
+        16_000.0,
+        17_000.0,
+        18_000.0,
+        20_000.0,
+        22_000.0,
+        24_000.0,
+        26_000.0,
     ],
     dtype=float,
 )
@@ -149,7 +176,11 @@ class AtmosphereLayer:
         return self._column_density_cm2(species, self.path_length_m)
 
     def vertical_column_density_cm2(self, species: str) -> float:
-        vertical_path = self.path_length_m if self.vertical_path_length_m is None else self.vertical_path_length_m
+        vertical_path = (
+            self.path_length_m
+            if self.vertical_path_length_m is None
+            else self.vertical_path_length_m
+        )
         return self._column_density_cm2(species, vertical_path)
 
     def _column_density_cm2(self, species: str, path_length_m: float) -> float:
@@ -188,18 +219,22 @@ class AtmosphereProfile:
         table["temperature_k"] = [layer.temperature_k for layer in self.layers]
         table["path_length_m"] = [layer.path_length_m for layer in self.layers]
         table["vertical_path_length_m"] = [
-            layer.path_length_m if layer.vertical_path_length_m is None else layer.vertical_path_length_m
+            layer.path_length_m
+            if layer.vertical_path_length_m is None
+            else layer.vertical_path_length_m
             for layer in self.layers
         ]
         for species in self.species_names:
-            table[f"mix_{species}"] = [layer.mixing_ratios.get(species, 0.0) for layer in self.layers]
+            table[f"mix_{species}"] = [
+                layer.mixing_ratios.get(species, 0.0) for layer in self.layers
+            ]
         table.meta.update(dict(self.metadata))
         return table
 
     def write(self, path: str | Path, *, format: str = "ascii.ecsv") -> None:
         self.to_table().write(path, format=format, overwrite=True)
 
-    def scaled_species(self, species_scales: Mapping[str, float]) -> "AtmosphereProfile":
+    def scaled_species(self, species_scales: Mapping[str, float]) -> AtmosphereProfile:
         layers = []
         for layer in self.layers:
             mixing_ratios = dict(layer.mixing_ratios)
@@ -218,7 +253,7 @@ class AtmosphereProfile:
             )
         return AtmosphereProfile(tuple(layers), metadata=self.metadata)
 
-    def with_path_scale(self, scale: float) -> "AtmosphereProfile":
+    def with_path_scale(self, scale: float) -> AtmosphereProfile:
         """Return a profile with all layer path lengths multiplied by ``scale``."""
 
         if scale <= 0:
@@ -231,7 +266,9 @@ class AtmosphereProfile:
                     path_length_m=layer.path_length_m * scale,
                     mixing_ratios=dict(layer.mixing_ratios),
                     vertical_path_length_m=(
-                        None if layer.vertical_path_length_m is None else layer.vertical_path_length_m * scale
+                        None
+                        if layer.vertical_path_length_m is None
+                        else layer.vertical_path_length_m * scale
                     ),
                 )
                 for layer in self.layers
@@ -247,7 +284,7 @@ class AtmosphereProfile:
         path_scale: float = 1.0,
         species_scales: Mapping[str, float] | None = None,
         label: str | None = None,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Return a traceable atmosphere variant for sensitivity analysis.
 
         The operation is deliberately mechanical: callers choose perturbations
@@ -270,7 +307,9 @@ class AtmosphereProfile:
         for layer in self.layers:
             temperature = layer.temperature_k + temperature_offset_k
             if temperature <= 0:
-                raise ValueError("temperature perturbation produces a non-positive layer temperature")
+                raise ValueError(
+                    "temperature perturbation produces a non-positive layer temperature"
+                )
             ratios = dict(layer.mixing_ratios)
             for species, scale in resolved_species_scales.items():
                 ratios[species] = ratios.get(species, 0.0) * scale
@@ -303,7 +342,7 @@ class AtmosphereProfile:
             },
         )
 
-    def with_species_column(self, species: str, target_column_cm2: float) -> "AtmosphereProfile":
+    def with_species_column(self, species: str, target_column_cm2: float) -> AtmosphereProfile:
         if target_column_cm2 < 0:
             raise ValueError("target_column_cm2 must be non-negative")
         current = self.total_column_cm2(species)
@@ -311,7 +350,7 @@ class AtmosphereProfile:
             raise ValueError(f"cannot scale {species}; current column is zero")
         return self.scaled_species({species: target_column_cm2 / current})
 
-    def with_pwv_mm(self, pwv_mm: float) -> "AtmosphereProfile":
+    def with_pwv_mm(self, pwv_mm: float) -> AtmosphereProfile:
         """Return a profile scaled to a precipitable water vapor column."""
 
         if pwv_mm < 0:
@@ -330,7 +369,7 @@ class AtmosphereProfile:
         path_length_m: float = 8_000.0,
         airmass: float = 1.0,
         mixing_ratios: Mapping[str, float] | None = None,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         if airmass <= 0:
             raise ValueError("airmass must be positive")
         return cls(
@@ -339,7 +378,9 @@ class AtmosphereProfile:
                     pressure_atm=pressure_atm,
                     temperature_k=temperature_k,
                     path_length_m=path_length_m * airmass,
-                    mixing_ratios=DEFAULT_TELLURIC_MIXING_RATIOS if mixing_ratios is None else dict(mixing_ratios),
+                    mixing_ratios=DEFAULT_TELLURIC_MIXING_RATIOS
+                    if mixing_ratios is None
+                    else dict(mixing_ratios),
                     vertical_path_length_m=path_length_m,
                 ),
             )
@@ -355,7 +396,7 @@ class AtmosphereProfile:
         path_length_col: str | None = None,
         mixing_prefixes: tuple[str, ...] = ("mix_", "vmr_"),
         airmass: float = 1.0,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         if airmass <= 0:
             raise ValueError("airmass must be positive")
         table = Table.read(path)
@@ -377,20 +418,19 @@ class AtmosphereProfile:
         if not mixing_cols:
             raise ValueError("atmosphere table must contain mixing-ratio columns like mix_H2O")
 
-        layers = []
-        for index in range(len(table)):
-            layers.append(
-                AtmosphereLayer(
-                    pressure_atm=float(pressure_atm[index]),
-                    temperature_k=float(temperature_k[index]),
-                    path_length_m=float(path_length_m[index]),
-                    mixing_ratios={
-                        species: float(np.asarray(table[col], dtype=float)[index])
-                        for col, species in mixing_cols.items()
-                    },
-                    vertical_path_length_m=float(vertical_path_length_m[index]),
-                )
+        layers = [
+            AtmosphereLayer(
+                pressure_atm=float(pressure_atm[index]),
+                temperature_k=float(temperature_k[index]),
+                path_length_m=float(path_length_m[index]),
+                mixing_ratios={
+                    species: float(np.asarray(table[col], dtype=float)[index])
+                    for col, species in mixing_cols.items()
+                },
+                vertical_path_length_m=float(vertical_path_length_m[index]),
             )
+            for index in range(len(table))
+        ]
         return cls(tuple(layers))
 
     @classmethod
@@ -407,7 +447,7 @@ class AtmosphereProfile:
         water_scale_height_m: float = 2_000.0,
         spherical_slant: bool = True,
         earth_radius_m: float = EARTH_RADIUS_M,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Simple multi-layer atmosphere above an observatory.
 
         This is deliberately self-contained. It is not a replacement for GDAS or
@@ -424,7 +464,9 @@ class AtmosphereProfile:
         if earth_radius_m <= 0:
             raise ValueError("earth_radius_m must be positive")
 
-        base_ratios = DEFAULT_TELLURIC_MIXING_RATIOS if mixing_ratios is None else dict(mixing_ratios)
+        base_ratios = (
+            DEFAULT_TELLURIC_MIXING_RATIOS if mixing_ratios is None else dict(mixing_ratios)
+        )
         edges = np.linspace(observatory_altitude_m, top_altitude_m, n_layers + 1)
         centers = 0.5 * (edges[:-1] + edges[1:])
         thickness = (
@@ -485,7 +527,7 @@ class AtmosphereProfile:
         top_altitude_m: float = 80_000.0,
         mixing_ratios: Mapping[str, float] | None = None,
         spherical_slant: bool = True,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Build a self-contained atmosphere from common observing metadata.
 
         This is the no-GDAS fallback intended for generic instruments. It uses
@@ -498,7 +540,9 @@ class AtmosphereProfile:
         if pressure_at_observatory_atm is None:
             pressure_at_observatory_atm = _standard_pressure_at_altitude_atm(observatory_altitude_m)
         if temperature_at_observatory_k is None:
-            temperature_at_observatory_k = _standard_temperature_at_altitude_k(observatory_altitude_m)
+            temperature_at_observatory_k = _standard_temperature_at_altitude_k(
+                observatory_altitude_m
+            )
         profile = cls.standard_midlatitude(
             airmass=airmass,
             observatory_altitude_m=observatory_altitude_m,
@@ -536,7 +580,7 @@ class AtmosphereProfile:
         refracted_slant: bool = True,
         reference_wavenumber_cm: float = 10_000.0,
         earth_radius_m: float = EARTH_RADIUS_M,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Build a Molecfit-style MIPAS+GDAS atmospheric profile.
 
         The shipped MIPAS profile supplies the long-lived species and the
@@ -635,9 +679,7 @@ class AtmosphereProfile:
                     else float(temperature_at_observatory_k)
                 ),
                 "relative_humidity_percent": (
-                    None
-                    if relative_humidity_percent is None
-                    else float(relative_humidity_percent)
+                    None if relative_humidity_percent is None else float(relative_humidity_percent)
                 ),
                 "reference_wavenumber_cm": float(reference_wavenumber_cm),
                 "refracted_slant": bool(spherical_slant and refracted_slant),
@@ -669,7 +711,7 @@ class AtmosphereProfile:
         spherical_slant: bool = True,
         refracted_slant: bool = True,
         reference_wavenumber_cm: float = 10_000.0,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Build a MIPAS+GDAS atmosphere from FITS observing metadata."""
 
         pressure = pressure_at_observatory_atm
@@ -687,7 +729,11 @@ class AtmosphereProfile:
                 numbered_suffixes=("AMBI PRES START", "AMBI PRES END"),
                 default=np.nan,
             )
-            pressure = None if not np.isfinite(pressure_hpa) or pressure_hpa <= 0 else pressure_hpa / HPA_PER_ATM
+            pressure = (
+                None
+                if not np.isfinite(pressure_hpa) or pressure_hpa <= 0
+                else pressure_hpa / HPA_PER_ATM
+            )
 
         temperature = temperature_at_observatory_k
         if temperature is None:
@@ -780,14 +826,10 @@ class AtmosphereProfile:
         top_altitude_m: float = 80_000.0,
         mixing_ratios: Mapping[str, float] | None = None,
         spherical_slant: bool = True,
-    ) -> "AtmosphereProfile":
+    ) -> AtmosphereProfile:
         """Build a standard atmosphere from a FITS-like header mapping."""
 
-        resolved_airmass = (
-            _header_airmass(header)
-            if airmass is None
-            else float(airmass)
-        )
+        resolved_airmass = _header_airmass(header) if airmass is None else float(airmass)
         site, site_source = _header_observatory_site(header)
         altitude, altitude_source = _resolve_header_observatory_altitude(
             header,
@@ -810,7 +852,11 @@ class AtmosphereProfile:
                 numbered_suffixes=("AMBI PRES START", "AMBI PRES END"),
                 default=np.nan,
             )
-            pressure = None if not np.isfinite(pressure_hpa) or pressure_hpa <= 0 else pressure_hpa / 1013.25
+            pressure = (
+                None
+                if not np.isfinite(pressure_hpa) or pressure_hpa <= 0
+                else pressure_hpa / 1013.25
+            )
         temperature = temperature_at_observatory_k
         if temperature is None:
             temperature_c = _header_float_with_numbered_telescope_fallback(
@@ -968,10 +1014,10 @@ def _load_gdas_profile(
 def _load_average_gdas_profile(
     observation_time: Time | datetime | str | float | None,
 ) -> Table:
-        index = _gdas_average_index_for_month(_observation_month(observation_time))
-        resource = _package_data_path("profiles", "gdas", f"GDAS_t0_s{index}.fits")
-        with resources.as_file(resource) as path:
-            return Table.read(path, hdu=1)
+    index = _gdas_average_index_for_month(_observation_month(observation_time))
+    resource = _package_data_path("profiles", "gdas", f"GDAS_t0_s{index}.fits")
+    with resources.as_file(resource) as path:
+        return Table.read(path, hdu=1)
 
 
 def _observation_month(observation_time: Time | datetime | str | float | None) -> int:
@@ -1036,7 +1082,7 @@ def _molecfit_fixed_height_levels_m(
     if top <= max(altitude, MOLECFIT_FIXED_LOW_LEVELS_M[-1]):
         raise ValueError("top_altitude_m must exceed both the observatory and 26 km")
 
-    candidates = np.nonzero(MOLECFIT_FIXED_LOW_LEVELS_M > altitude - 1_000.0)[0]
+    candidates = np.nonzero(altitude - 1_000.0 < MOLECFIT_FIXED_LOW_LEVELS_M)[0]
     i0 = int(candidates[0]) if candidates.size else MOLECFIT_FIXED_LOW_LEVELS_M.size - 1
     low = MOLECFIT_FIXED_LOW_LEVELS_M[i0:]
     n_rows = max(2, 54 - i0)
@@ -1066,13 +1112,17 @@ def _merge_mipas_gdas_fixed_levels(
     mipas_height = np.asarray(mipas["height_m"], dtype=float)
     gdas_height = np.asarray(gdas["height_m"], dtype=float)
 
-    mipas_pressure = _interp_linear_clipped(altitude, mipas_height, np.asarray(mipas["pressure_hpa"], dtype=float))
+    mipas_pressure = _interp_linear_clipped(
+        altitude, mipas_height, np.asarray(mipas["pressure_hpa"], dtype=float)
+    )
     mipas_temperature = _interp_linear_clipped(
         altitude,
         mipas_height,
         np.asarray(mipas["temperature_k"], dtype=float),
     )
-    gdas_pressure = _interp_linear_clipped(altitude, gdas_height, np.asarray(gdas["pressure_hpa"], dtype=float))
+    gdas_pressure = _interp_linear_clipped(
+        altitude, gdas_height, np.asarray(gdas["pressure_hpa"], dtype=float)
+    )
     gdas_temperature = _interp_linear_clipped(
         altitude,
         gdas_height,
@@ -1088,7 +1138,9 @@ def _merge_mipas_gdas_fixed_levels(
     standard_fraction = np.where(altitude < 20_000.0, 0.0, standard_fraction)
     standard_fraction = np.where(altitude > 26_000.0, 1.0, standard_fraction)
     pressure = gdas_pressure * (1.0 - standard_fraction) + mipas_pressure * standard_fraction
-    temperature = gdas_temperature * (1.0 - standard_fraction) + mipas_temperature * standard_fraction
+    temperature = (
+        gdas_temperature * (1.0 - standard_fraction) + mipas_temperature * standard_fraction
+    )
 
     mixing_ratios: dict[str, np.ndarray] = {
         species: _interp_linear_clipped(altitude, mipas_height, np.asarray(values, dtype=float))
@@ -1131,14 +1183,18 @@ def _layers_from_atmosphere_levels(
     if edges.size < 2:
         raise ValueError("atmosphere levels do not extend above the observatory")
 
-    level_pressure = np.concatenate(([_interp_log_clipped_scalar(site, altitude, pressure)], pressure[above]))
+    level_pressure = np.concatenate(
+        ([_interp_log_clipped_scalar(site, altitude, pressure)], pressure[above])
+    )
     level_temperature = np.concatenate(
         ([_interp_log_clipped_scalar(site, altitude, temperature)], temperature[above])
     )
     level_ratios = {}
     for species, values in mixing_ratios.items():
         array = np.asarray(values, dtype=float)
-        site_value = _interp_log_clipped_scalar(site, altitude, np.maximum(array, np.finfo(float).tiny))
+        site_value = _interp_log_clipped_scalar(
+            site, altitude, np.maximum(array, np.finfo(float).tiny)
+        )
         level_ratios[species] = np.concatenate(([site_value], array[above]))
 
     # LBLRTM's ALAYER exponentially interpolates pressure, total density,
@@ -1173,15 +1229,12 @@ def _layers_from_atmosphere_levels(
         reference_wavenumber_cm=reference_wavenumber_cm,
         earth_radius_m=earth_radius_m,
     )
-    weights = (
-        0.5
-        * vertical[:, None]
-        * _LAYER_QUADRATURE_WEIGHTS[None, :]
-        * path_factor
-    )
+    weights = 0.5 * vertical[:, None] * _LAYER_QUADRATURE_WEIGHTS[None, :] * path_factor
 
     density_integral = np.sum(total_density_nodes * weights, axis=1)
-    layer_pressure = np.sum(pressure_nodes * total_density_nodes * weights, axis=1) / density_integral
+    layer_pressure = (
+        np.sum(pressure_nodes * total_density_nodes * weights, axis=1) / density_integral
+    )
     layer_temperature = np.sum(pressure_nodes * weights, axis=1) / (
         BOLTZMANN_J_PER_K * density_integral / 100.0
     )
@@ -1189,8 +1242,7 @@ def _layers_from_atmosphere_levels(
     effective_paths = density_integral / equivalent_density
     vertical_density_nodes = _exponential_level_interpolation(total_density_levels, fraction)
     vertical_density_integral = np.sum(
-        vertical_density_nodes
-        * (0.5 * vertical[:, None] * _LAYER_QUADRATURE_WEIGHTS[None, :]),
+        vertical_density_nodes * (0.5 * vertical[:, None] * _LAYER_QUADRATURE_WEIGHTS[None, :]),
         axis=1,
     )
     effective_vertical_paths = vertical_density_integral / equivalent_density
@@ -1202,9 +1254,7 @@ def _layers_from_atmosphere_levels(
     for species in species_names:
         ratio_levels = np.asarray(level_ratios[species], dtype=float)
         number_density_levels = (
-            h2o_number_density
-            if species == "H2O"
-            else dry_air_density * ratio_levels
+            h2o_number_density if species == "H2O" else dry_air_density * ratio_levels
         )
         number_density_nodes = _exponential_level_interpolation(
             np.maximum(number_density_levels, np.finfo(float).tiny),
@@ -1222,8 +1272,7 @@ def _layers_from_atmosphere_levels(
             # path preserves the source-integrated total amount exactly.
             path_length_m=float(effective_paths[index]),
             mixing_ratios={
-                species: float(layer_ratios[species][index])
-                for species in species_names
+                species: float(layer_ratios[species][index]) for species in species_names
             },
             vertical_path_length_m=float(effective_vertical_paths[index]),
         )
@@ -1262,11 +1311,7 @@ def lblrtm_lowtran6_refractivity(
     dry_denominator_2 = 1.0 - (wavenumber / 6.24e4) ** 2
     if abs(dry_denominator_1) < 1.0e-12 or abs(dry_denominator_2) < 1.0e-12:
         raise ValueError("reference wavenumber is at a LOWTRAN6 refractivity pole")
-    dry_coefficient = (
-        83.42
-        + 185.08 / dry_denominator_1
-        + 4.11 / dry_denominator_2
-    )
+    dry_coefficient = 83.42 + 185.08 / dry_denominator_1 + 4.11 / dry_denominator_2
     water_coefficient = 43.49 - (wavenumber / 1.7e4) ** 2
     h2o_partial_pressure_hpa = pressure * np.clip(h2o, 0.0, None)
     return (
@@ -1324,152 +1369,13 @@ def _lblrtm_path_factor_dsdh(
         refractivity = np.zeros(altitude.shape, dtype=float)
         observer_refractivity = 0.0
 
-    observer_nr = (1.0 + observer_refractivity) * (
-        earth_radius_m + float(observer_altitude_m)
-    )
+    observer_nr = (1.0 + observer_refractivity) * (earth_radius_m + float(observer_altitude_m))
     path_invariant = observer_nr * sin_zenith
     local_nr = (1.0 + refractivity) * (earth_radius_m + altitude)
     sine = path_invariant / local_nr
     if np.any(sine >= 1.0):
         raise ValueError("refracted ray does not reach every requested atmospheric layer")
     return 1.0 / np.sqrt(np.maximum(1.0 - sine**2, np.finfo(float).tiny))
-
-
-def _atmosphere_path_coordinates_m(
-    altitude_edges_m: np.ndarray,
-    *,
-    airmass: float,
-    spherical_slant: bool,
-    earth_radius_m: float,
-) -> np.ndarray:
-    edges = np.asarray(altitude_edges_m, dtype=float)
-    if not spherical_slant:
-        return (edges - edges[0]) * float(airmass)
-    cos_z = 1.0 / float(airmass)
-    sin_z = np.sqrt(max(0.0, 1.0 - cos_z * cos_z))
-    observer_radius = earth_radius_m + float(edges[0])
-    impact_parameter = observer_radius * sin_z
-    shell_radius = earth_radius_m + edges
-    return -observer_radius * cos_z + np.sqrt(np.maximum(shell_radius**2 - impact_parameter**2, 0.0))
-
-
-def _altitude_on_path_m(
-    path_coordinate_m: np.ndarray,
-    *,
-    observer_altitude_m: float,
-    airmass: float,
-    spherical_slant: bool,
-    earth_radius_m: float,
-) -> np.ndarray:
-    if not spherical_slant:
-        return observer_altitude_m + np.asarray(path_coordinate_m, dtype=float) / float(airmass)
-    cos_z = 1.0 / float(airmass)
-    sin_z = np.sqrt(max(0.0, 1.0 - cos_z * cos_z))
-    observer_radius = earth_radius_m + observer_altitude_m
-    impact_parameter = observer_radius * sin_z
-    x0 = observer_radius * cos_z
-    return np.sqrt(impact_parameter**2 + (x0 + np.asarray(path_coordinate_m, dtype=float)) ** 2) - earth_radius_m
-
-
-def _mipas_gdas_height_edges_m(
-    mipas_height_m: np.ndarray,
-    gdas_height_m: np.ndarray,
-    *,
-    observatory_altitude_m: float,
-    top_altitude_m: float,
-    include_observatory: bool,
-) -> np.ndarray:
-    lower = float(observatory_altitude_m)
-    heights = np.concatenate(
-        [
-            np.asarray(mipas_height_m, dtype=float),
-            np.asarray(gdas_height_m, dtype=float),
-            np.asarray([lower] if include_observatory else [], dtype=float),
-            np.asarray([top_altitude_m], dtype=float),
-        ]
-    )
-    heights = heights[np.isfinite(heights)]
-    heights = heights[(heights >= lower) & (heights <= top_altitude_m)]
-    heights = np.unique(np.round(heights, decimals=6))
-    if heights.size < 2:
-        raise ValueError("MIPAS/GDAS height grid does not span the requested atmosphere")
-    if heights[0] > lower:
-        heights = np.insert(heights, 0, lower)
-    elif heights[0] < lower:
-        heights[0] = lower
-    if heights[-1] < top_altitude_m:
-        heights = np.append(heights, top_altitude_m)
-    if np.any(np.diff(heights) <= 0):
-        heights = np.unique(heights)
-    if heights.size < 2:
-        raise ValueError("MIPAS/GDAS height grid collapsed to fewer than two edges")
-    return heights.astype(float)
-
-
-def _merge_mipas_gdas_at_altitudes(
-    altitude_m: np.ndarray,
-    *,
-    mipas: Mapping[str, object],
-    gdas: Mapping[str, np.ndarray],
-) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    altitude = np.asarray(altitude_m, dtype=float)
-    mipas_height = np.asarray(mipas["height_m"], dtype=float)
-    gdas_height = np.asarray(gdas["height_m"], dtype=float)
-
-    mipas_pressure = _interp_linear_clipped(altitude, mipas_height, np.asarray(mipas["pressure_hpa"], dtype=float))
-    mipas_temperature = _interp_linear_clipped(altitude, mipas_height, np.asarray(mipas["temperature_k"], dtype=float))
-    gdas_pressure = _interp_linear_clipped(altitude, gdas_height, np.asarray(gdas["pressure_hpa"], dtype=float))
-    gdas_temperature = _interp_linear_clipped(altitude, gdas_height, np.asarray(gdas["temperature_k"], dtype=float))
-    gdas_h2o = _interp_linear_clipped(altitude, gdas_height, np.asarray(gdas["h2o_mixing_ratio"], dtype=float))
-
-    pressure_hpa = mipas_pressure.copy()
-    temperature_k = mipas_temperature.copy()
-    gdas_max = float(np.nanmax(gdas_height))
-    merge_height = gdas_max * (1.0 + MIPAS_GDAS_MERGE_FRACTION)
-    in_gdas = altitude <= gdas_max
-    pressure_hpa[in_gdas] = gdas_pressure[in_gdas]
-    temperature_k[in_gdas] = gdas_temperature[in_gdas]
-
-    mixing_ratios: dict[str, np.ndarray] = {
-        species: _interp_linear_clipped(altitude, mipas_height, np.asarray(values, dtype=float))
-        for species, values in dict(mipas["mixing_ratios"]).items()
-    }
-    mipas_h2o = mixing_ratios.get("H2O", np.zeros_like(altitude))
-    h2o = mipas_h2o.copy()
-    h2o[in_gdas] = gdas_h2o[in_gdas]
-
-    in_blend = (altitude > gdas_max) & (altitude < merge_height)
-    if np.any(in_blend):
-        blend_fraction = (merge_height - altitude[in_blend]) / (merge_height - gdas_max)
-        pressure_hpa[in_blend] = mipas_pressure[in_blend] * (
-            1.0 + _relative_deviation_at_height(gdas_height, gdas["pressure_hpa"], mipas_height, mipas["pressure_hpa"], gdas_max)
-            * blend_fraction
-        )
-        temperature_k[in_blend] = mipas_temperature[in_blend] * (
-            1.0 + _relative_deviation_at_height(gdas_height, gdas["temperature_k"], mipas_height, mipas["temperature_k"], gdas_max)
-            * blend_fraction
-        )
-        h2o[in_blend] = mipas_h2o[in_blend] * (
-            1.0
-            + _relative_deviation_at_height(gdas_height, gdas["h2o_mixing_ratio"], mipas_height, mipas_h2o, gdas_max)
-            * blend_fraction
-        )
-    mixing_ratios["H2O"] = np.clip(h2o, 0.0, None)
-    return np.clip(pressure_hpa, np.finfo(float).tiny, None), np.clip(temperature_k, np.finfo(float).tiny, None), mixing_ratios
-
-
-def _relative_deviation_at_height(
-    reference_height: np.ndarray,
-    reference_values: np.ndarray,
-    baseline_height: np.ndarray,
-    baseline_values: np.ndarray,
-    height: float,
-) -> float:
-    reference = float(_interp_linear_clipped(np.asarray([height]), reference_height, np.asarray(reference_values, dtype=float))[0])
-    baseline = float(_interp_linear_clipped(np.asarray([height]), baseline_height, np.asarray(baseline_values, dtype=float))[0])
-    if baseline <= 0:
-        return 0.0
-    return reference / baseline - 1.0
 
 
 def _adapt_profile_to_local_meteo(
@@ -1496,9 +1402,15 @@ def _adapt_profile_to_local_meteo(
     altitude = np.asarray(altitude_m, dtype=float)
     pressure = np.asarray(pressure_hpa, dtype=float).copy()
     temperature = np.asarray(temperature_k, dtype=float).copy()
-    ratios = {species: np.asarray(values, dtype=float).copy() for species, values in mixing_ratios.items()}
-    profile_pressure_at_site = _interp_log_clipped_scalar(observatory_altitude_m, altitude, pressure)
-    profile_temperature_at_site = _interp_log_clipped_scalar(observatory_altitude_m, altitude, temperature)
+    ratios = {
+        species: np.asarray(values, dtype=float).copy() for species, values in mixing_ratios.items()
+    }
+    profile_pressure_at_site = _interp_log_clipped_scalar(
+        observatory_altitude_m, altitude, pressure
+    )
+    profile_temperature_at_site = _interp_log_clipped_scalar(
+        observatory_altitude_m, altitude, temperature
+    )
     weight = 1.0 - np.clip(
         (altitude - observatory_altitude_m) / (meteo_mixing_height_m - observatory_altitude_m),
         0.0,
@@ -1538,13 +1450,19 @@ def _adapt_profile_to_local_meteo(
             )[0]
             * 1.0e-6
         )
-        profile_h2o_at_site = _interp_log_clipped_scalar(observatory_altitude_m, altitude, ratios["H2O"])
+        profile_h2o_at_site = _interp_log_clipped_scalar(
+            observatory_altitude_m, altitude, ratios["H2O"]
+        )
         if profile_h2o_at_site > 0:
             deviation = target_h2o / profile_h2o_at_site - 1.0
             ratios["H2O"] = np.clip(ratios["H2O"] * (1.0 + deviation * weight), 0.0, None)
             ratios["H2O"][below_site] = target_h2o
 
-    return np.clip(pressure, np.finfo(float).tiny, None), np.clip(temperature, np.finfo(float).tiny, None), ratios
+    return (
+        np.clip(pressure, np.finfo(float).tiny, None),
+        np.clip(temperature, np.finfo(float).tiny, None),
+        ratios,
+    )
 
 
 def _relative_humidity_to_ppmv(
@@ -1566,7 +1484,9 @@ def _relative_humidity_to_ppmv(
         + np.tanh(0.0415 * (temperature - 218.8))
         * (53.878 - 1331.22 / temperature - 9.44523 * log_temperature + 0.014025 * temperature)
     )
-    log_ei = 9.550426 - 5723.265 / temperature + 3.53068 * log_temperature - 0.00728332 * temperature
+    log_ei = (
+        9.550426 - 5723.265 / temperature + 3.53068 * log_temperature - 0.00728332 * temperature
+    )
     log_e = np.minimum(log_ew, log_ei)
     vapor_saturation_hpa = np.exp(np.minimum(log_e, np.log(np.finfo(float).max))) / 100.0
     water_pressure_hpa = np.minimum(humidity, 100.0) / 100.0 * vapor_saturation_hpa
@@ -1585,7 +1505,9 @@ def _interp_linear_clipped(x: np.ndarray, xp: np.ndarray, fp: np.ndarray) -> np.
 def _interp_log_clipped_scalar(x: float, xp: np.ndarray, fp: np.ndarray) -> float:
     values = np.asarray(fp, dtype=float)
     values = np.clip(values, np.finfo(float).tiny, None)
-    return float(np.exp(_interp_linear_clipped(np.asarray([x], dtype=float), xp, np.log(values))[0]))
+    return float(
+        np.exp(_interp_linear_clipped(np.asarray([x], dtype=float), xp, np.log(values))[0])
+    )
 
 
 def _header_observation_time(header: Mapping[str, object]) -> Time | None:
@@ -1664,11 +1586,7 @@ def _header_representative_observation_time(
         return None
     start_mjd = _header_float(header, ("MJD-OBS", "MJDOBS"), np.nan)
     end_mjd = _header_float(header, ("MJD-END", "MJDEND"), np.nan)
-    if (
-        np.isfinite(start_mjd)
-        and np.isfinite(end_mjd)
-        and end_mjd >= start_mjd
-    ):
+    if np.isfinite(start_mjd) and np.isfinite(end_mjd) and end_mjd >= start_mjd:
         return Time(0.5 * (start_mjd + end_mjd), format="mjd", scale="utc")
     return None
 
@@ -1701,7 +1619,9 @@ def _header_time_of_day_seconds(
 
 
 def _normalize_observatory_name(value: object) -> str:
-    text = "".join(character if str(character).isalnum() else " " for character in str(value).upper())
+    text = "".join(
+        character if str(character).isalnum() else " " for character in str(value).upper()
+    )
     return " ".join(text.split())
 
 
@@ -1856,65 +1776,6 @@ def _header_observatory_altitude_value(header: Mapping[str, object]) -> float:
     )
 
 
-def _header_observatory_latitude_deg(
-    header: Mapping[str, object],
-    *,
-    site: _ObservatorySite | None = None,
-) -> float:
-    latitude = _header_observatory_latitude_value(header)
-    if np.isfinite(latitude):
-        return float(latitude)
-    if site is not None:
-        return site.latitude_deg
-    return DEFAULT_OBSERVATORY_LATITUDE_DEG
-
-
-def _header_observatory_coordinate_source(
-    header: Mapping[str, object],
-    *,
-    site: _ObservatorySite | None,
-) -> str:
-    latitude = _header_observatory_latitude_value(header)
-    longitude = _header_observatory_longitude_value(header)
-    altitude = _header_observatory_altitude_value(header)
-    count = sum(np.isfinite(value) for value in (latitude, longitude, altitude))
-    if count == 3:
-        return "fits_header"
-    if count > 0 and site is not None:
-        return "fits_header+observatory_registry"
-    if site is not None:
-        return "observatory_registry"
-    if count > 0:
-        return "fits_header+default"
-    return "default_paranal"
-
-
-def _header_observatory_longitude_deg(
-    header: Mapping[str, object],
-    *,
-    site: _ObservatorySite | None = None,
-) -> float:
-    longitude = _header_observatory_longitude_value(header)
-    if np.isfinite(longitude):
-        return float(longitude)
-    if site is not None:
-        return site.longitude_deg
-    return DEFAULT_OBSERVATORY_LONGITUDE_DEG
-
-
-def _header_observatory_altitude_m(
-    header: Mapping[str, object],
-    *,
-    site: _ObservatorySite | None = None,
-) -> float:
-    altitude = _header_observatory_altitude_value(header)
-    if np.isfinite(altitude):
-        return float(altitude)
-    if site is not None:
-        return site.altitude_m
-    return DEFAULT_OBSERVATORY_ALTITUDE_M
-
-
 def _spherical_layer_path_lengths_m(
     altitude_edges_m: np.ndarray,
     *,
@@ -2067,7 +1928,9 @@ def _resolve_pressure_column(table: Table, requested: str | None) -> str:
     for candidate in ("pressure_atm", "pressure_hpa", "pressure_mbar", "pressure_pa"):
         if candidate in table.colnames:
             return candidate
-    raise ValueError("atmosphere table needs pressure_atm, pressure_hpa, pressure_mbar, or pressure_pa")
+    raise ValueError(
+        "atmosphere table needs pressure_atm, pressure_hpa, pressure_mbar, or pressure_pa"
+    )
 
 
 def _resolve_path_length_column(table: Table, requested: str | None) -> str:
@@ -2093,7 +1956,7 @@ def _pressure_to_atm(table: Table, pressure_col: str) -> np.ndarray:
     lower = pressure_col.lower()
     if lower.endswith("_pa"):
         return pressure / PA_PER_ATM
-    if lower.endswith("_hpa") or lower.endswith("_mbar"):
+    if lower.endswith(("_hpa", "_mbar")):
         return pressure / 1013.25
     return pressure
 

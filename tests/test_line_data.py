@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 import numpy as np
 import pytest
 
@@ -104,9 +105,27 @@ def test_fetch_hitran_uses_api_v2_and_preserves_isotopologue_metadata(tmp_path):
         url = request.full_url
         calls.append((url, timeout))
         if url.endswith("/info"):
-            return _Response(json.dumps({"status": "OK", "content": {"data": {"results_dir": "results", "edition": "test-edition"}}}))
+            return _Response(
+                json.dumps(
+                    {
+                        "status": "OK",
+                        "content": {"data": {"results_dir": "results", "edition": "test-edition"}},
+                    }
+                )
+            )
         if "/isotopologues?" in url:
-            return _Response(json.dumps({"status": "OK", "content": {"data": [{"id": 1, "isoid": 1, "abundance": 0.997317, "mass": 18.010565}]}}))
+            return _Response(
+                json.dumps(
+                    {
+                        "status": "OK",
+                        "content": {
+                            "data": [
+                                {"id": 1, "isoid": 1, "abundance": 0.997317, "mass": 18.010565}
+                            ]
+                        },
+                    }
+                )
+            )
         if "/transitions?" in url:
             return _Response(json.dumps({"status": "OK", "content": {"data": "window.data"}}))
         if url.endswith("/results/window.data"):

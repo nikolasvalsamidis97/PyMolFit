@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 import numpy as np
 from astropy.time import Time
-
 
 WavelengthFrame = Literal[
     "observatory",
@@ -15,7 +15,7 @@ WavelengthFrame = Literal[
     "heliocentric",
 ]
 
-_FRAME_ALIASES = {
+_FRAME_ALIASES: dict[str, WavelengthFrame] = {
     "observatory": "observatory",
     "observer": "observatory",
     "topocentric": "observatory",
@@ -69,8 +69,7 @@ class Observation:
             except KeyError as exc:
                 choices = ", ".join(sorted(set(_FRAME_ALIASES.values())))
                 raise ValueError(
-                    f"unsupported wavelength_frame {self.wavelength_frame!r}; "
-                    f"choose {choices}"
+                    f"unsupported wavelength_frame {self.wavelength_frame!r}; choose {choices}"
                 ) from exc
             object.__setattr__(self, "wavelength_frame", frame)
 
@@ -107,24 +106,15 @@ class Observation:
             raise ValueError("target_dec_deg must be between -90 and 90")
         if self.temperature_c is not None and self.temperature_c <= -273.15:
             raise ValueError("temperature_c must be above absolute zero")
-        if (
-            self.relative_humidity_percent is not None
-            and (
-                not np.isfinite(self.relative_humidity_percent)
-                or not 0.0 <= self.relative_humidity_percent <= 100.0
-            )
+        if self.relative_humidity_percent is not None and (
+            not np.isfinite(self.relative_humidity_percent)
+            or not 0.0 <= self.relative_humidity_percent <= 100.0
         ):
-            raise ValueError(
-                "relative_humidity_percent must be finite and between 0 and 100"
-            )
+            raise ValueError("relative_humidity_percent must be finite and between 0 and 100")
         if frame == "observatory" and self.frame_velocity_km_s is not None:
-            raise ValueError(
-                "frame_velocity_km_s is not used for observatory-frame wavelengths"
-            )
+            raise ValueError("frame_velocity_km_s is not used for observatory-frame wavelengths")
         if frame == "heliocentric" and self.frame_velocity_km_s is None:
-            raise ValueError(
-                "heliocentric wavelengths require frame_velocity_km_s"
-            )
+            raise ValueError("heliocentric wavelengths require frame_velocity_km_s")
         if frame == "barycentric" and self.frame_velocity_km_s is None:
             missing = [
                 name
@@ -211,6 +201,8 @@ class Observation:
                 header["BERV"] = float(self.frame_velocity_km_s)
         elif self.wavelength_frame == "heliocentric":
             header["SPECSYS"] = "HELIOCEN"
+            if self.frame_velocity_km_s is None:
+                raise RuntimeError("validated heliocentric frame velocity is unexpectedly missing")
             header["HELIOVEL"] = float(self.frame_velocity_km_s)
 
         return header

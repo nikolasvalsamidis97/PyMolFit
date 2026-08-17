@@ -3,14 +3,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from pathlib import Path
 import tarfile
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from pymolfit import Spectrum
-from pymolfit import aer_data
+from pymolfit import Spectrum, aer_data
 from pymolfit.aer_data import AERDataError, install_aer_catalog, load_aer_line_window
 from pymolfit.workflow import _resolve_line_list
 

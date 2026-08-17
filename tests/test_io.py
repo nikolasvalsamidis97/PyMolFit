@@ -311,7 +311,9 @@ def test_fits_table_single_row_vector_columns_are_loaded(tmp_path):
         fits.Column(name="FLUX", format=f"{flux.size}E", unit="adu", array=[flux]),
         fits.Column(name="ERR", format=f"{err.size}E", unit="adu", array=[err]),
     ]
-    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(columns, name="SPECTRUM")]).writeto(path)
+    fits.HDUList(
+        [fits.PrimaryHDU(), fits.BinTableHDU.from_columns(columns, name="SPECTRUM")]
+    ).writeto(path)
 
     loaded = load_spectrum(path, format="fits", wavelength_medium="vacuum")
 

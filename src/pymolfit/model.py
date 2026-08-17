@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Mapping
 
 import numpy as np
 from scipy.special import wofz
@@ -114,7 +114,10 @@ def transmission_from_basis(
         raise ValueError("airmass must be positive")
 
     scales = np.array(
-        [1.0 if species_scales is None else species_scales.get(name, 1.0) for name in species_names],
+        [
+            1.0 if species_scales is None else species_scales.get(name, 1.0)
+            for name in species_names
+        ],
         dtype=float,
     )
     if np.any(scales < 0):
@@ -207,7 +210,7 @@ def radiative_transfer_wavelength_grid(
     entirely determined by the wavelength interval and atmospheric profile.
     """
 
-    start, stop, desired_step, n_points = _radiative_transfer_grid_definition(
+    start, stop, _, n_points = _radiative_transfer_grid_definition(
         model_wavelength_micron,
         atmosphere,
         sample=sample,
@@ -286,9 +289,7 @@ def _radiative_transfer_grid_definition(
         pressure_ratio = np.asarray(
             [layer.pressure_atm for layer in atmosphere.layers], dtype=float
         )
-        temperature = np.asarray(
-            [layer.temperature_k for layer in atmosphere.layers], dtype=float
-        )
+        temperature = np.asarray([layer.temperature_k for layer in atmosphere.layers], dtype=float)
         h2o_fraction = np.asarray(
             [layer.mixing_ratios.get("H2O", 0.0) for layer in atmosphere.layers],
             dtype=float,
@@ -426,14 +427,14 @@ def observe_high_resolution_values(
         # mf_convolution first overlap-rebins the LBLRTM model directly onto
         # detector wavelengths and only then applies the synthetic kernel.
         plan_matches_native_grid = (
-            rebin_plan is not None
-            and rebin_plan.input_indices.size == highres.size
+            rebin_plan is not None and rebin_plan.input_indices.size == highres.size
         )
-        rebinned = (
-            rebin_plan.apply(values)
-            if plan_matches_native_grid
-            else rebin_piecewise_constant_values(observed, highres, values)
-        )
+        if plan_matches_native_grid:
+            if rebin_plan is None:
+                raise RuntimeError("validated overlap rebin plan is unexpectedly missing")
+            rebinned = rebin_plan.apply(values)
+        else:
+            rebinned = rebin_piecewise_constant_values(observed, highres, values)
         detector_wavelength = observed
         trim_start = 0
         trim_stop = None
@@ -465,9 +466,7 @@ def observe_high_resolution_values(
         if trim_start or trim_stop is not None:
             convolved = convolved[trim_start:trim_stop]
         if convolved.shape != observed.shape:
-            raise RuntimeError(
-                "overlap rebin/convolution output does not match the observed grid"
-            )
+            raise RuntimeError("overlap rebin/convolution output does not match the observed grid")
         return convolved
 
     if model_wavelength_micron is None:
@@ -546,7 +545,9 @@ def sample_high_resolution_values(
     highres_wavelength = np.asarray(highres_wavelength_micron, dtype=float)
     values = np.asarray(highres_values, dtype=float)
     if observed.ndim != 1 or highres_wavelength.ndim != 1 or values.ndim != 1:
-        raise ValueError("observed wavelengths, high-resolution wavelengths, and values must be one-dimensional")
+        raise ValueError(
+            "observed wavelengths, high-resolution wavelengths, and values must be one-dimensional"
+        )
     if highres_wavelength.shape != values.shape:
         raise ValueError("high-resolution wavelength and value arrays must have the same shape")
     if observed.size == 0:
@@ -587,7 +588,9 @@ def rebin_high_resolution_values(
     highres_wavelength = np.asarray(highres_wavelength_micron, dtype=float)
     values = np.asarray(highres_values, dtype=float)
     if observed.ndim != 1 or highres_wavelength.ndim != 1 or values.ndim != 1:
-        raise ValueError("observed wavelengths, high-resolution wavelengths, and values must be one-dimensional")
+        raise ValueError(
+            "observed wavelengths, high-resolution wavelengths, and values must be one-dimensional"
+        )
     if highres_wavelength.shape != values.shape:
         raise ValueError("high-resolution wavelength and value arrays must have the same shape")
     if observed.size == 0:
@@ -648,8 +651,7 @@ class SampleAverageRebinPlan:
         averaged_sorted = np.empty(self.counts.shape, dtype=float)
         has_samples = self.counts > 0
         averaged_sorted[has_samples] = (
-            cumulative[self.stop_indices[has_samples]]
-            - cumulative[self.start_indices[has_samples]]
+            cumulative[self.stop_indices[has_samples]] - cumulative[self.start_indices[has_samples]]
         ) / self.counts[has_samples]
         if not np.all(has_samples):
             left = y[self.fallback_left_indices[~has_samples]]
@@ -901,7 +903,9 @@ def average_high_resolution_values(
     highres_wavelength = np.asarray(highres_wavelength_micron, dtype=float)
     values = np.asarray(highres_values, dtype=float)
     if observed.ndim != 1 or highres_wavelength.ndim != 1 or values.ndim != 1:
-        raise ValueError("observed wavelengths, high-resolution wavelengths, and values must be one-dimensional")
+        raise ValueError(
+            "observed wavelengths, high-resolution wavelengths, and values must be one-dimensional"
+        )
     if highres_wavelength.shape != values.shape:
         raise ValueError("high-resolution wavelength and value arrays must have the same shape")
     if observed.size == 0:
@@ -932,7 +936,9 @@ def average_high_resolution_values(
     count = stop - start
     averaged = np.empty(observed.shape, dtype=float)
     has_samples = count > 0
-    averaged[has_samples] = (cumsum[stop[has_samples]] - cumsum[start[has_samples]]) / count[has_samples]
+    averaged[has_samples] = (cumsum[stop[has_samples]] - cumsum[start[has_samples]]) / count[
+        has_samples
+    ]
     if not np.all(has_samples):
         averaged[~has_samples] = np.interp(observed[~has_samples], x, y, left=y[0], right=y[-1])
     return averaged
@@ -1054,20 +1060,14 @@ def _convolve_variable_lsf(
     finite = np.isfinite(wavelength)
     if not np.any(finite):
         return output
-    scale_values = (
-        wavelength[finite] / reference_wavelength_micron
-    ) ** wavelength_exponent
+    scale_values = (wavelength[finite] / reference_wavelength_micron) ** wavelength_exponent
     log_step = np.log1p(_LSF_RELATIVE_WIDTH_STEP)
     scale_keys = np.rint(np.log(scale_values) / log_step).astype(int)
     finite_pixels = np.nonzero(finite)[0]
     for key in np.unique(scale_keys):
         group = finite_pixels[scale_keys == key]
         scale = float(
-            (
-                np.nanmedian(wavelength[group])
-                / reference_wavelength_micron
-            )
-            ** wavelength_exponent
+            (np.nanmedian(wavelength[group]) / reference_wavelength_micron) ** wavelength_exponent
         )
         kernel = _composite_lsf_kernel(
             gaussian_sigma_pixels=gaussian_sigma_pixels * scale,

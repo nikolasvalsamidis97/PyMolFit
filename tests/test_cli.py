@@ -1,7 +1,8 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from astropy.table import Table
-from types import SimpleNamespace
 
 from pymolfit import LineList, ModelConfig, transmission_model
 from pymolfit.cli import build_parser, main
@@ -135,12 +136,8 @@ def test_cli_rejects_region_file_with_explicit_ranges():
 def test_cli_continuum_solver_defaults_to_auto_and_accepts_overrides():
     parser = build_parser()
     automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
-    linear = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--solve-continuum-linear"]
-    )
-    nonlinear = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--no-solve-continuum-linear"]
-    )
+    linear = parser.parse_args(["fit", "input.txt", "output.txt", "--solve-continuum-linear"])
+    nonlinear = parser.parse_args(["fit", "input.txt", "output.txt", "--no-solve-continuum-linear"])
 
     assert automatic.solve_continuum_linear == "auto"
     assert linear.solve_continuum_linear is True
@@ -150,15 +147,9 @@ def test_cli_continuum_solver_defaults_to_auto_and_accepts_overrides():
 def test_cli_lsf_sigma_defaults_to_auto_and_accepts_overrides():
     parser = build_parser()
     automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
-    fixed = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--lsf-sigma-pixels", "1.75"]
-    )
-    forced_fit = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--fit-lsf-sigma"]
-    )
-    disabled_fit = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--no-fit-lsf-sigma"]
-    )
+    fixed = parser.parse_args(["fit", "input.txt", "output.txt", "--lsf-sigma-pixels", "1.75"])
+    forced_fit = parser.parse_args(["fit", "input.txt", "output.txt", "--fit-lsf-sigma"])
+    disabled_fit = parser.parse_args(["fit", "input.txt", "output.txt", "--no-fit-lsf-sigma"])
     bounded = parser.parse_args(
         [
             "fit",
@@ -191,9 +182,7 @@ def test_cli_lsf_lorentz_defaults_to_auto_and_accepts_overrides():
             "0.75",
         ]
     )
-    forced_fit = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--fit-lsf-lorentz-fwhm"]
-    )
+    forced_fit = parser.parse_args(["fit", "input.txt", "output.txt", "--fit-lsf-lorentz-fwhm"])
     disabled_fit = parser.parse_args(
         ["fit", "input.txt", "output.txt", "--no-fit-lsf-lorentz-fwhm"]
     )
@@ -220,12 +209,8 @@ def test_cli_lsf_lorentz_defaults_to_auto_and_accepts_overrides():
 def test_cli_lsf_variable_width_defaults_to_auto_and_accepts_overrides():
     parser = build_parser()
     automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
-    forced = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--lsf-variable-width"]
-    )
-    disabled = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--no-lsf-variable-width"]
-    )
+    forced = parser.parse_args(["fit", "input.txt", "output.txt", "--lsf-variable-width"])
+    disabled = parser.parse_args(["fit", "input.txt", "output.txt", "--no-lsf-variable-width"])
 
     assert automatic.lsf_variable_width == "auto"
     assert forced.lsf_variable_width is True
@@ -235,12 +220,8 @@ def test_cli_lsf_variable_width_defaults_to_auto_and_accepts_overrides():
 def test_cli_wavelength_alignment_defaults_to_auto_and_accepts_overrides():
     parser = build_parser()
     automatic = parser.parse_args(["fit", "input.txt", "output.txt"])
-    forced = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--fit-wavelength-shift"]
-    )
-    disabled = parser.parse_args(
-        ["fit", "input.txt", "output.txt", "--no-fit-wavelength-shift"]
-    )
+    forced = parser.parse_args(["fit", "input.txt", "output.txt", "--fit-wavelength-shift"])
+    disabled = parser.parse_args(["fit", "input.txt", "output.txt", "--no-fit-wavelength-shift"])
     bounded = parser.parse_args(
         [
             "fit",
@@ -283,7 +264,7 @@ def test_cli_reports_version(capsys):
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert "pymolfit 0.7.0" in capsys.readouterr().out
+    assert "pymolfit 0.7.1" in capsys.readouterr().out
 
 
 def test_cli_refuses_implicit_synthetic_line_data(tmp_path):
@@ -362,7 +343,9 @@ def test_cli_convert_hitran_filters_lines(tmp_path):
         "\n".join(
             [
                 _hitran_row(),
-                _hitran_row().replace("4320.000000", "4321.000000").replace("1.000E-24", "5.000E-25", 1),
+                _hitran_row()
+                .replace("4320.000000", "4321.000000")
+                .replace("1.000E-24", "5.000E-25", 1),
             ]
         )
         + "\n"

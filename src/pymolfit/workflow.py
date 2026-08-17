@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
-from typing import Literal, Mapping
 import warnings
+from collections.abc import Mapping
+from dataclasses import replace
+from itertools import pairwise
+from pathlib import Path
+from typing import Literal
 
-import numpy as np
 import astropy.units as u
+import numpy as np
 from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.io import fits
 from astropy.time import Time
@@ -15,11 +17,11 @@ from scipy.signal import find_peaks, peak_widths
 
 from .aer_data import AERCatalogArtifact, load_aer_line_window
 from .atmosphere import (
-    AtmosphereProfile,
     DEFAULT_OBSERVATORY_ALTITUDE_M,
     DEFAULT_OBSERVATORY_LATITUDE_DEG,
     DEFAULT_OBSERVATORY_LONGITUDE_DEG,
     DEFAULT_TELLURIC_MIXING_RATIOS,
+    AtmosphereProfile,
     _header_representative_observation_time,
 )
 from .components import (
@@ -35,7 +37,13 @@ from .components import (
     RayleighScatteringAbsorption,
     line_wing_effective_cutoff_cm,
 )
-from .continuum import HitranCIATable, LBLRTMCO2Continuum, LBLRTMH2OContinuum, MTCKDH2OContinuum, TabulatedContinuum
+from .continuum import (
+    HitranCIATable,
+    LBLRTMCO2Continuum,
+    LBLRTMH2OContinuum,
+    MTCKDH2OContinuum,
+    TabulatedContinuum,
+)
 from .diagnostics import fit_quality_diagnostics, print_fit_summary
 from .errors import ConfigurationError, WavelengthMetadataError
 from .fit import (
@@ -46,16 +54,19 @@ from .fit import (
     TelluricFitResult,
     _apply_multi_fit_to_segment,
     _fit_metrics,
+    _PreparedOpacity,
     _radiative_transfer_point_count,
     fit_telluric_segments,
     fit_tellurics,
 )
 from .io import (
-    infer_wavelength_medium_from_header as _infer_wavelength_medium_from_header,
     infer_spectrum_format,
     load_spectrum,
     save_corrected_txt,
     save_fit_product_ecsv,
+)
+from .io import (
+    infer_wavelength_medium_from_header as _infer_wavelength_medium_from_header,
 )
 from .linelist import LineList
 from .observation import Observation
@@ -73,7 +84,6 @@ from .plotting import plot_fit
 from .regions import RegionSelection, load_region_file
 from .spectrum import Spectrum, normalize_wavelength_medium
 from .theoretical import StellarMaskResult, TheoreticalSpectrum
-
 
 DEFAULT_SEGMENT_SIZE_MICRON = 0.005
 AUTO_LINEAR_CONTINUUM_MAX_NFEV = 100
@@ -219,9 +229,7 @@ def correct_arrays(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
-    minimum_species_peak_optical_depth: float = (
-        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
-    ),
+    minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -259,11 +267,7 @@ def correct_arrays(
     arrays as already being in the observatory frame.
     """
 
-    atmosphere_header = (
-        None
-        if observation is None
-        else observation.to_header()
-    )
+    atmosphere_header = None if observation is None else observation.to_header()
     spectrum = Spectrum(
         wavelength=wavelength,
         flux=flux,
@@ -272,11 +276,7 @@ def correct_arrays(
         group_id=group_id,
         wavelength_unit=wavelength_unit,
         wavelength_medium=wavelength_medium,
-        meta=(
-            {}
-            if observation is None
-            else {"observation": observation.to_header()}
-        ),
+        meta=({} if observation is None else {"observation": observation.to_header()}),
     )
     fit_ranges, exclude_ranges = _resolve_region_file_ranges(
         region_file=region_file,
@@ -325,11 +325,7 @@ def correct_arrays(
         pressure_atm=pressure_atm,
         temperature_k=temperature_k,
         path_length_m=path_length_m,
-        pwv_mm=(
-            observation.pwv_mm
-            if pwv_mm is None and observation is not None
-            else pwv_mm
-        ),
+        pwv_mm=(observation.pwv_mm if pwv_mm is None and observation is not None else pwv_mm),
         relative_humidity_percent=relative_humidity_percent,
         mixing_ratios=mixing_ratios,
         continuum_order=continuum_order,
@@ -483,9 +479,7 @@ def correct_file(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
-    minimum_species_peak_optical_depth: float = (
-        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
-    ),
+    minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -714,11 +708,7 @@ def correct_file(
         pressure_atm=pressure_atm,
         temperature_k=temperature_k,
         path_length_m=path_length_m,
-        pwv_mm=(
-            observation.pwv_mm
-            if pwv_mm is None and observation is not None
-            else pwv_mm
-        ),
+        pwv_mm=(observation.pwv_mm if pwv_mm is None and observation is not None else pwv_mm),
         relative_humidity_percent=relative_humidity_percent,
         mixing_ratios=mixing_ratios,
         continuum_order=continuum_order,
@@ -888,9 +878,7 @@ def correct(
     o2_continuum_xo2cn: float = 1.0,
     line_margin_micron: float = 0.01,
     min_transmission: float = 0.01,
-    minimum_species_peak_optical_depth: float = (
-        DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
-    ),
+    minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -994,19 +982,14 @@ def correct(
 
     route_count = int(has_path) + int(has_spectrum) + int(has_array_input)
     if route_count == 0:
-        raise ConfigurationError(
-            "provide input_path, spectrum, or both "
-            "wavelength and flux arrays"
-        )
+        raise ConfigurationError("provide input_path, spectrum, or both wavelength and flux arrays")
     if route_count > 1:
         raise ConfigurationError(
             "provide input_path, spectrum, or wavelength/flux arrays, not both "
             "or multiple input routes"
         )
     if has_array_input and not (has_wavelength and has_flux):
-        raise ConfigurationError(
-            "array input requires both wavelength and flux"
-        )
+        raise ConfigurationError("array input requires both wavelength and flux")
 
     fit_options = {
         "line_list": line_list,
@@ -1173,9 +1156,7 @@ def correct(
             "fit_ranges": resolved_fit_ranges,
             "exclude_ranges": resolved_exclude_ranges,
             "pwv_mm": (
-                observation.pwv_mm
-                if pwv_mm is None and observation is not None
-                else pwv_mm
+                observation.pwv_mm if pwv_mm is None and observation is not None else pwv_mm
             ),
         }
         result = _correct_spectrum_workflow(
@@ -1216,8 +1197,7 @@ def correct(
             )
         if (
             wavelength_medium is not None
-            and spectrum.wavelength_medium
-            != normalize_wavelength_medium(wavelength_medium)
+            and spectrum.wavelength_medium != normalize_wavelength_medium(wavelength_medium)
         ):
             raise WavelengthMetadataError(
                 "wavelength_medium conflicts with spectrum.wavelength_medium"
@@ -1262,8 +1242,7 @@ def correct(
 
     if observation is None:
         raise ConfigurationError(
-            "array input requires observation=Observation(...) so observing "
-            "metadata is explicit"
+            "array input requires observation=Observation(...) so observing metadata is explicit"
         )
     if observation.wavelength_frame is None:
         raise ConfigurationError(
@@ -1271,16 +1250,11 @@ def correct(
             "'observatory', 'barycentric', or 'heliocentric'"
         )
     if wavelength_medium is None:
-        raise WavelengthMetadataError(
-            "array input requires wavelength_medium='air' or 'vacuum'"
-        )
+        raise WavelengthMetadataError("array input requires wavelength_medium='air' or 'vacuum'")
     if any(
-        value is not None
-        for value in (input_format, wavelength_col, flux_col, uncertainty_col)
+        value is not None for value in (input_format, wavelength_col, flux_col, uncertainty_col)
     ):
-        raise ConfigurationError(
-            "input_format and column selectors apply only to input_path"
-        )
+        raise ConfigurationError("input_format and column selectors apply only to input_path")
 
     if joint_stellar_model:
         array_spectrum = Spectrum(
@@ -1495,8 +1469,7 @@ def _correct_spectrum_workflow(
         )
     if joint_stellar_model and theoretical_spectrum is None:
         raise ConfigurationError(
-            "joint_stellar_model=True requires "
-            "theoretical_spectrum=TheoreticalSpectrum(...)"
+            "joint_stellar_model=True requires theoretical_spectrum=TheoreticalSpectrum(...)"
         )
     _validate_correction_options(
         spectrum,
@@ -1534,11 +1507,7 @@ def _correct_spectrum_workflow(
             spectrum,
             atmosphere_header,
         )
-        resolving_power = (
-            None
-            if resolution is None
-            else float(resolution["resolving_power"])
-        )
+        resolving_power = None if resolution is None else float(resolution["resolving_power"])
         stellar_mask_result = theoretical_spectrum.build_mask(
             spectrum,
             frame_correction_factor=_stellar_template_frame_correction_factor(
@@ -1561,9 +1530,7 @@ def _correct_spectrum_workflow(
         if theoretical_spectrum.confidence_weighted_masking:
             stellar_fit_weights = stellar_mask_result.fit_weights
             if stellar_fit_weights is None:
-                raise RuntimeError(
-                    "confidence-weighted stellar masking did not produce weights"
-                )
+                raise RuntimeError("confidence-weighted stellar masking did not produce weights")
         else:
             exclude_ranges = _merge_exclusion_ranges(
                 exclude_ranges,
@@ -1580,17 +1547,11 @@ def _correct_spectrum_workflow(
                 stacklevel=2,
             )
         if stellar_mask_path is not None:
-            stellar_mask_result.selection_for_spectrum(input_spectrum).write(
-                stellar_mask_path
-            )
-    spectrum_wavenumber = wavelength_micron_to_wavenumber_cm(
-        spectrum.to_unit("micron").wavelength
-    )
+            stellar_mask_result.selection_for_spectrum(input_spectrum).write(stellar_mask_path)
+    spectrum_wavenumber = wavelength_micron_to_wavenumber_cm(spectrum.to_unit("micron").wavelength)
     finite_wavenumber = spectrum_wavenumber[np.isfinite(spectrum_wavenumber)]
     reference_wavenumber_cm = (
-        float(np.nanmedian(finite_wavenumber))
-        if finite_wavenumber.size
-        else 10_000.0
+        float(np.nanmedian(finite_wavenumber)) if finite_wavenumber.size else 10_000.0
     )
     resolved_initial_wavelength_shift = _resolve_initial_wavelength_shift(
         spectrum,
@@ -1602,10 +1563,14 @@ def _correct_spectrum_workflow(
     resolved_o2_cia = _resolve_cia_table(o2_cia)
     resolved_n2_cia = _resolve_cia_table(n2_cia)
     resolved_pair_cia_tables = _resolve_pair_cia_tables(cia_tables)
-    has_component_options = any(
-        value is not None
-        for value in (components, resolved_co2_continuum, resolved_o2_cia, resolved_n2_cia)
-    ) or n2_continuum or o2_continuum
+    has_component_options = (
+        any(
+            value is not None
+            for value in (components, resolved_co2_continuum, resolved_o2_cia, resolved_n2_cia)
+        )
+        or n2_continuum
+        or o2_continuum
+    )
     has_component_options = has_component_options or bool(resolved_pair_cia_tables)
     resolved_line_list = _resolve_line_list(
         spectrum,
@@ -1682,23 +1647,13 @@ def _correct_spectrum_workflow(
     ):
         raise ValueError("lsf_reference_wavelength_micron must be positive")
     lsf_variable_width_resolution: dict[str, object] = {
-        "requested": (
-            "auto"
-            if auto_select_lsf_variable_width
-            else bool(lsf_variable_width)
-        ),
-        "reference_wavelength_micron": (
-            resolved_lsf_reference_wavelength_micron
-        ),
+        "requested": ("auto" if auto_select_lsf_variable_width else bool(lsf_variable_width)),
+        "reference_wavelength_micron": (resolved_lsf_reference_wavelength_micron),
         "exponent_bounds": list(AUTO_LSF_VARIABLE_EXPONENT_BOUNDS),
         "selected_model": (
             "pending_pilot_selection"
             if auto_select_lsf_variable_width
-            else (
-                "fixed_power_law"
-                if resolved_lsf_variable_width
-                else "constant"
-            )
+            else ("fixed_power_law" if resolved_lsf_variable_width else "constant")
         ),
     }
     if components is None and has_physical_lines:
@@ -1707,10 +1662,7 @@ def _correct_spectrum_workflow(
             resolved_h2o_continuum = LBLRTMH2OContinuum.from_package_data()
         if co2_continuum is None and "CO2" in line_species:
             resolved_co2_continuum = LBLRTMCO2Continuum.from_package_data()
-    resolved_high_resolution_grid = bool(
-        high_resolution_grid
-        and has_physical_lines
-    )
+    resolved_high_resolution_grid = bool(high_resolution_grid and has_physical_lines)
     resolved_components = _build_components(
         extra_components=components,
         line_list=resolved_line_list,
@@ -1820,9 +1772,7 @@ def _correct_spectrum_workflow(
     ):
         raise ValueError("solve_continuum_linear must be 'auto', True, or False")
     automatic_continuum_solver = solve_continuum_linear == "auto"
-    use_linear_continuum = (
-        True if automatic_continuum_solver else bool(solve_continuum_linear)
-    )
+    use_linear_continuum = True if automatic_continuum_solver else bool(solve_continuum_linear)
     if fit_wavelength_shift != "auto" and not isinstance(
         fit_wavelength_shift,
         bool,
@@ -1835,8 +1785,7 @@ def _correct_spectrum_workflow(
     )
     if fit_wavelength_shift is True and explicit_wavelength_model:
         raise ValueError(
-            "fit_wavelength_shift=True cannot be combined with another "
-            "wavelength-correction model"
+            "fit_wavelength_shift=True cannot be combined with another wavelength-correction model"
         )
     auto_select_wavelength_model = bool(
         fit_wavelength_shift == "auto" and not explicit_wavelength_model
@@ -1857,14 +1806,11 @@ def _correct_spectrum_workflow(
             else (-5.0e-4, 5.0e-4)
         )
     else:
-        resolved_wavelength_shift_bounds = tuple(
-            float(value) for value in wavelength_shift_bounds
-        )
+        resolved_wavelength_shift_bounds = tuple(float(value) for value in wavelength_shift_bounds)
     if (
         len(resolved_wavelength_shift_bounds) != 2
         or not np.all(np.isfinite(resolved_wavelength_shift_bounds))
-        or resolved_wavelength_shift_bounds[1]
-        <= resolved_wavelength_shift_bounds[0]
+        or resolved_wavelength_shift_bounds[1] <= resolved_wavelength_shift_bounds[0]
     ):
         raise ValueError("wavelength_shift_bounds must be finite and increasing")
     wavelength_shift_unit = "pixel" if automatic_pixel_wavelength_bounds else "micron"
@@ -1886,12 +1832,8 @@ def _correct_spectrum_workflow(
         lsf_box_width_pixels=lsf_box_width_pixels,
         lsf_lorentz_fwhm_pixels=resolved_lsf_lorentz_fwhm_pixels,
         lsf_variable_width=resolved_lsf_variable_width,
-        lsf_reference_wavelength_micron=(
-            resolved_lsf_reference_wavelength_micron
-        ),
-        lsf_wavelength_exponent=(
-            1.0 if resolved_lsf_variable_width else 0.0
-        ),
+        lsf_reference_wavelength_micron=(resolved_lsf_reference_wavelength_micron),
+        lsf_wavelength_exponent=(1.0 if resolved_lsf_variable_width else 0.0),
         fit_lsf_wavelength_exponent=False,
         lsf_wavelength_exponent_bounds=AUTO_LSF_VARIABLE_EXPONENT_BOUNDS,
         lsf_kernel_width_fwhm=lsf_kernel_width_fwhm,
@@ -1950,11 +1892,7 @@ def _correct_spectrum_workflow(
         gtol=gtol,
         max_nfev=(
             AUTO_LINEAR_CONTINUUM_MAX_NFEV
-            if (
-                automatic_continuum_solver
-                and use_linear_continuum
-                and loss == "linear"
-            )
+            if (automatic_continuum_solver and use_linear_continuum and loss == "linear")
             else None
         ),
         estimate_uncertainties=estimate_uncertainties,
@@ -1978,8 +1916,7 @@ def _correct_spectrum_workflow(
             auto_select_wavelength_model
             and len(physical_group_ids) > 1
             and all(
-                group.meta.get("segmentation_source")
-                in {"fits_order_detector", "wavelength_gaps"}
+                group.meta.get("segmentation_source") in {"fits_order_detector", "wavelength_gaps"}
                 for group in physical_group_preview
             )
         )
@@ -1998,26 +1935,15 @@ def _correct_spectrum_workflow(
 
     def run_fit(config: FitConfig) -> TelluricFitResult:
         single_fit_options = {
-            **(
-                {}
-                if stellar_fit_weights is None
-                else {"fit_weights": stellar_fit_weights}
-            ),
-            **(
-                {}
-                if stellar_forward_model is None
-                else {"stellar_model": stellar_forward_model}
-            ),
+            **({} if stellar_fit_weights is None else {"fit_weights": stellar_fit_weights}),
+            **({} if stellar_forward_model is None else {"stellar_model": stellar_forward_model}),
         }
         per_segment_wavelength_fit = bool(
-            config.fit_segment_wavelength_shifts
-            or config.fit_segment_wavelength_polynomial
+            config.fit_segment_wavelength_shifts or config.fit_segment_wavelength_polynomial
         )
         if not auto_segment:
             if per_segment_wavelength_fit:
-                raise ValueError(
-                    "per-segment wavelength fitting requires auto_segment=True"
-                )
+                raise ValueError("per-segment wavelength fitting requires auto_segment=True")
             return fit_tellurics(
                 spectrum,
                 line_list=resolved_line_list,
@@ -2049,20 +1975,13 @@ def _correct_spectrum_workflow(
                 config=config,
                 **single_fit_options,
             )
-        active = tuple(
-            _segment_has_fit_pixels(segment, config)
-            for segment in segments
-        )
+        active = tuple(_segment_has_fit_pixels(segment, config) for segment in segments)
         active_segments = tuple(
-            segment
-            for segment, is_active in zip(segments, active, strict=True)
-            if is_active
+            segment for segment, is_active in zip(segments, active, strict=True) if is_active
         )
         active_group_ids = tuple(
             int(segment.meta.get("physical_group_index", index))
-            for index, (segment, is_active) in enumerate(
-                zip(segments, active, strict=True)
-            )
+            for index, (segment, is_active) in enumerate(zip(segments, active, strict=True))
             if is_active
         )
         active_fit_weights = (
@@ -2128,19 +2047,11 @@ def _correct_spectrum_workflow(
                 line_list=resolved_line_list,
                 config=config,
                 fit_result=multi_result,
-                stellar_model=(
-                    None
-                    if stellar_forward_model is None
-                    else stellar_forward_model
-                ),
+                stellar_model=(None if stellar_forward_model is None else stellar_forward_model),
                 global_wavelength_bounds=full_bounds,
-                wavelength_group_id=int(
-                    segment.meta.get("physical_group_index", segment_index)
-                ),
+                wavelength_group_id=int(segment.meta.get("physical_group_index", segment_index)),
             )
-            for segment_index, (segment, is_active) in enumerate(
-                zip(segments, active, strict=True)
-            )
+            for segment_index, (segment, is_active) in enumerate(zip(segments, active, strict=True))
         )
         return _stitch_segment_results(
             multi_result,
@@ -2149,11 +2060,7 @@ def _correct_spectrum_workflow(
         )
 
     wavelength_model_resolution: dict[str, object] = {
-        "requested": (
-            "auto"
-            if fit_wavelength_shift == "auto"
-            else bool(fit_wavelength_shift)
-        ),
+        "requested": ("auto" if fit_wavelength_shift == "auto" else bool(fit_wavelength_shift)),
         "coefficient_unit": fit_config.wavelength_shift_unit,
         "bounds": list(fit_config.wavelength_shift_bounds),
         "selected_model": (
@@ -2180,14 +2087,12 @@ def _correct_spectrum_workflow(
         )
     if auto_select_wavelength_model:
         try:
-            selected_config, wavelength_model_resolution = (
-                _select_wavelength_model_from_pilots(
-                    spectrum,
-                    line_list=resolved_line_list,
-                    config=pilot_fit_config,
-                    segment_size=segment_size,
-                    resolution=wavelength_model_resolution,
-                )
+            selected_config, wavelength_model_resolution = _select_wavelength_model_from_pilots(
+                spectrum,
+                line_list=resolved_line_list,
+                config=pilot_fit_config,
+                segment_size=segment_size,
+                resolution=wavelength_model_resolution,
             )
             fit_config = replace(
                 selected_config,
@@ -2216,9 +2121,8 @@ def _correct_spectrum_workflow(
                 RuntimeWarning,
                 stacklevel=2,
             )
-        wavelength_pilot_coarse_search = (
-            wavelength_model_resolution.get("none_model", {})
-            .get("coarse_search")
+        wavelength_pilot_coarse_search = wavelength_model_resolution.get("none_model", {}).get(
+            "coarse_search"
         )
         if wavelength_pilot_coarse_search is not None:
             lsf_sigma_resolution = {
@@ -2228,14 +2132,12 @@ def _correct_spectrum_workflow(
 
     if auto_select_lsf_variable_width:
         try:
-            selected_config, lsf_variable_width_resolution = (
-                _select_lsf_variable_width_from_pilots(
-                    spectrum,
-                    line_list=resolved_line_list,
-                    config=pilot_fit_config,
-                    segment_size=segment_size,
-                    resolution=lsf_variable_width_resolution,
-                )
+            selected_config, lsf_variable_width_resolution = _select_lsf_variable_width_from_pilots(
+                spectrum,
+                line_list=resolved_line_list,
+                config=pilot_fit_config,
+                segment_size=segment_size,
+                resolution=lsf_variable_width_resolution,
             )
             fit_config = replace(
                 selected_config,
@@ -2295,10 +2197,7 @@ def _correct_spectrum_workflow(
                 RuntimeWarning,
                 stacklevel=2,
             )
-        pilot_coarse_search = (
-            lsf_lorentz_resolution.get("gaussian_model", {})
-            .get("coarse_search")
-        )
+        pilot_coarse_search = lsf_lorentz_resolution.get("gaussian_model", {}).get("coarse_search")
         if pilot_coarse_search is not None:
             lsf_sigma_resolution = {
                 **lsf_sigma_resolution,
@@ -2328,19 +2227,11 @@ def _correct_spectrum_workflow(
             )
             selected_result = run_fit(fallback_config)
             selected_solver = "nonlinear"
-            attempts.append(
-                _continuum_solver_attempt(selected_solver, selected_result)
-            )
+            attempts.append(_continuum_solver_attempt(selected_solver, selected_result))
 
     selection_reason = None
-    if (
-        automatic_continuum_solver
-        and selected_solver == "linear"
-        and loss != "linear"
-    ):
-        selection_reason = (
-            f"loss={loss!r} uses robust iteratively reweighted continuum profiling"
-        )
+    if automatic_continuum_solver and selected_solver == "linear" and loss != "linear":
+        selection_reason = f"loss={loss!r} uses robust iteratively reweighted continuum profiling"
     selected_result = _with_continuum_solver_provenance(
         selected_result,
         requested=(
@@ -2353,9 +2244,7 @@ def _correct_spectrum_workflow(
         fallback_reason=fallback_reason,
         selection_reason=selection_reason,
     )
-    lsf_bound_status = selected_result.parameter_bound_status.get(
-        "lsf_sigma_pixels"
-    )
+    lsf_bound_status = selected_result.parameter_bound_status.get("lsf_sigma_pixels")
     if lsf_sigma_resolution["requested"] == "auto" and lsf_bound_status is not None:
         warnings.warn(
             "The automatically fitted Gaussian LSF sigma reached its "
@@ -2370,9 +2259,7 @@ def _correct_spectrum_workflow(
         fit_enabled=resolved_fit_lsf_sigma,
         bound_status=lsf_bound_status,
     )
-    lsf_lorentz_bound_status = selected_result.parameter_bound_status.get(
-        "lsf_lorentz_fwhm_pixels"
-    )
+    lsf_lorentz_bound_status = selected_result.parameter_bound_status.get("lsf_lorentz_fwhm_pixels")
     if (
         lsf_lorentz_resolution.get("selected_model") == "gaussian_lorentz"
         and lsf_lorentz_bound_status is not None
@@ -2446,9 +2333,7 @@ def _correct_spectrum_workflow(
                 {}
                 if stellar_mask_result is None
                 else {
-                    "stellar_template": dict(
-                        stellar_mask_result.diagnostics
-                    )
+                    "stellar_template": dict(stellar_mask_result.diagnostics)
                     | {"joint_forward_model": bool(joint_stellar_model)}
                 }
             ),
@@ -2498,9 +2383,7 @@ def _validate_correction_options(
         fit_wavelength_shift,
         (bool, np.bool_),
     ):
-        raise ConfigurationError(
-            "fit_wavelength_shift must be 'auto', True, or False"
-        )
+        raise ConfigurationError("fit_wavelength_shift must be 'auto', True, or False")
     explicit_models = sum(
         bool(value)
         for value in (
@@ -2516,8 +2399,7 @@ def _validate_correction_options(
         )
     if fit_wavelength_shift is True and explicit_models:
         raise ConfigurationError(
-            "fit_wavelength_shift=True cannot be combined with another "
-            "wavelength-correction model"
+            "fit_wavelength_shift=True cannot be combined with another wavelength-correction model"
         )
     if wavelength_polynomial_order < 0 or segment_wavelength_polynomial_order < 0:
         raise ConfigurationError("wavelength polynomial orders must be non-negative")
@@ -2526,14 +2408,10 @@ def _validate_correction_options(
             continue
         for bounds in ranges:
             if len(bounds) != 2:
-                raise ConfigurationError(
-                    f"each {label} entry must contain two endpoints"
-                )
+                raise ConfigurationError(f"each {label} entry must contain two endpoints")
             lower, upper = map(float, bounds)
             if not np.isfinite(lower) or not np.isfinite(upper) or lower == upper:
-                raise ConfigurationError(
-                    f"{label} endpoints must be finite and distinct"
-                )
+                raise ConfigurationError(f"{label} endpoints must be finite and distinct")
     if loss not in {"linear", "soft_l1", "huber", "cauchy", "arctan"}:
         raise ConfigurationError(f"unsupported least-squares loss: {loss!r}")
     for label, value in (
@@ -2560,23 +2438,12 @@ def _continuum_fit_problem(result: TelluricFitResult) -> str | None:
         "LSF wavelength exponent": result.lsf_wavelength_exponent,
     }
     scalar_values.update(
-        {
-            f"{species} scale": scale
-            for species, scale in result.species_scales.items()
-        }
+        {f"{species} scale": scale for species, scale in result.species_scales.items()}
     )
-    invalid = [
-        name
-        for name, value in scalar_values.items()
-        if not np.isfinite(value)
-    ]
+    invalid = [name for name, value in scalar_values.items() if not np.isfinite(value)]
     if invalid:
         return "non-finite fitted " + ", ".join(invalid)
-    nonpositive_scales = [
-        species
-        for species, scale in result.species_scales.items()
-        if scale <= 0
-    ]
+    nonpositive_scales = [species for species, scale in result.species_scales.items() if scale <= 0]
     if nonpositive_scales:
         return "non-positive molecular scale for " + ", ".join(nonpositive_scales)
     return None
@@ -2662,13 +2529,9 @@ def _resolve_lsf_sigma(
         try:
             initial_sigma = float(lsf_sigma_pixels)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "lsf_sigma_pixels must be 'auto' or a non-negative number"
-            ) from exc
+            raise ValueError("lsf_sigma_pixels must be 'auto' or a non-negative number") from exc
         if not np.isfinite(initial_sigma) or initial_sigma < 0:
-            raise ValueError(
-                "lsf_sigma_pixels must be 'auto' or a non-negative number"
-            )
+            raise ValueError("lsf_sigma_pixels must be 'auto' or a non-negative number")
         resolution = {
             "requested": initial_sigma,
             "source": "user",
@@ -2677,9 +2540,7 @@ def _resolve_lsf_sigma(
 
     if fit_lsf_sigma == "auto":
         resolved_fit = bool(
-            automatic_sigma
-            and has_telluric_lines
-            and resolution["source"] != "generic_fallback"
+            automatic_sigma and has_telluric_lines and resolution["source"] != "generic_fallback"
         )
     else:
         resolved_fit = bool(fit_lsf_sigma)
@@ -2692,9 +2553,7 @@ def _resolve_lsf_sigma(
             "initial_sigma_pixels": 0.0,
         }
     elif (
-        automatic_sigma
-        and resolution["source"] == "generic_fallback"
-        and fit_lsf_sigma is not True
+        automatic_sigma and resolution["source"] == "generic_fallback" and fit_lsf_sigma is not True
     ):
         initial_sigma = 0.0
         resolution = {
@@ -2733,20 +2592,14 @@ def _resolve_lsf_sigma(
         or resolved_bounds[0] < 0
         or resolved_bounds[1] <= resolved_bounds[0]
     ):
-        raise ValueError(
-            "lsf_sigma_bounds must be finite, non-negative, and increasing"
-        )
+        raise ValueError("lsf_sigma_bounds must be finite, non-negative, and increasing")
 
     initialize_grid = bool(
-        automatic_sigma
-        and resolved_fit
-        and resolution["source"] != "fits_resolving_power"
+        automatic_sigma and resolved_fit and resolution["source"] != "fits_resolving_power"
     )
     resolution = {
         **resolution,
-        "fit_requested": (
-            "auto" if fit_lsf_sigma == "auto" else bool(fit_lsf_sigma)
-        ),
+        "fit_requested": ("auto" if fit_lsf_sigma == "auto" else bool(fit_lsf_sigma)),
     }
     return (
         initial_sigma,
@@ -2765,13 +2618,8 @@ def _resolve_lsf_lorentz(
     gaussian_sigma_pixels: float,
     has_telluric_lines: bool,
 ) -> tuple[float, bool, tuple[float, float], bool, dict[str, object]]:
-    if (
-        fit_lsf_lorentz_fwhm != "auto"
-        and not isinstance(fit_lsf_lorentz_fwhm, bool)
-    ):
-        raise ValueError(
-            "fit_lsf_lorentz_fwhm must be 'auto', True, or False"
-        )
+    if fit_lsf_lorentz_fwhm != "auto" and not isinstance(fit_lsf_lorentz_fwhm, bool):
+        raise ValueError("fit_lsf_lorentz_fwhm must be 'auto', True, or False")
 
     automatic_width = lsf_lorentz_fwhm_pixels == "auto"
     if automatic_width:
@@ -2785,9 +2633,7 @@ def _resolve_lsf_lorentz(
                 "lsf_lorentz_fwhm_pixels must be 'auto' or a non-negative number"
             ) from exc
         if not np.isfinite(initial_fwhm) or initial_fwhm < 0:
-            raise ValueError(
-                "lsf_lorentz_fwhm_pixels must be 'auto' or a non-negative number"
-            )
+            raise ValueError("lsf_lorentz_fwhm_pixels must be 'auto' or a non-negative number")
         source = "user"
 
     if lsf_lorentz_fwhm_bounds is None:
@@ -2808,19 +2654,10 @@ def _resolve_lsf_lorentz(
         or resolved_bounds[0] < 0
         or resolved_bounds[1] <= resolved_bounds[0]
     ):
-        raise ValueError(
-            "lsf_lorentz_fwhm_bounds must be finite, non-negative, and increasing"
-        )
+        raise ValueError("lsf_lorentz_fwhm_bounds must be finite, non-negative, and increasing")
 
-    auto_select = bool(
-        automatic_width
-        and fit_lsf_lorentz_fwhm == "auto"
-        and has_telluric_lines
-    )
-    if fit_lsf_lorentz_fwhm == "auto":
-        resolved_fit = False
-    else:
-        resolved_fit = bool(fit_lsf_lorentz_fwhm)
+    auto_select = bool(automatic_width and fit_lsf_lorentz_fwhm == "auto" and has_telluric_lines)
+    resolved_fit = False if fit_lsf_lorentz_fwhm == "auto" else bool(fit_lsf_lorentz_fwhm)
     if automatic_width and resolved_fit:
         gaussian_fwhm = 2.354820045 * max(float(gaussian_sigma_pixels), 0.2)
         initial_fwhm = float(
@@ -2835,23 +2672,13 @@ def _resolve_lsf_lorentz(
         source = "disabled_no_telluric_lines"
 
     resolution = {
-        "requested": (
-            "auto" if automatic_width else float(initial_fwhm)
-        ),
-        "fit_requested": (
-            "auto"
-            if fit_lsf_lorentz_fwhm == "auto"
-            else bool(fit_lsf_lorentz_fwhm)
-        ),
+        "requested": ("auto" if automatic_width else float(initial_fwhm)),
+        "fit_requested": ("auto" if fit_lsf_lorentz_fwhm == "auto" else bool(fit_lsf_lorentz_fwhm)),
         "source": source,
         "selected_model": (
             "pending_pilot_selection"
             if auto_select
-            else (
-                "gaussian_lorentz"
-                if resolved_fit or initial_fwhm > 0
-                else "gaussian"
-            )
+            else ("gaussian_lorentz" if resolved_fit or initial_fwhm > 0 else "gaussian")
         ),
         "initial_fwhm_pixels": float(initial_fwhm),
     }
@@ -2870,10 +2697,11 @@ def _configured_wavelength_model_name(config: FitConfig) -> str:
     if config.fit_segment_wavelength_shifts:
         return "per_segment_constant"
     if config.fit_wavelength_polynomial:
-        return "linear_pixel_trend" if (
-            config.wavelength_shift_unit == "pixel"
-            and config.wavelength_polynomial_order == 1
-        ) else "global_polynomial"
+        return (
+            "linear_pixel_trend"
+            if (config.wavelength_shift_unit == "pixel" and config.wavelength_polynomial_order == 1)
+            else "global_polynomial"
+        )
     if config.fit_wavelength_shift:
         return (
             "constant_pixel_shift"
@@ -2889,13 +2717,14 @@ def _wavelength_candidate_improvement(
 ) -> tuple[float, float]:
     simpler_rss = np.asarray(simpler["region_weighted_rss"], dtype=float)
     candidate_rss = np.asarray(candidate["region_weighted_rss"], dtype=float)
-    informative = np.asarray(
-        simpler["region_max_absorption"],
-        dtype=float,
-    ) >= 0.01
-    relative = (
-        simpler_rss - candidate_rss
-    ) / np.maximum(simpler_rss, np.finfo(float).tiny)
+    informative = (
+        np.asarray(
+            simpler["region_max_absorption"],
+            dtype=float,
+        )
+        >= 0.01
+    )
+    relative = (simpler_rss - candidate_rss) / np.maximum(simpler_rss, np.finfo(float).tiny)
     improved_fraction = (
         float(np.count_nonzero(informative & (relative > 0.0)))
         / float(np.count_nonzero(informative))
@@ -2971,11 +2800,13 @@ def _select_wavelength_model_from_pilots(
         estimate_uncertainties=False,
         use_jacobian_sparsity=False,
     )
+    opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
     no_shift_result = fit_telluric_segments(
         pilot_segments,
         line_list=line_list,
         config=base_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     no_shift_metrics = _lsf_pilot_model_metrics(no_shift_result)
     details["none_model"] = no_shift_metrics
@@ -2989,8 +2820,7 @@ def _select_wavelength_model_from_pilots(
     initial_pixel_shift = float(config.initial_wavelength_shift)
     if abs(initial_pixel_shift) < 0.02:
         initial_pixel_shift = 0.02 * (
-            config.wavelength_shift_bounds[1]
-            - config.wavelength_shift_bounds[0]
+            config.wavelength_shift_bounds[1] - config.wavelength_shift_bounds[0]
         )
     initial_pixel_shift = float(
         np.clip(
@@ -3012,13 +2842,13 @@ def _select_wavelength_model_from_pilots(
         line_list=line_list,
         config=constant_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     constant_metrics = _lsf_pilot_model_metrics(constant_result)
     details["constant_pixel_model"] = {
         **constant_metrics,
         "coefficients_pixels": (
-            constant_result.segment_results[0]
-            .wavelength_coefficients.tolist()
+            constant_result.segment_results[0].wavelength_coefficients.tolist()
         ),
     }
 
@@ -3027,9 +2857,7 @@ def _select_wavelength_model_from_pilots(
         for parameter, status in constant_result.parameter_bound_status.items()
         if "wavelength_" in parameter
     }
-    constant_coefficient = float(
-        constant_result.segment_results[0].wavelength_coefficients[0]
-    )
+    constant_coefficient = float(constant_result.segment_results[0].wavelength_coefficients[0])
     bound_lower, bound_upper = map(
         float,
         constant_config.wavelength_shift_bounds,
@@ -3040,19 +2868,16 @@ def _select_wavelength_model_from_pilots(
             constant_bound_status["wavelength_shift_pixels"] = "lower"
         elif constant_coefficient >= bound_upper - bound_margin:
             constant_bound_status["wavelength_shift_pixels"] = "upper"
-    constant_bic_improvement, constant_improved_fraction = (
-        _wavelength_candidate_improvement(
-            no_shift_metrics,
-            constant_metrics,
-        )
+    constant_bic_improvement, constant_improved_fraction = _wavelength_candidate_improvement(
+        no_shift_metrics,
+        constant_metrics,
     )
     should_expand_bounds = bool(
         constant_result.success
         and constant_bound_status
         and constant_bic_improvement >= AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT
         and constant_improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
-        and tuple(config.wavelength_shift_bounds)
-        == AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
+        and tuple(config.wavelength_shift_bounds) == AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
     )
     if should_expand_bounds:
         bounded_model = dict(details["constant_pixel_model"])
@@ -3066,27 +2891,20 @@ def _select_wavelength_model_from_pilots(
         expanded_constant_config = replace(
             constant_config,
             initial_wavelength_shift=expanded_initial,
-            wavelength_shift_bounds=(
-                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS
-            ),
+            wavelength_shift_bounds=(AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS),
         )
         expanded_constant_result = fit_telluric_segments(
             pilot_segments,
             line_list=line_list,
             config=expanded_constant_config,
             global_wavelength_bounds=global_bounds,
+            _opacity_cache=opacity_cache,
         )
-        expanded_constant_metrics = _lsf_pilot_model_metrics(
-            expanded_constant_result
-        )
+        expanded_constant_metrics = _lsf_pilot_model_metrics(expanded_constant_result)
         details["wavelength_shift_bound_expansion"] = {
             "triggered": True,
-            "initial_bounds_pixels": list(
-                AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
-            ),
-            "expanded_bounds_pixels": list(
-                AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS
-            ),
+            "initial_bounds_pixels": list(AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS),
+            "expanded_bounds_pixels": list(AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS),
             "initial_bound_status": constant_bound_status,
             "initial_bic_improvement": constant_bic_improvement,
             "initial_improved_region_fraction": constant_improved_fraction,
@@ -3099,8 +2917,7 @@ def _select_wavelength_model_from_pilots(
             details["constant_pixel_model"] = {
                 **constant_metrics,
                 "coefficients_pixels": (
-                    constant_result.segment_results[0]
-                    .wavelength_coefficients.tolist()
+                    constant_result.segment_results[0].wavelength_coefficients.tolist()
                 ),
             }
     else:
@@ -3108,9 +2925,7 @@ def _select_wavelength_model_from_pilots(
             "triggered": False,
         }
 
-    model_records: list[
-        tuple[str, FitConfig, MultiTelluricFitResult, dict[str, object]]
-    ] = [
+    model_records: list[tuple[str, FitConfig, MultiTelluricFitResult, dict[str, object]]] = [
         ("none", base_config, no_shift_result, no_shift_metrics),
     ]
     if constant_result.success:
@@ -3140,13 +2955,13 @@ def _select_wavelength_model_from_pilots(
             line_list=line_list,
             config=linear_config,
             global_wavelength_bounds=global_bounds,
+            _opacity_cache=opacity_cache,
         )
         linear_metrics = _lsf_pilot_model_metrics(linear_result)
         details["linear_pixel_trend_model"] = {
             **linear_metrics,
             "coefficients_pixels": (
-                linear_result.segment_results[0]
-                .wavelength_coefficients.tolist()
+                linear_result.segment_results[0].wavelength_coefficients.tolist()
             ),
         }
         if linear_result.success:
@@ -3159,9 +2974,7 @@ def _select_wavelength_model_from_pilots(
                 )
             )
 
-    selected_name, selected_config, selected_result, selected_metrics = (
-        model_records[0]
-    )
+    selected_name, selected_config, selected_result, selected_metrics = model_records[0]
     comparisons: list[dict[str, object]] = []
     for name, candidate_config, candidate_result, candidate_metrics in model_records[1:]:
         bic_improvement, improved_fraction = _wavelength_candidate_improvement(
@@ -3254,32 +3067,21 @@ def _select_lsf_variable_width_from_pilots(
     )
     pilot_centers = np.asarray(
         [
-            0.5 * (
-                float(record["lower_micron"])
-                + float(record["upper_micron"])
-            )
+            0.5 * (float(record["lower_micron"]) + float(record["upper_micron"]))
             for record in pilot_records
         ],
         dtype=float,
     )
-    log_wavelength_span = (
-        float(np.ptp(np.log(pilot_centers)))
-        if pilot_centers.size >= 2
-        else 0.0
-    )
+    log_wavelength_span = float(np.ptp(np.log(pilot_centers))) if pilot_centers.size >= 2 else 0.0
     details = {
         **dict(resolution),
         "pilot_width_micron": float(pilot_width),
         "pilot_region_count": len(pilot_segments),
         "pilot_regions": pilot_records,
         "pilot_log_wavelength_span": log_wavelength_span,
-        "minimum_log_wavelength_span": (
-            AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN
-        ),
+        "minimum_log_wavelength_span": (AUTO_LSF_VARIABLE_MIN_LOG_WAVELENGTH_SPAN),
         "minimum_bic_improvement": AUTO_LSF_VARIABLE_MIN_BIC_IMPROVEMENT,
-        "minimum_improved_region_fraction": (
-            AUTO_LSF_VARIABLE_MIN_REGION_FRACTION
-        ),
+        "minimum_improved_region_fraction": (AUTO_LSF_VARIABLE_MIN_REGION_FRACTION),
     }
     if len(pilot_segments) < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
         return replace(
@@ -3316,11 +3118,13 @@ def _select_lsf_variable_width_from_pilots(
         lsf_wavelength_exponent=0.0,
         estimate_uncertainties=False,
     )
+    opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
     constant_result = fit_telluric_segments(
         pilot_segments,
         line_list=line_list,
         config=constant_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     constant_metrics = _lsf_pilot_model_metrics(constant_result)
     details["constant_width_model"] = constant_metrics
@@ -3336,22 +3140,19 @@ def _select_lsf_variable_width_from_pilots(
         initial_species_scales=dict(constant_result.species_scales),
         lsf_sigma_pixels=float(constant_result.lsf_sigma_pixels),
         lsf_box_width_pixels=float(constant_result.lsf_box_width_pixels),
-        lsf_lorentz_fwhm_pixels=float(
-            constant_result.lsf_lorentz_fwhm_pixels
-        ),
+        lsf_lorentz_fwhm_pixels=float(constant_result.lsf_lorentz_fwhm_pixels),
         initialize_lsf_sigma_grid=False,
         lsf_variable_width=True,
         lsf_wavelength_exponent=1.0,
         fit_lsf_wavelength_exponent=True,
-        lsf_wavelength_exponent_bounds=(
-            AUTO_LSF_VARIABLE_EXPONENT_BOUNDS
-        ),
+        lsf_wavelength_exponent_bounds=(AUTO_LSF_VARIABLE_EXPONENT_BOUNDS),
     )
     variable_result = fit_telluric_segments(
         pilot_segments,
         line_list=line_list,
         config=variable_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     variable_metrics = _lsf_pilot_model_metrics(variable_result)
     details["power_law_width_model"] = variable_metrics
@@ -3377,39 +3178,30 @@ def _select_lsf_variable_width_from_pilots(
         variable_metrics["region_weighted_rss"],
         dtype=float,
     )
-    informative = np.asarray(
-        constant_metrics["region_max_absorption"],
-        dtype=float,
-    ) >= 0.01
-    relative_improvement = (
-        constant_region_rss - variable_region_rss
-    ) / np.maximum(constant_region_rss, np.finfo(float).tiny)
-    improved = informative & (
-        relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT
+    informative = (
+        np.asarray(
+            constant_metrics["region_max_absorption"],
+            dtype=float,
+        )
+        >= 0.01
     )
+    relative_improvement = (constant_region_rss - variable_region_rss) / np.maximum(
+        constant_region_rss, np.finfo(float).tiny
+    )
+    improved = informative & (relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT)
     informative_count = int(np.count_nonzero(informative))
     improved_count = int(np.count_nonzero(improved))
-    improved_fraction = (
-        improved_count / informative_count if informative_count else 0.0
-    )
-    bic_improvement = float(
-        constant_metrics["bic"] - variable_metrics["bic"]
-    )
-    bound_status = variable_result.parameter_bound_status.get(
-        "lsf_wavelength_exponent"
-    )
+    improved_fraction = improved_count / informative_count if informative_count else 0.0
+    bic_improvement = float(constant_metrics["bic"] - variable_metrics["bic"])
+    bound_status = variable_result.parameter_bound_status.get("lsf_wavelength_exponent")
     details.update(
         {
             "bic_improvement": bic_improvement,
             "informative_region_count": informative_count,
             "improved_region_count": improved_count,
             "improved_region_fraction": float(improved_fraction),
-            "region_relative_rss_improvement": (
-                relative_improvement.tolist()
-            ),
-            "pilot_wavelength_exponent": float(
-                variable_result.lsf_wavelength_exponent
-            ),
+            "region_relative_rss_improvement": (relative_improvement.tolist()),
+            "pilot_wavelength_exponent": float(variable_result.lsf_wavelength_exponent),
         }
     )
     if bound_status is not None:
@@ -3425,21 +3217,13 @@ def _select_lsf_variable_width_from_pilots(
         return replace(
             config,
             lsf_sigma_pixels=float(variable_result.lsf_sigma_pixels),
-            lsf_box_width_pixels=float(
-                variable_result.lsf_box_width_pixels
-            ),
-            lsf_lorentz_fwhm_pixels=float(
-                variable_result.lsf_lorentz_fwhm_pixels
-            ),
+            lsf_box_width_pixels=float(variable_result.lsf_box_width_pixels),
+            lsf_lorentz_fwhm_pixels=float(variable_result.lsf_lorentz_fwhm_pixels),
             initialize_lsf_sigma_grid=False,
             lsf_variable_width=True,
-            lsf_wavelength_exponent=float(
-                variable_result.lsf_wavelength_exponent
-            ),
+            lsf_wavelength_exponent=float(variable_result.lsf_wavelength_exponent),
             fit_lsf_wavelength_exponent=True,
-            lsf_wavelength_exponent_bounds=(
-                AUTO_LSF_VARIABLE_EXPONENT_BOUNDS
-            ),
+            lsf_wavelength_exponent_bounds=(AUTO_LSF_VARIABLE_EXPONENT_BOUNDS),
         ), {
             **details,
             "selected_model": "power_law",
@@ -3459,9 +3243,7 @@ def _select_lsf_variable_width_from_pilots(
         config,
         lsf_sigma_pixels=float(constant_result.lsf_sigma_pixels),
         lsf_box_width_pixels=float(constant_result.lsf_box_width_pixels),
-        lsf_lorentz_fwhm_pixels=float(
-            constant_result.lsf_lorentz_fwhm_pixels
-        ),
+        lsf_lorentz_fwhm_pixels=float(constant_result.lsf_lorentz_fwhm_pixels),
         initialize_lsf_sigma_grid=False,
         lsf_variable_width=False,
         fit_lsf_wavelength_exponent=False,
@@ -3527,11 +3309,13 @@ def _select_lsf_lorentz_from_pilots(
         fit_lsf_lorentz_fwhm=False,
         estimate_uncertainties=False,
     )
+    opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
     gaussian_result = fit_telluric_segments(
         pilot_segments,
         line_list=line_list,
         config=gaussian_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     gaussian_metrics = _lsf_pilot_model_metrics(gaussian_result)
     details["gaussian_model"] = gaussian_metrics
@@ -3568,6 +3352,7 @@ def _select_lsf_lorentz_from_pilots(
         line_list=line_list,
         config=lorentz_config,
         global_wavelength_bounds=global_bounds,
+        _opacity_cache=opacity_cache,
     )
     lorentz_metrics = _lsf_pilot_model_metrics(lorentz_result)
     details["gaussian_lorentz_model"] = lorentz_metrics
@@ -3586,27 +3371,22 @@ def _select_lsf_lorentz_from_pilots(
         lorentz_metrics["region_weighted_rss"],
         dtype=float,
     )
-    informative = np.asarray(
-        gaussian_metrics["region_max_absorption"],
-        dtype=float,
-    ) >= 0.01
-    relative_improvement = (
-        gaussian_region_rss - lorentz_region_rss
-    ) / np.maximum(gaussian_region_rss, np.finfo(float).tiny)
-    improved = informative & (
-        relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT
+    informative = (
+        np.asarray(
+            gaussian_metrics["region_max_absorption"],
+            dtype=float,
+        )
+        >= 0.01
     )
+    relative_improvement = (gaussian_region_rss - lorentz_region_rss) / np.maximum(
+        gaussian_region_rss, np.finfo(float).tiny
+    )
+    improved = informative & (relative_improvement >= AUTO_LSF_LORENTZ_MIN_REGION_IMPROVEMENT)
     informative_count = int(np.count_nonzero(informative))
     improved_count = int(np.count_nonzero(improved))
-    improved_fraction = (
-        improved_count / informative_count if informative_count else 0.0
-    )
-    bic_improvement = float(
-        gaussian_metrics["bic"] - lorentz_metrics["bic"]
-    )
-    bound_status = lorentz_result.parameter_bound_status.get(
-        "lsf_lorentz_fwhm_pixels"
-    )
+    improved_fraction = improved_count / informative_count if informative_count else 0.0
+    bic_improvement = float(gaussian_metrics["bic"] - lorentz_metrics["bic"])
+    bound_status = lorentz_result.parameter_bound_status.get("lsf_lorentz_fwhm_pixels")
     details.update(
         {
             "bic_improvement": bic_improvement,
@@ -3614,9 +3394,7 @@ def _select_lsf_lorentz_from_pilots(
             "improved_region_count": improved_count,
             "improved_region_fraction": float(improved_fraction),
             "region_relative_rss_improvement": relative_improvement.tolist(),
-            "pilot_lorentz_fwhm_pixels": float(
-                lorentz_result.lsf_lorentz_fwhm_pixels
-            ),
+            "pilot_lorentz_fwhm_pixels": float(lorentz_result.lsf_lorentz_fwhm_pixels),
         }
     )
     if bound_status is not None:
@@ -3633,9 +3411,7 @@ def _select_lsf_lorentz_from_pilots(
             config,
             lsf_sigma_pixels=float(lorentz_result.lsf_sigma_pixels),
             initialize_lsf_sigma_grid=False,
-            lsf_lorentz_fwhm_pixels=float(
-                lorentz_result.lsf_lorentz_fwhm_pixels
-            ),
+            lsf_lorentz_fwhm_pixels=float(lorentz_result.lsf_lorentz_fwhm_pixels),
             fit_lsf_lorentz_fwhm=True,
         )
         return selected_config, {
@@ -3686,14 +3462,8 @@ def _select_distributed_lsf_pilot_segments(
         lower = float(np.nanmin(wavelength))
         upper = float(np.nanmax(wavelength))
         positive_steps = np.diff(np.sort(wavelength))
-        positive_steps = positive_steps[
-            np.isfinite(positive_steps) & (positive_steps > 0)
-        ]
-        half_pixel = (
-            0.5 * float(np.nanmedian(positive_steps))
-            if positive_steps.size
-            else 0.0
-        )
+        positive_steps = positive_steps[np.isfinite(positive_steps) & (positive_steps > 0)]
+        half_pixel = 0.5 * float(np.nanmedian(positive_steps)) if positive_steps.size else 0.0
         line_mask = (
             np.isfinite(line_list.wavelength)
             & (line_list.wavelength >= lower - half_pixel)
@@ -3704,8 +3474,7 @@ def _select_distributed_lsf_pilot_segments(
         if config.fit_ranges is not None:
             line_mask &= np.any(
                 [
-                    (line_list.wavelength >= fit_lower)
-                    & (line_list.wavelength <= fit_upper)
+                    (line_list.wavelength >= fit_lower) & (line_list.wavelength <= fit_upper)
                     for fit_lower, fit_upper in config.fit_ranges
                 ],
                 axis=0,
@@ -3719,15 +3488,9 @@ def _select_distributed_lsf_pilot_segments(
         line_count = int(np.count_nonzero(line_mask))
         if line_count == 0:
             continue
-        score = float(
-            np.sum(np.sqrt(line_list.strength[line_mask] / strength_scale))
-        )
-        line_weights = np.sqrt(
-            line_list.strength[line_mask] / strength_scale
-        )
-        line_center = float(
-            np.average(line_list.wavelength[line_mask], weights=line_weights)
-        )
+        score = float(np.sum(np.sqrt(line_list.strength[line_mask] / strength_scale)))
+        line_weights = np.sqrt(line_list.strength[line_mask] / strength_scale)
+        line_center = float(np.average(line_list.wavelength[line_mask], weights=line_weights))
         scored.append(
             {
                 "segment": segment,
@@ -3763,13 +3526,8 @@ def _select_distributed_lsf_pilot_segments(
                 )
             )
             if in_bin.size:
-                local_scores = [
-                    float(scored[index]["line_score"])
-                    for index in in_bin
-                ]
-                selected_indices.append(
-                    int(in_bin[int(np.argmax(local_scores))])
-                )
+                local_scores = [float(scored[index]["line_score"]) for index in in_bin]
+                selected_indices.append(int(in_bin[int(np.argmax(local_scores))]))
 
     if len(selected_indices) < AUTO_LSF_LORENTZ_MIN_PILOT_REGIONS:
         ranked = sorted(
@@ -3816,23 +3574,13 @@ def _centered_spectrum_window(
         return ordered
     steps = np.diff(wavelength)
     positive = steps[np.isfinite(steps) & (steps > 0)]
-    representative_step = (
-        float(np.nanmedian(positive)) if positive.size else np.inf
-    )
+    representative_step = float(np.nanmedian(positive)) if positive.size else np.inf
     gaps = np.flatnonzero(steps > 10.0 * representative_step) + 1
     nearest = int(np.argmin(np.abs(wavelength - center)))
     block_start_candidates = gaps[gaps <= nearest]
     block_stop_candidates = gaps[gaps > nearest]
-    block_start = (
-        int(block_start_candidates[-1])
-        if block_start_candidates.size
-        else 0
-    )
-    block_stop = (
-        int(block_stop_candidates[0])
-        if block_stop_candidates.size
-        else wavelength.size
-    )
+    block_start = int(block_start_candidates[-1]) if block_start_candidates.size else 0
+    block_stop = int(block_stop_candidates[0]) if block_stop_candidates.size else wavelength.size
     lower = center - 0.5 * width
     upper = center + 0.5 * width
     start = block_start + int(
@@ -3883,19 +3631,14 @@ def _lsf_pilot_model_metrics(
         region_points.append(int(np.count_nonzero(finite)))
         absorption = 1.0 - segment_result.transmission[fit_mask]
         finite_absorption = absorption[np.isfinite(absorption)]
-        region_depth.append(
-            float(np.nanmax(finite_absorption))
-            if finite_absorption.size
-            else 0.0
-        )
+        region_depth.append(float(np.nanmax(finite_absorption)) if finite_absorption.size else 0.0)
 
     weighted_rss = float(np.sum(region_rss))
     point_count = int(np.sum(region_points))
     parameter_count = len(result.parameter_names)
     mean_square = weighted_rss / max(point_count, 1)
-    bic = (
-        point_count * np.log(max(mean_square, np.finfo(float).tiny))
-        + parameter_count * np.log(max(point_count, 2))
+    bic = point_count * np.log(max(mean_square, np.finfo(float).tiny)) + parameter_count * np.log(
+        max(point_count, 2)
     )
     metrics = {
         "success": bool(result.success),
@@ -3938,10 +3681,7 @@ def _estimate_lsf_sigma_from_resolving_power(
 ) -> dict[str, object] | None:
     if header is None:
         return None
-    normalized_keys = {
-        str(key).strip().upper().removeprefix("HIERARCH "): key
-        for key in header
-    }
+    normalized_keys = {str(key).strip().upper().removeprefix("HIERARCH "): key for key in header}
     resolving_power = None
     source_key = None
     for candidate in _RESOLVING_POWER_KEYS:
@@ -3969,16 +3709,10 @@ def _estimate_lsf_sigma_from_resolving_power(
         return None
     representative_spacing = float(np.nanmedian(positive))
     midpoint = 0.5 * (wavelength[:-1] + wavelength[1:])
-    usable = (
-        np.isfinite(spacing)
-        & (spacing > 0)
-        & (spacing <= 10.0 * representative_spacing)
-    )
+    usable = np.isfinite(spacing) & (spacing > 0) & (spacing <= 10.0 * representative_spacing)
     fwhm_pixels = midpoint[usable] / (resolving_power * spacing[usable])
     fwhm_pixels = fwhm_pixels[
-        np.isfinite(fwhm_pixels)
-        & (fwhm_pixels >= 0.2)
-        & (fwhm_pixels <= 100.0)
+        np.isfinite(fwhm_pixels) & (fwhm_pixels >= 0.2) & (fwhm_pixels <= 100.0)
     ]
     if fwhm_pixels.size == 0:
         return None
@@ -4006,10 +3740,7 @@ def _estimate_lsf_sigma_from_spectral_features(
     usable = ordered.valid.copy()
     if fit_ranges:
         usable &= np.any(
-            [
-                (wavelength >= lower) & (wavelength <= upper)
-                for lower, upper in fit_ranges
-            ],
+            [(wavelength >= lower) & (wavelength <= upper) for lower, upper in fit_ranges],
             axis=0,
         )
     if exclude_ranges:
@@ -4017,9 +3748,7 @@ def _estimate_lsf_sigma_from_spectral_features(
             usable &= ~((wavelength >= lower) & (wavelength <= upper))
 
     positive_steps = np.diff(wavelength)
-    finite_steps = positive_steps[
-        np.isfinite(positive_steps) & (positive_steps > 0)
-    ]
+    finite_steps = positive_steps[np.isfinite(positive_steps) & (positive_steps > 0)]
     if finite_steps.size == 0:
         return None
     representative_step = float(np.nanmedian(finite_steps))
@@ -4031,7 +3760,7 @@ def _estimate_lsf_sigma_from_spectral_features(
         )
     )
     widths = []
-    for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
+    for start, stop in pairwise(boundaries):
         local_usable = usable[start:stop]
         if np.count_nonzero(local_usable) < 15:
             continue
@@ -4053,9 +3782,7 @@ def _estimate_lsf_sigma_from_spectral_features(
         )
         valid_continuum = np.isfinite(continuum) & (np.abs(continuum) > 1.0e-12 * scale)
         normalized = np.ones_like(filled)
-        normalized[valid_continuum] = (
-            filled[valid_continuum] / continuum[valid_continuum]
-        )
+        normalized[valid_continuum] = filled[valid_continuum] / continuum[valid_continuum]
         absorption = 1.0 - normalized
         differences = np.diff(normalized[local_usable])
         noise = (
@@ -4168,15 +3895,9 @@ def _with_lsf_variable_width_provenance(
             "selected_model",
             "power_law" if config.lsf_variable_width else "constant",
         ),
-        "fit_enabled_in_full_fit": bool(
-            config.fit_lsf_wavelength_exponent
-        ),
-        "reference_wavelength_micron": float(
-            config.lsf_reference_wavelength_micron
-        ),
-        "final_wavelength_exponent": float(
-            result.lsf_wavelength_exponent
-        ),
+        "fit_enabled_in_full_fit": bool(config.fit_lsf_wavelength_exponent),
+        "reference_wavelength_micron": float(config.lsf_reference_wavelength_micron),
+        "final_wavelength_exponent": float(result.lsf_wavelength_exponent),
     }
     if bound_status is not None:
         details["full_fit_bound_status"] = bound_status
@@ -4268,10 +3989,7 @@ def _split_spectrum(
             gap_ranges,
             minimum_points=minimum_points,
         )
-        physical_groups.extend(
-            _slice_spectrum(ordered, start, stop)
-            for start, stop in gap_ranges
-        )
+        physical_groups.extend(_slice_spectrum(ordered, start, stop) for start, stop in gap_ranges)
 
     physical_groups.sort(key=lambda item: float(np.nanmin(item.wavelength)))
     chunks: list[Spectrum] = []
@@ -4329,31 +4047,28 @@ def _weights_for_segment(
         candidate_indices = np.arange(parent_unit.wavelength.size)
     else:
         segment_groups = np.unique(segment_unit.group_id)
-        candidate_indices = np.flatnonzero(
-            np.isin(parent_unit.group_id, segment_groups)
-        )
+        candidate_indices = np.flatnonzero(np.isin(parent_unit.group_id, segment_groups))
         if candidate_indices.size == 0:
             raise RuntimeError("segment group was not found on the parent spectrum")
-    order = candidate_indices[
-        np.argsort(parent_unit.wavelength[candidate_indices], kind="stable")
-    ]
+    order = candidate_indices[np.argsort(parent_unit.wavelength[candidate_indices], kind="stable")]
     parent_wavelength = parent_unit.wavelength[order]
     sorted_weights = weights[order]
     indices = np.searchsorted(parent_wavelength, segment_unit.wavelength)
     indices = np.clip(indices, 0, parent_wavelength.size - 1)
     left = np.maximum(indices - 1, 0)
-    choose_left = (
-        np.abs(parent_wavelength[left] - segment_unit.wavelength)
-        < np.abs(parent_wavelength[indices] - segment_unit.wavelength)
+    choose_left = np.abs(parent_wavelength[left] - segment_unit.wavelength) < np.abs(
+        parent_wavelength[indices] - segment_unit.wavelength
     )
     indices = np.where(choose_left, left, indices)
-    tolerance = 32.0 * np.finfo(float).eps * np.maximum(
-        1.0,
-        np.abs(segment_unit.wavelength),
+    tolerance = (
+        32.0
+        * np.finfo(float).eps
+        * np.maximum(
+            1.0,
+            np.abs(segment_unit.wavelength),
+        )
     )
-    if np.any(
-        np.abs(parent_wavelength[indices] - segment_unit.wavelength) > tolerance
-    ):
+    if np.any(np.abs(parent_wavelength[indices] - segment_unit.wavelength) > tolerance):
         raise RuntimeError("could not map stellar fit weights onto a segment")
     return sorted_weights[indices]
 
@@ -4374,15 +4089,9 @@ def _width_chunk_ranges(
     count = max(1, int(np.ceil(ratio)))
     edges = np.linspace(wavelength[0], wavelength[-1], count + 1)
     boundaries = [0]
-    boundaries.extend(
-        np.searchsorted(wavelength, edges[1:-1], side="left").tolist()
-    )
+    boundaries.extend(np.searchsorted(wavelength, edges[1:-1], side="left").tolist())
     boundaries.append(int(wavelength.size))
-    ranges = [
-        [int(start), int(stop)]
-        for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
-        if stop > start
-    ]
+    ranges = [[int(start), int(stop)] for start, stop in pairwise(boundaries) if stop > start]
     ranges = _merge_short_index_ranges(
         ranges,
         minimum_points=minimum_points,
@@ -4462,10 +4171,7 @@ def _subdivide_segments_for_grid_limit(
 
 
 def _segment_has_fit_pixels(segment: Spectrum, config: FitConfig) -> bool:
-    return bool(
-        _segment_fit_pixel_count(segment, config)
-        >= config.continuum_order + 2
-    )
+    return bool(_segment_fit_pixel_count(segment, config) >= config.continuum_order + 2)
 
 
 def _segment_fit_pixel_count(segment: Spectrum, config: FitConfig) -> int:
@@ -4487,16 +4193,10 @@ def _slice_spectrum(spectrum: Spectrum, start: int, stop: int) -> Spectrum:
         wavelength=spectrum.wavelength[start:stop].copy(),
         flux=spectrum.flux[start:stop].copy(),
         uncertainty=(
-            None
-            if spectrum.uncertainty is None
-            else spectrum.uncertainty[start:stop].copy()
+            None if spectrum.uncertainty is None else spectrum.uncertainty[start:stop].copy()
         ),
         mask=None if spectrum.mask is None else spectrum.mask[start:stop].copy(),
-        group_id=(
-            None
-            if spectrum.group_id is None
-            else spectrum.group_id[start:stop].copy()
-        ),
+        group_id=(None if spectrum.group_id is None else spectrum.group_id[start:stop].copy()),
         wavelength_unit=spectrum.wavelength_unit,
         wavelength_medium=spectrum.wavelength_medium,
         meta=dict(spectrum.meta),
@@ -4509,16 +4209,10 @@ def _take_spectrum(spectrum: Spectrum, indices: np.ndarray) -> Spectrum:
         wavelength=spectrum.wavelength[indices].copy(),
         flux=spectrum.flux[indices].copy(),
         uncertainty=(
-            None
-            if spectrum.uncertainty is None
-            else spectrum.uncertainty[indices].copy()
+            None if spectrum.uncertainty is None else spectrum.uncertainty[indices].copy()
         ),
         mask=None if spectrum.mask is None else spectrum.mask[indices].copy(),
-        group_id=(
-            None
-            if spectrum.group_id is None
-            else spectrum.group_id[indices].copy()
-        ),
+        group_id=(None if spectrum.group_id is None else spectrum.group_id[indices].copy()),
         wavelength_unit=spectrum.wavelength_unit,
         wavelength_medium=spectrum.wavelength_medium,
         meta=dict(spectrum.meta),
@@ -4639,10 +4333,7 @@ def _stitch_segment_results(
     transmission_uncertainty = None
     if all(item.transmission_uncertainty is not None for item in segment_results):
         transmission_uncertainty = np.concatenate(
-            [
-                np.asarray(item.transmission_uncertainty, dtype=float)
-                for item in segment_results
-            ]
+            [np.asarray(item.transmission_uncertainty, dtype=float) for item in segment_results]
         )
     continuum_coefficients = np.concatenate(
         [np.asarray(item.continuum_coefficients, dtype=float) for item in segment_results]
@@ -4671,9 +4362,7 @@ def _stitch_segment_results(
                 }
             ),
             "boundaries_micron": boundaries,
-            "wavelength_shifts_micron": [
-                float(item.wavelength_shift) for item in segment_results
-            ],
+            "wavelength_shifts_micron": [float(item.wavelength_shift) for item in segment_results],
             "wavelength_coefficients": [
                 np.asarray(item.wavelength_coefficients, dtype=float).tolist()
                 for item in segment_results
@@ -4771,8 +4460,7 @@ def _resolve_line_list(
     if demo_line_list:
         return LineList.demo_near_ir()
     if allow_empty_hitran and (
-        aer_catalog is None
-        or (aer_catalog == "auto" and hitran_species is None)
+        aer_catalog is None or (aer_catalog == "auto" and hitran_species is None)
     ):
         return LineList.empty_hitran()
     if aer_catalog is not None:
@@ -4836,7 +4524,9 @@ def _wavenumber_grid_spacing_cm(wavelength_micron: np.ndarray) -> float:
     wavenumber = wavelength_micron_to_wavenumber_cm(np.asarray(wavelength_micron, dtype=float))
     finite = np.sort(wavenumber[np.isfinite(wavenumber)])
     if finite.size < 2:
-        raise ValueError("line selection for LBLRTM line-wing modes requires at least two wavelength pixels")
+        raise ValueError(
+            "line selection for LBLRTM line-wing modes requires at least two wavelength pixels"
+        )
     spacing = np.diff(finite)
     spacing = spacing[spacing > 0]
     if spacing.size == 0:
@@ -4851,7 +4541,7 @@ def _resolve_physical(
     atmosphere_table: str | Path | None,
     hitran_par: str | Path | None,
     line_list: LineList,
-    h2o_continuum: MTCKDH2OContinuum | None,
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None,
     components: tuple[AbsorptionComponent, ...] | None,
 ) -> bool:
     if physical is not None:
@@ -5095,9 +4785,7 @@ def _resolve_region_file_ranges(
     if region_file is None:
         return fit_ranges, exclude_ranges
     if fit_ranges is not None or exclude_ranges is not None:
-        raise ValueError(
-            "region_file cannot be combined with fit_ranges or exclude_ranges"
-        )
+        raise ValueError("region_file cannot be combined with fit_ranges or exclude_ranges")
 
     selection = load_region_file(region_file)
     if selection.is_empty:
@@ -5313,7 +5001,10 @@ def _resolve_wavelength_medium(
         "in air or vacuum."
     )
 
-def _resolve_partition_table(partition_table: PartitionTable | str | Path | None) -> PartitionTable | None:
+
+def _resolve_partition_table(
+    partition_table: PartitionTable | str | Path | None,
+) -> PartitionTable | None:
     if partition_table is None:
         return PartitionTable.from_lblrtm_package_data()
     if isinstance(partition_table, PartitionTable):
@@ -5364,7 +5055,9 @@ def _resolve_pair_cia_tables(
         return {}
     resolved: dict[str, HitranCIATable] = {}
     for name, table in cia_tables.items():
-        resolved[str(name)] = table if isinstance(table, HitranCIATable) else HitranCIATable.from_hitran_cia(table)
+        resolved[str(name)] = (
+            table if isinstance(table, HitranCIATable) else HitranCIATable.from_hitran_cia(table)
+        )
     return resolved
 
 
@@ -5388,15 +5081,18 @@ def _build_components(
     n2_continuum_xn2cn: float,
     o2_continuum: bool,
     o2_continuum_xo2cn: float,
-    h2o_continuum: MTCKDH2OContinuum | None,
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None,
     h2o_continuum_foreign_closure: bool,
-    co2_continuum: TabulatedContinuum | None,
+    co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | None,
     o2_cia: HitranCIATable | None,
     n2_cia: HitranCIATable | None,
     cia_tables: Mapping[str, HitranCIATable] | None,
 ) -> tuple[AbsorptionComponent, ...] | None:
     if (
-        all(value is None for value in (extra_components, h2o_continuum, co2_continuum, o2_cia, n2_cia))
+        all(
+            value is None
+            for value in (extra_components, h2o_continuum, co2_continuum, o2_cia, n2_cia)
+        )
         and not rayleigh
         and not n2_continuum
         and not o2_continuum
@@ -5480,13 +5176,9 @@ def _build_components(
 
 def _overlaps_lblrtm_n2_continuum(table: HitranCIATable) -> bool:
     pair = tuple(str(species).strip().upper() for species in (table.pair or ()))
-    return "N2" in pair and any(
-        partner in {"N2", "O2", "H2O", "AIR"} for partner in pair
-    )
+    return "N2" in pair and any(partner in {"N2", "O2", "H2O", "AIR"} for partner in pair)
 
 
 def _overlaps_lblrtm_o2_continuum(table: HitranCIATable) -> bool:
     pair = tuple(str(species).strip().upper() for species in (table.pair or ()))
-    return "O2" in pair and any(
-        partner in {"N2", "O2", "H2O", "AIR"} for partner in pair
-    )
+    return "O2" in pair and any(partner in {"N2", "O2", "H2O", "AIR"} for partner in pair)

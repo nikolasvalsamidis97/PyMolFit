@@ -374,9 +374,7 @@ def test_automatic_fit_regions_skips_catalogue_lines_in_spectral_gaps(
             np.array([10.0, 100.0]),
         ),
     )
-    wavelength = np.concatenate(
-        (np.arange(5000.0, 5011.0), np.arange(5100.0, 5111.0))
-    )
+    wavelength = np.concatenate((np.arange(5000.0, 5011.0), np.arange(5100.0, 5111.0)))
     spectrum = Spectrum(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
@@ -428,9 +426,7 @@ def test_interactive_selector_markers_preserve_small_flux_limits(
     monkeypatch,
 ) -> None:
     wavelength = np.linspace(5000.0, 5100.0, 101)
-    flux = 2.0e-12 + 0.4e-12 * np.sin(
-        np.linspace(0.0, 2.0 * np.pi, wavelength.size)
-    )
+    flux = 2.0e-12 + 0.4e-12 * np.sin(np.linspace(0.0, 2.0 * np.pi, wavelength.size))
     monkeypatch.setattr(
         "pymolfit.regions._aer_markers_for_spectrum",
         lambda _spectrum, *, max_lines: (

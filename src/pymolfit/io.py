@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import tempfile
+import warnings
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-import tempfile
 from typing import TYPE_CHECKING
-import warnings
 
 import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
 from .errors import ProductFormatError, SpectrumFormatError, WavelengthMetadataError
-from .spectrum import Spectrum
 from .provenance import file_sha256
+from .spectrum import Spectrum
 
 if TYPE_CHECKING:
     from .fit import TelluricFitResult
@@ -201,9 +201,9 @@ def infer_wavelength_medium_from_header(
 
     if selected_name in {"AWAV", "WAVE_AIR", "WAVELENGTH_AIR"}:
         declarations.add("air")
-    elif selected_name in {"WAVE_VAC", "WAVE_VACUUM", "WAVELENGTH_VACUUM"}:
-        declarations.add("vacuum")
-    elif str(header.get("INSTRUME", "")).strip().upper() == "ESPRESSO" and selected_name == "WAVE":
+    elif selected_name in {"WAVE_VAC", "WAVE_VACUUM", "WAVELENGTH_VACUUM"} or (
+        str(header.get("INSTRUME", "")).strip().upper() == "ESPRESSO" and selected_name == "WAVE"
+    ):
         declarations.add("vacuum")
 
     explicit_keys = {
@@ -231,16 +231,13 @@ def infer_wavelength_medium_from_header(
                     declarations.add("air")
                     continue
             text = str(value).strip().lower()
-            tokens = {
-                token
-                for token in text.replace("-", " ").replace("_", " ").replace("/", " ").split()
-            }
+            tokens = set(text.replace("-", " ").replace("_", " ").replace("/", " ").split())
             if "vacuum" in tokens or "vac" in tokens:
                 declarations.add("vacuum")
             if "air" in tokens:
                 declarations.add("air")
 
-        if key.startswith("CTYPE") or key.startswith("TCTYP"):
+        if key.startswith(("CTYPE", "TCTYP")):
             spectral_code = str(value).strip().upper().split("-", 1)[0]
             if spectral_code == "AWAV":
                 declarations.add("air")
@@ -305,7 +302,9 @@ def save_fits_header_txt(
     """
 
     source = Path(fits_path)
-    destination = Path(output_path) if output_path is not None else source.with_suffix(".header.txt")
+    destination = (
+        Path(output_path) if output_path is not None else source.with_suffix(".header.txt")
+    )
     lines: list[str] = []
 
     with fits.open(source) as hdul:
@@ -452,9 +451,7 @@ def load_fit_product(path: str | Path) -> TelluricFitResult:
     except ProductFormatError:
         raise
     except Exception as exc:
-        raise ProductFormatError(
-            f"could not load PyMolFit fit product {Path(path)}"
-        ) from exc
+        raise ProductFormatError(f"could not load PyMolFit fit product {Path(path)}") from exc
 
 
 def _load_ascii(
@@ -467,7 +464,12 @@ def _load_ascii(
     wavelength_unit: str = "micron",
     wavelength_medium: str = "vacuum",
 ) -> Spectrum:
-    if format == "ecsv" or isinstance(wavelength_col, str) or isinstance(flux_col, str) or isinstance(uncertainty_col, str):
+    if (
+        format == "ecsv"
+        or isinstance(wavelength_col, str)
+        or isinstance(flux_col, str)
+        or isinstance(uncertainty_col, str)
+    ):
         table = Table.read(path)
         return _spectrum_from_table(
             table,
@@ -508,8 +510,7 @@ def _load_fits(
     with fits.open(path) as hdul:
         if not -len(hdul) <= int(hdu) < len(hdul):
             raise SpectrumFormatError(
-                f"FITS file {path} does not contain HDU {hdu}; it has "
-                f"{len(hdul)} HDUs"
+                f"FITS file {path} does not contain HDU {hdu}; it has {len(hdul)} HDUs"
             )
         target_hdu = hdul[hdu]
         data = target_hdu.data
@@ -542,7 +543,9 @@ def _load_fits(
             raise SpectrumFormatError(
                 "FITS image spectra must be one-dimensional, or provide image_index for a 2D image"
             )
-        wavelength, unit = _wavelength_from_linear_wcs(target_hdu.header, image.size, fallback_unit=wavelength_unit)
+        wavelength, unit = _wavelength_from_linear_wcs(
+            target_hdu.header, image.size, fallback_unit=wavelength_unit
+        )
         return Spectrum(
             wavelength=wavelength,
             flux=image,
@@ -630,10 +633,11 @@ def _table_valid_mask(
     quality_name = _resolve_named_column(table, QUALITY_COLUMNS)
     if quality_name is not None:
         quality = np.asarray(table[quality_name]).squeeze()
-        if quality.shape == valid.shape:
-            if np.issubdtype(quality.dtype, np.number) or quality.dtype == np.bool_:
-                valid &= np.asarray(quality == 0, dtype=bool)
-                used.append(quality_name)
+        if quality.shape == valid.shape and (
+            np.issubdtype(quality.dtype, np.number) or quality.dtype == np.bool_
+        ):
+            valid &= np.asarray(quality == 0, dtype=bool)
+            used.append(quality_name)
 
     valid_name = _resolve_named_column(table, VALID_MASK_COLUMNS)
     if valid_name is not None:
@@ -730,7 +734,9 @@ def _infer_wavelength_unit(table: Table, wavelength_col: str, fallback_unit: str
     return fallback_unit
 
 
-def _wavelength_from_linear_wcs(header: fits.Header, n_pixels: int, *, fallback_unit: str) -> tuple[np.ndarray, str]:
+def _wavelength_from_linear_wcs(
+    header: fits.Header, n_pixels: int, *, fallback_unit: str
+) -> tuple[np.ndarray, str]:
     if "CRVAL1" not in header:
         raise ValueError("FITS image spectrum is missing CRVAL1 wavelength WCS")
     if "CDELT1" in header:

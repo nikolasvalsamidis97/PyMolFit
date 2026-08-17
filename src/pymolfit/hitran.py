@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Iterable
 import re
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 import numpy as np
 
@@ -154,7 +154,7 @@ def read_hitran_par(
     min_strength: float | None = None,
     max_lines: int | None = None,
     isotopologue_metadata: IsotopologueMetadata | None = None,
-    abundance_overrides: dict[tuple[int, int] | int, float] | None = None,
+    abundance_overrides: Mapping[tuple[int, int] | int, float] | None = None,
 ) -> LineList:
     """Read the common 160-character HITRAN ``.par`` line format.
 
@@ -173,33 +173,33 @@ def read_hitran_par(
             if len(row) < 67:
                 raise ValueError(f"HITRAN row {line_number} is too short")
 
-            mol_id = int(row[0:2])
-            iso_id = parse_hitran_local_iso_id(row[2:3])
-            molecule, mass = HITRAN_MOLECULES.get(mol_id, (f"MOL{mol_id}", np.nan))
+            line_mol_id = int(row[0:2])
+            line_iso_id = parse_hitran_local_iso_id(row[2:3])
+            molecule, mass = HITRAN_MOLECULES.get(line_mol_id, (f"MOL{line_mol_id}", np.nan))
             if wanted_species is not None and molecule not in wanted_species:
                 continue
 
-            wavenumber = _parse_float(row[3:15])
-            if wavenumber_min is not None and wavenumber < wavenumber_min:
+            line_wavenumber = _parse_float(row[3:15])
+            if wavenumber_min is not None and line_wavenumber < wavenumber_min:
                 continue
-            if wavenumber_max is not None and wavenumber > wavenumber_max:
+            if wavenumber_max is not None and line_wavenumber > wavenumber_max:
                 continue
-            strength = _parse_float(row[15:25])
-            if min_strength is not None and strength < min_strength:
+            line_strength = _parse_float(row[15:25])
+            if min_strength is not None and line_strength < min_strength:
                 continue
 
             rows.append(
                 (
-                    wavenumber,
-                    strength,
+                    line_wavenumber,
+                    line_strength,
                     _parse_float(row[35:40]),
                     _parse_float(row[40:45]),
                     _parse_float(row[45:55]),
                     _parse_float(row[55:59]),
                     _parse_float(row[59:67]),
                     mass,
-                    mol_id,
-                    iso_id,
+                    line_mol_id,
+                    line_iso_id,
                     molecule,
                     _parse_float(row[25:35]),
                 )
@@ -265,7 +265,7 @@ def read_aer_line_file(
     min_strength: float | None = None,
     max_lines: int | None = None,
     isotopologue_metadata: IsotopologueMetadata | None = None,
-    abundance_overrides: dict[tuple[int, int] | int, float] | None = None,
+    abundance_overrides: Mapping[tuple[int, int] | int, float] | None = None,
     extra_broadener_dir: str | Path | None = None,
     assume_sorted: bool = False,
 ) -> LineList:
@@ -286,13 +286,18 @@ def read_aer_line_file(
         )
         if not selected_ranges:
             raise ValueError("wavenumber_ranges must contain at least one interval")
-        if not all(np.isfinite(lower) and np.isfinite(upper) and upper > lower for lower, upper in selected_ranges):
+        if not all(
+            np.isfinite(lower) and np.isfinite(upper) and upper > lower
+            for lower, upper in selected_ranges
+        ):
             raise ValueError("wavenumber_ranges must contain finite, non-zero intervals")
     rows: list[tuple] = []
     input_path = Path(path)
     if extra_broadener_dir is None:
         extra_broadener_dir = _default_extra_broadener_dir(input_path)
-    broadener_tables = _load_extra_broadener_tables(extra_broadener_dir) if extra_broadener_dir is not None else {}
+    broadener_tables = (
+        _load_extra_broadener_tables(extra_broadener_dir) if extra_broadener_dir is not None else {}
+    )
 
     with input_path.open("r", encoding="utf-8", errors="ignore") as handle:
         iterator = enumerate(handle, start=1)
@@ -537,7 +542,9 @@ def _parse_broadener_data(row: str) -> np.ndarray:
     return np.asarray(values, dtype=float).reshape(len(LBLRTM_BROADENER_SPECIES), 3)
 
 
-def _load_extra_broadener_tables(path: str | Path | None) -> dict[tuple[int, float, int], tuple[float, float, float]]:
+def _load_extra_broadener_tables(
+    path: str | Path | None,
+) -> dict[tuple[int, float, int], tuple[float, float, float]]:
     if path is None:
         return {}
     directory = Path(path)

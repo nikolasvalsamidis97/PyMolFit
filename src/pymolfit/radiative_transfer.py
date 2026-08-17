@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 import numpy as np
 
@@ -15,7 +15,7 @@ from .components import (
     RayleighScatteringAbsorption,
     combine_optical_depth_components,
 )
-from .continuum import MTCKDH2OContinuum
+from .continuum import LBLRTMH2OContinuum, MTCKDH2OContinuum
 from .linelist import LineList
 from .model import transmission_from_basis
 from .partition import PartitionTable
@@ -41,7 +41,7 @@ class PhysicalModelConfig:
     chunk_size: int = 0
     partition_exponent: float = 1.5
     partition_table: PartitionTable | None = None
-    h2o_continuum: MTCKDH2OContinuum | None = None
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None = None
     h2o_continuum_foreign_closure: bool = False
     line_cutoff_cm: float | None = None
     subtract_cutoff_profile: bool = False
@@ -69,7 +69,7 @@ def hitran_optical_depth_basis(
     chunk_size: int = 0,
     partition_exponent: float = 1.5,
     partition_table: PartitionTable | None = None,
-    h2o_continuum: MTCKDH2OContinuum | None = None,
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None = None,
     h2o_continuum_foreign_closure: bool = False,
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,
@@ -171,7 +171,7 @@ def physical_components_from_options(
     chunk_size: int = 0,
     partition_exponent: float = 1.5,
     partition_table: PartitionTable | None = None,
-    h2o_continuum: MTCKDH2OContinuum | None = None,
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None = None,
     h2o_continuum_foreign_closure: bool = False,
     line_cutoff_cm: float | None = None,
     subtract_cutoff_profile: bool = False,

@@ -3,14 +3,14 @@ from dataclasses import fields
 import numpy as np
 from scipy.special import wofz
 
+import pymolfit.components as components_impl
 from pymolfit.atmosphere import (
-    AtmosphereLayer,
-    AtmosphereProfile,
     BOLTZMANN_J_PER_K,
     CM_PER_M,
     PA_PER_ATM,
+    AtmosphereLayer,
+    AtmosphereProfile,
 )
-import pymolfit.components as components_impl
 from pymolfit.components import (
     _line_wing_settings,
     _screen_and_accumulate_f4_chunk,
@@ -28,15 +28,14 @@ from pymolfit.physics import (
     LBLRTM_F4_BOUND_CM,
     LBLRTM_F4_GRID_RATIO,
     LBLRTM_SECOND_RADIATION_CONSTANT_CM_K,
+    LBLRTM_VOIGT_DOMAIN_HWF3,
     LBLRTM_VOIGT_TABLE_DOMAINS,
     LBLRTM_VOIGT_TABLE_POINTS,
-    LBLRTM_VOIGT_DOMAIN_HWF3,
     SECOND_RADIATION_CONSTANT_CM_K,
     SPEED_OF_LIGHT_M_PER_S,
     _lblrtm_f4_coefficient_tables,
+    _lblrtm_voigt_subfunction_nearest_value,
     _lblrtm_voigt_subfunction_tables,
-    lblrtm_voigt_hwhm,
-    lblrtm_radiation_term,
     lblrtm_f4_peak_factor,
     lblrtm_f4_profile_offset,
     lblrtm_layer_wavenumber_spacing_cm,
@@ -44,6 +43,8 @@ from pymolfit.physics import (
     lblrtm_merge_layer_wavenumber_spacings_cm,
     lblrtm_panel_accumulate_wavenumber,
     lblrtm_panel_interpolate_f4_wavenumber,
+    lblrtm_radiation_term,
+    lblrtm_voigt_hwhm,
 )
 
 
@@ -106,7 +107,11 @@ def _manual_layer_quantities(line_list, atmosphere):
     strength = (
         line_list.strength[0]
         * partition_ratio
-        * np.exp(-c2 * line_list.lower_state_energy[0] * (1.0 / layer.temperature_k - 1.0 / reference_temperature))
+        * np.exp(
+            -c2
+            * line_list.lower_state_energy[0]
+            * (1.0 / layer.temperature_k - 1.0 / reference_temperature)
+        )
         * (1.0 - np.exp(-c2 * line_list.wavenumber[0] / layer.temperature_k))
         / (1.0 - np.exp(-c2 * line_list.wavenumber[0] / reference_temperature))
     )
@@ -141,11 +146,7 @@ def _source_panel_profile(wavenumber, center, sigma, gamma, *, effective_hwhm=No
     doppler_hwhm = sigma * np.sqrt(2.0 * np.log(2.0))
     zeta = gamma / (gamma + doppler_hwhm)
     avrat = np.interp(zeta, LBLRTM_AVRAT_ZETA_GRID, LBLRTM_AVRAT)
-    voigt_hwhm = (
-        avrat * (gamma + doppler_hwhm)
-        if effective_hwhm is None
-        else float(effective_hwhm)
-    )
+    voigt_hwhm = avrat * (gamma + doppler_hwhm) if effective_hwhm is None else float(effective_hwhm)
     zeta_position = 100.0 * zeta
     zeta_index = min(max(int(np.floor(zeta_position)), 0), 100)
     zeta_fraction = zeta_position - zeta_index
@@ -158,13 +159,9 @@ def _source_panel_profile(wavenumber, center, sigma, gamma, *, effective_hwhm=No
         table_index = np.floor(table_position + 0.5).astype(int)
         keep = (table_index >= 0) & (table_index < LBLRTM_VOIGT_TABLE_POINTS)
         table_index = np.clip(table_index, 0, LBLRTM_VOIGT_TABLE_POINTS - 1)
-        values = (
-            tables[domain_index][zeta_index, table_index]
-            + zeta_fraction
-            * (
-                tables[domain_index][zeta_index + 1, table_index]
-                - tables[domain_index][zeta_index, table_index]
-            )
+        values = tables[domain_index][zeta_index, table_index] + zeta_fraction * (
+            tables[domain_index][zeta_index + 1, table_index]
+            - tables[domain_index][zeta_index, table_index]
         )
         return np.where(keep, values / voigt_hwhm, 0.0)
 
@@ -224,11 +221,14 @@ def _source_panel_profile(wavenumber, center, sigma, gamma, *, effective_hwhm=No
     f4_at_64 = a3 + b3 * z_bound_sq
     numerator = f4_at_64 / voigt_hwhm * (gamma**2 + voigt_hwhm**2 * z_bound_sq)
     boundary = numerator / (gamma**2 + LBLRTM_F4_BOUND_CM**2)
-    r4 = np.where(
-        z_sq <= z_bound_sq,
-        (a3 + b3 * z_sq) / voigt_hwhm,
-        numerator / (gamma**2 + offset_sq),
-    ) - boundary
+    r4 = (
+        np.where(
+            z_sq <= z_bound_sq,
+            (a3 + b3 * z_sq) / voigt_hwhm,
+            numerator / (gamma**2 + offset_sq),
+        )
+        - boundary
+    )
     r4 = np.where(np.abs(offset) <= LBLRTM_F4_BOUND_CM, r4, 0.0)
 
     r1 = deposit(fine, 0)
@@ -333,12 +333,15 @@ def test_completed_f4_interpolation_matches_panel_f4_difference():
         wavenumber[-1] + 2.5 * r4_spacing,
         r4_spacing,
     )
-    r4 = lblrtm_f4_profile_offset(
-        r4_grid[None, :] - center[:, None],
-        gamma,
-        sigma,
-        effective_hwhm_cm=raw_alfv,
-    ) * scale[:, None]
+    r4 = (
+        lblrtm_f4_profile_offset(
+            r4_grid[None, :] - center[:, None],
+            gamma,
+            sigma,
+            effective_hwhm_cm=raw_alfv,
+        )
+        * scale[:, None]
+    )
 
     completed = lblrtm_panel_interpolate_f4_wavenumber(
         wavenumber,
@@ -626,3 +629,35 @@ def test_f4_screening_is_source_ordered_and_uses_accumulated_r4():
 
 def test_lblrtm_voigt_tables_retain_source_real_precision():
     assert all(table.dtype == np.float32 for table in _lblrtm_voigt_subfunction_tables())
+
+
+def test_wide_voigt_lookup_matches_direct_zeta_interpolation_exactly():
+    rng = np.random.default_rng(741)
+    normalized_distance = rng.uniform(0.0, 8.0, size=(4, LBLRTM_VOIGT_TABLE_POINTS + 37))
+    zeta_index = np.array([0, 19, 67, 100])
+    zeta_fraction = np.array([0.0, 0.25, 0.75, 0.0])
+    domain_index = 1
+
+    actual = _lblrtm_voigt_subfunction_nearest_value(
+        normalized_distance,
+        domain_index,
+        zeta_index=zeta_index,
+        zeta_fraction=zeta_fraction,
+    )
+
+    domain = LBLRTM_VOIGT_TABLE_DOMAINS[domain_index]
+    distance_index = np.floor(
+        normalized_distance * (LBLRTM_VOIGT_TABLE_POINTS - 1) / domain + 0.5
+    ).astype(int)
+    keep = (distance_index >= 0) & (distance_index < LBLRTM_VOIGT_TABLE_POINTS)
+    distance_index = np.clip(distance_index, 0, LBLRTM_VOIGT_TABLE_POINTS - 1)
+    table = _lblrtm_voigt_subfunction_tables()[domain_index]
+    value0 = table[zeta_index[:, None], distance_index]
+    value1 = table[zeta_index[:, None] + 1, distance_index]
+    expected = np.where(
+        keep,
+        value0 + zeta_fraction[:, None] * (value1 - value0),
+        0.0,
+    )
+
+    assert np.array_equal(actual, expected)

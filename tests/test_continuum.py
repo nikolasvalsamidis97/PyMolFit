@@ -98,7 +98,9 @@ def test_rayleigh_component_adds_optical_absorption():
 
 
 def test_lblrtm_n2_rototranslational_coefficients_match_source_grid():
-    coefficient, oxygen_efficiency = lblrtm_n2_rototranslational_coefficients(np.array([0.0]), 296.0)
+    coefficient, oxygen_efficiency = lblrtm_n2_rototranslational_coefficients(
+        np.array([0.0]), 296.0
+    )
 
     np.testing.assert_allclose(coefficient[0], LBLRTM_N2_ROT_T296[2])
     np.testing.assert_allclose(oxygen_efficiency[0], (LBLRTM_N2_ROT_SF296[2] - 1.0) * (0.79 / 0.21))

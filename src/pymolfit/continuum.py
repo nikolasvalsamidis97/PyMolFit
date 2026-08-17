@@ -15,7 +15,6 @@ LBLRTM_RAYLEIGH_MIN_WAVENUMBER_CM = 820.0
 LBLRTM_RAYLEIGH_LOSCHMIDT_SCALED = 2.68675e-1
 LBLRTM_CONTNM_LOSCHMIDT_CM3 = 2.68675e19
 LBLRTM_N2_ROT_MIN_WAVENUMBER_CM = -10.0
-LBLRTM_N2_ROT_MAX_WAVENUMBER_CM = 350.0
 LBLRTM_N2_ROT_SPACING_CM = 5.0
 LBLRTM_H2O_CONTINUUM_DATA = "lblrtm_v12_11_h2o_continuum.npz"
 LBLRTM_CO2_CONTINUUM_DATA = "lblrtm_v12_11_co2_continuum.npz"
@@ -24,80 +23,342 @@ LBLRTM_O2_CONTINUUM_DATA = "lblrtm_v12_11_o2_continuum.npz"
 LBLRTM_CO2_BANDHEAD_T_EFF_K = 246.0
 LBLRTM_CO2_BANDHEAD_TDEP = np.array(
     [
-        1.44e-01, 3.61e-01, 5.71e-01, 7.63e-01, 8.95e-01,
-        9.33e-01, 8.75e-01, 7.30e-01, 5.47e-01, 3.79e-01,
-        2.55e-01, 1.78e-01, 1.34e-01, 1.07e-01, 9.06e-02,
-        7.83e-02, 6.83e-02, 6.00e-02, 5.30e-02, 4.72e-02,
-        4.24e-02, 3.83e-02, 3.50e-02, 3.23e-02, 3.01e-02,
+        1.44e-01,
+        3.61e-01,
+        5.71e-01,
+        7.63e-01,
+        8.95e-01,
+        9.33e-01,
+        8.75e-01,
+        7.30e-01,
+        5.47e-01,
+        3.79e-01,
+        2.55e-01,
+        1.78e-01,
+        1.34e-01,
+        1.07e-01,
+        9.06e-02,
+        7.83e-02,
+        6.83e-02,
+        6.00e-02,
+        5.30e-02,
+        4.72e-02,
+        4.24e-02,
+        3.83e-02,
+        3.50e-02,
+        3.23e-02,
+        3.01e-02,
     ],
     dtype=float,
 )
 LBLRTM_N2_ROT_T296 = np.array(
     [
-        0.4303e-06, 0.4850e-06, 0.4979e-06, 0.4850e-06, 0.4303e-06,
-        0.3715e-06, 0.3292e-06, 0.3086e-06, 0.2920e-06, 0.2813e-06,
-        0.2804e-06, 0.2738e-06, 0.2726e-06, 0.2724e-06, 0.2635e-06,
-        0.2621e-06, 0.2547e-06, 0.2428e-06, 0.2371e-06, 0.2228e-06,
-        0.2100e-06, 0.1991e-06, 0.1822e-06, 0.1697e-06, 0.1555e-06,
-        0.1398e-06, 0.1281e-06, 0.1138e-06, 0.1012e-06, 0.9078e-07,
-        0.7879e-07, 0.6944e-07, 0.6084e-07, 0.5207e-07, 0.4540e-07,
-        0.3897e-07, 0.3313e-07, 0.2852e-07, 0.2413e-07, 0.2045e-07,
-        0.1737e-07, 0.1458e-07, 0.1231e-07, 0.1031e-07, 0.8586e-08,
-        0.7162e-08, 0.5963e-08, 0.4999e-08, 0.4226e-08, 0.3607e-08,
-        0.3090e-08, 0.2669e-08, 0.2325e-08, 0.2024e-08, 0.1783e-08,
-        0.1574e-08, 0.1387e-08, 0.1236e-08, 0.1098e-08, 0.9777e-09,
-        0.8765e-09, 0.7833e-09, 0.7022e-09, 0.6317e-09, 0.5650e-09,
-        0.5100e-09, 0.4572e-09, 0.4115e-09, 0.3721e-09, 0.3339e-09,
-        0.3005e-09, 0.2715e-09, 0.2428e-09,
+        0.4303e-06,
+        0.4850e-06,
+        0.4979e-06,
+        0.4850e-06,
+        0.4303e-06,
+        0.3715e-06,
+        0.3292e-06,
+        0.3086e-06,
+        0.2920e-06,
+        0.2813e-06,
+        0.2804e-06,
+        0.2738e-06,
+        0.2726e-06,
+        0.2724e-06,
+        0.2635e-06,
+        0.2621e-06,
+        0.2547e-06,
+        0.2428e-06,
+        0.2371e-06,
+        0.2228e-06,
+        0.2100e-06,
+        0.1991e-06,
+        0.1822e-06,
+        0.1697e-06,
+        0.1555e-06,
+        0.1398e-06,
+        0.1281e-06,
+        0.1138e-06,
+        0.1012e-06,
+        0.9078e-07,
+        0.7879e-07,
+        0.6944e-07,
+        0.6084e-07,
+        0.5207e-07,
+        0.4540e-07,
+        0.3897e-07,
+        0.3313e-07,
+        0.2852e-07,
+        0.2413e-07,
+        0.2045e-07,
+        0.1737e-07,
+        0.1458e-07,
+        0.1231e-07,
+        0.1031e-07,
+        0.8586e-08,
+        0.7162e-08,
+        0.5963e-08,
+        0.4999e-08,
+        0.4226e-08,
+        0.3607e-08,
+        0.3090e-08,
+        0.2669e-08,
+        0.2325e-08,
+        0.2024e-08,
+        0.1783e-08,
+        0.1574e-08,
+        0.1387e-08,
+        0.1236e-08,
+        0.1098e-08,
+        0.9777e-09,
+        0.8765e-09,
+        0.7833e-09,
+        0.7022e-09,
+        0.6317e-09,
+        0.5650e-09,
+        0.5100e-09,
+        0.4572e-09,
+        0.4115e-09,
+        0.3721e-09,
+        0.3339e-09,
+        0.3005e-09,
+        0.2715e-09,
+        0.2428e-09,
     ],
     dtype=float,
 )
 LBLRTM_N2_ROT_T220 = np.array(
     [
-        0.4946e-06, 0.5756e-06, 0.5964e-06, 0.5756e-06, 0.4946e-06,
-        0.4145e-06, 0.3641e-06, 0.3482e-06, 0.3340e-06, 0.3252e-06,
-        0.3299e-06, 0.3206e-06, 0.3184e-06, 0.3167e-06, 0.2994e-06,
-        0.2943e-06, 0.2794e-06, 0.2582e-06, 0.2468e-06, 0.2237e-06,
-        0.2038e-06, 0.1873e-06, 0.1641e-06, 0.1474e-06, 0.1297e-06,
-        0.1114e-06, 0.9813e-07, 0.8309e-07, 0.7059e-07, 0.6068e-07,
-        0.5008e-07, 0.4221e-07, 0.3537e-07, 0.2885e-07, 0.2407e-07,
-        0.1977e-07, 0.1605e-07, 0.1313e-07, 0.1057e-07, 0.8482e-08,
-        0.6844e-08, 0.5595e-08, 0.4616e-08, 0.3854e-08, 0.3257e-08,
-        0.2757e-08, 0.2372e-08, 0.2039e-08, 0.1767e-08, 0.1548e-08,
-        0.1346e-08, 0.1181e-08, 0.1043e-08, 0.9110e-09, 0.8103e-09,
-        0.7189e-09, 0.6314e-09, 0.5635e-09, 0.4976e-09, 0.4401e-09,
-        0.3926e-09, 0.3477e-09, 0.3085e-09, 0.2745e-09, 0.2416e-09,
-        0.2155e-09, 0.1895e-09, 0.1678e-09, 0.1493e-09, 0.1310e-09,
-        0.1154e-09, 0.1019e-09, 0.8855e-10,
+        0.4946e-06,
+        0.5756e-06,
+        0.5964e-06,
+        0.5756e-06,
+        0.4946e-06,
+        0.4145e-06,
+        0.3641e-06,
+        0.3482e-06,
+        0.3340e-06,
+        0.3252e-06,
+        0.3299e-06,
+        0.3206e-06,
+        0.3184e-06,
+        0.3167e-06,
+        0.2994e-06,
+        0.2943e-06,
+        0.2794e-06,
+        0.2582e-06,
+        0.2468e-06,
+        0.2237e-06,
+        0.2038e-06,
+        0.1873e-06,
+        0.1641e-06,
+        0.1474e-06,
+        0.1297e-06,
+        0.1114e-06,
+        0.9813e-07,
+        0.8309e-07,
+        0.7059e-07,
+        0.6068e-07,
+        0.5008e-07,
+        0.4221e-07,
+        0.3537e-07,
+        0.2885e-07,
+        0.2407e-07,
+        0.1977e-07,
+        0.1605e-07,
+        0.1313e-07,
+        0.1057e-07,
+        0.8482e-08,
+        0.6844e-08,
+        0.5595e-08,
+        0.4616e-08,
+        0.3854e-08,
+        0.3257e-08,
+        0.2757e-08,
+        0.2372e-08,
+        0.2039e-08,
+        0.1767e-08,
+        0.1548e-08,
+        0.1346e-08,
+        0.1181e-08,
+        0.1043e-08,
+        0.9110e-09,
+        0.8103e-09,
+        0.7189e-09,
+        0.6314e-09,
+        0.5635e-09,
+        0.4976e-09,
+        0.4401e-09,
+        0.3926e-09,
+        0.3477e-09,
+        0.3085e-09,
+        0.2745e-09,
+        0.2416e-09,
+        0.2155e-09,
+        0.1895e-09,
+        0.1678e-09,
+        0.1493e-09,
+        0.1310e-09,
+        0.1154e-09,
+        0.1019e-09,
+        0.8855e-10,
     ],
     dtype=float,
 )
 LBLRTM_N2_ROT_SF296 = np.array(
     [
-        1.3534, 1.3517, 1.3508, 1.3517, 1.3534, 1.3558, 1.3584, 1.3607,
-        1.3623, 1.3632, 1.3634, 1.3632, 1.3627, 1.3620, 1.3612, 1.3605,
-        1.3597, 1.3590, 1.3585, 1.3582, 1.3579, 1.3577, 1.3577, 1.3580,
-        1.3586, 1.3594, 1.3604, 1.3617, 1.3633, 1.3653, 1.3677, 1.3706,
-        1.3742, 1.3780, 1.3822, 1.3868, 1.3923, 1.3989, 1.4062, 1.4138,
-        1.4216, 1.4298, 1.4388, 1.4491, 1.4604, 1.4718, 1.4829, 1.4930,
-        1.5028, 1.5138, 1.5265, 1.5392, 1.5499, 1.5577, 1.5639, 1.5714,
-        1.5816, 1.5920, 1.6003, 1.6051, 1.6072, 1.6097, 1.6157, 1.6157,
-        1.6157, 1.6157, 1.6157, 1.6157, 1.6157, 1.6157, 1.6157, 1.6157,
+        1.3534,
+        1.3517,
+        1.3508,
+        1.3517,
+        1.3534,
+        1.3558,
+        1.3584,
+        1.3607,
+        1.3623,
+        1.3632,
+        1.3634,
+        1.3632,
+        1.3627,
+        1.3620,
+        1.3612,
+        1.3605,
+        1.3597,
+        1.3590,
+        1.3585,
+        1.3582,
+        1.3579,
+        1.3577,
+        1.3577,
+        1.3580,
+        1.3586,
+        1.3594,
+        1.3604,
+        1.3617,
+        1.3633,
+        1.3653,
+        1.3677,
+        1.3706,
+        1.3742,
+        1.3780,
+        1.3822,
+        1.3868,
+        1.3923,
+        1.3989,
+        1.4062,
+        1.4138,
+        1.4216,
+        1.4298,
+        1.4388,
+        1.4491,
+        1.4604,
+        1.4718,
+        1.4829,
+        1.4930,
+        1.5028,
+        1.5138,
+        1.5265,
+        1.5392,
+        1.5499,
+        1.5577,
+        1.5639,
+        1.5714,
+        1.5816,
+        1.5920,
+        1.6003,
+        1.6051,
+        1.6072,
+        1.6097,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
+        1.6157,
         1.6157,
     ],
     dtype=float,
 )
 LBLRTM_N2_ROT_SF220 = np.array(
     [
-        1.3536, 1.3515, 1.3502, 1.3515, 1.3536, 1.3565, 1.3592, 1.3612,
-        1.3623, 1.3626, 1.3623, 1.3616, 1.3609, 1.3600, 1.3591, 1.3583,
-        1.3576, 1.3571, 1.3571, 1.3572, 1.3574, 1.3578, 1.3585, 1.3597,
-        1.3616, 1.3640, 1.3666, 1.3698, 1.3734, 1.3776, 1.3828, 1.3894,
-        1.3969, 1.4049, 1.4127, 1.4204, 1.4302, 1.4427, 1.4562, 1.4687,
-        1.4798, 1.4894, 1.5000, 1.5142, 1.5299, 1.5441, 1.5555, 1.5615,
-        1.5645, 1.5730, 1.5880, 1.6028, 1.6121, 1.6133, 1.6094, 1.6117,
-        1.6244, 1.6389, 1.6485, 1.6513, 1.6468, 1.6438, 1.6523, 1.6523,
-        1.6523, 1.6523, 1.6523, 1.6523, 1.6523, 1.6523, 1.6523, 1.6523,
+        1.3536,
+        1.3515,
+        1.3502,
+        1.3515,
+        1.3536,
+        1.3565,
+        1.3592,
+        1.3612,
+        1.3623,
+        1.3626,
+        1.3623,
+        1.3616,
+        1.3609,
+        1.3600,
+        1.3591,
+        1.3583,
+        1.3576,
+        1.3571,
+        1.3571,
+        1.3572,
+        1.3574,
+        1.3578,
+        1.3585,
+        1.3597,
+        1.3616,
+        1.3640,
+        1.3666,
+        1.3698,
+        1.3734,
+        1.3776,
+        1.3828,
+        1.3894,
+        1.3969,
+        1.4049,
+        1.4127,
+        1.4204,
+        1.4302,
+        1.4427,
+        1.4562,
+        1.4687,
+        1.4798,
+        1.4894,
+        1.5000,
+        1.5142,
+        1.5299,
+        1.5441,
+        1.5555,
+        1.5615,
+        1.5645,
+        1.5730,
+        1.5880,
+        1.6028,
+        1.6121,
+        1.6133,
+        1.6094,
+        1.6117,
+        1.6244,
+        1.6389,
+        1.6485,
+        1.6513,
+        1.6468,
+        1.6438,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
+        1.6523,
         1.6523,
     ],
     dtype=float,
@@ -138,7 +399,9 @@ class MTCKDH2OContinuum:
         if arrays["wavenumber_cm"].ndim != 1:
             raise ValueError("continuum coefficient arrays must be one-dimensional")
         if arrays["wavenumber_cm"].size < 4:
-            raise ValueError("at least four continuum grid points are required for cubic interpolation")
+            raise ValueError(
+                "at least four continuum grid points are required for cubic interpolation"
+            )
         spacing = np.diff(arrays["wavenumber_cm"])
         if not np.all(spacing > 0):
             raise ValueError("continuum wavenumber grid must be strictly increasing")
@@ -153,7 +416,7 @@ class MTCKDH2OContinuum:
             object.__setattr__(self, name, array)
 
     @classmethod
-    def from_netcdf(cls, path: str | Path) -> "MTCKDH2OContinuum":
+    def from_netcdf(cls, path: str | Path) -> MTCKDH2OContinuum:
         """Read an AER MT_CKD H2O coefficient netCDF file."""
 
         path = Path(path)
@@ -177,7 +440,9 @@ class MTCKDH2OContinuum:
                 wavenumber_cm=np.asarray(variables["wavenumbers"].data, dtype=float),
                 self_absco_ref=np.asarray(variables["self_absco_ref"].data, dtype=float),
                 foreign_absco_ref=np.asarray(variables["for_absco_ref"].data, dtype=float),
-                foreign_closure_absco_ref=np.asarray(variables["for_closure_absco_ref"].data, dtype=float),
+                foreign_closure_absco_ref=np.asarray(
+                    variables["for_closure_absco_ref"].data, dtype=float
+                ),
                 self_temperature_exponent=np.asarray(variables["self_texp"].data, dtype=float),
                 reference_pressure_mbar=float(np.asarray(variables["ref_press"].data).item()),
                 reference_temperature_k=float(np.asarray(variables["ref_temp"].data).item()),
@@ -219,9 +484,13 @@ class MTCKDH2OContinuum:
             self.reference_temperature_k / temperature_k
         )
 
-        temperature_factor = (self.reference_temperature_k / temperature_k) ** self.self_temperature_exponent
+        temperature_factor = (
+            self.reference_temperature_k / temperature_k
+        ) ** self.self_temperature_exponent
         self_coeff_grid = self.self_absco_ref * temperature_factor * h2o_vmr * density_ratio
-        foreign_ref = self.foreign_closure_absco_ref if use_foreign_closure else self.foreign_absco_ref
+        foreign_ref = (
+            self.foreign_closure_absco_ref if use_foreign_closure else self.foreign_absco_ref
+        )
         foreign_coeff_grid = foreign_ref * max(0.0, 1.0 - h2o_vmr) * density_ratio
 
         if include_radiation_term:
@@ -314,8 +583,12 @@ class LBLRTMH2OContinuum:
         object.__setattr__(self, "xfac_rhu", xfac)
 
     @classmethod
-    def from_package_data(cls) -> "LBLRTMH2OContinuum":
-        with resources.files("pymolfit").joinpath("data", LBLRTM_H2O_CONTINUUM_DATA).open("rb") as handle:
+    def from_package_data(cls) -> LBLRTMH2OContinuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_H2O_CONTINUUM_DATA)
+            .open("rb") as handle
+        ):
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -349,12 +622,15 @@ class LBLRTMH2OContinuum:
         density_ratio = (pressure_mbar / self.reference_pressure_mbar) * (
             self.reference_temperature_k / temperature_k
         )
-        tfac = (float(temperature_k) - self.reference_temperature_k) / (260.0 - self.reference_temperature_k)
+        tfac = (float(temperature_k) - self.reference_temperature_k) / (
+            260.0 - self.reference_temperature_k
+        )
         positive_self = self.self_296 > 0
         self_grid = np.zeros(self.self_296.shape, dtype=float)
-        self_grid[positive_self] = self.self_296[positive_self] * (
-            self.self_260[positive_self] / self.self_296[positive_self]
-        ) ** tfac
+        self_grid[positive_self] = (
+            self.self_296[positive_self]
+            * (self.self_260[positive_self] / self.self_296[positive_self]) ** tfac
+        )
         foreign_grid = self.foreign_296 * _lblrtm_h2o_foreign_scale(
             self.wavenumber_cm,
             self.xfac_rhu_index,
@@ -431,7 +707,9 @@ class LBLRTMCO2Continuum:
         if wavenumber.ndim != 1 or coefficient.ndim != 1:
             raise ValueError("CO2 continuum arrays must be one-dimensional")
         if wavenumber.shape != coefficient.shape:
-            raise ValueError("CO2 continuum wavenumber and coefficient arrays must have the same shape")
+            raise ValueError(
+                "CO2 continuum wavenumber and coefficient arrays must have the same shape"
+            )
         if correction_wavenumber.shape != correction_factor.shape:
             raise ValueError("CO2 correction arrays must have the same shape")
         if not np.all(np.diff(wavenumber) > 0):
@@ -444,8 +722,12 @@ class LBLRTMCO2Continuum:
         object.__setattr__(self, "correction_factor", correction_factor)
 
     @classmethod
-    def from_package_data(cls) -> "LBLRTMCO2Continuum":
-        with resources.files("pymolfit").joinpath("data", LBLRTM_CO2_CONTINUUM_DATA).open("rb") as handle:
+    def from_package_data(cls) -> LBLRTMCO2Continuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_CO2_CONTINUUM_DATA)
+            .open("rb") as handle
+        ):
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -517,7 +799,9 @@ class LBLRTMN2FundamentalContinuum:
         }
         shapes = {array.shape for array in arrays.values()}
         if len(shapes) != 1 or arrays["wavenumber_cm"].ndim != 1:
-            raise ValueError("N2 fundamental coefficient arrays must be one-dimensional and equal-sized")
+            raise ValueError(
+                "N2 fundamental coefficient arrays must be one-dimensional and equal-sized"
+            )
         if arrays["wavenumber_cm"].size < 4:
             raise ValueError("N2 fundamental table must contain at least four points")
         if not np.all(np.diff(arrays["wavenumber_cm"]) > 0):
@@ -530,8 +814,12 @@ class LBLRTMN2FundamentalContinuum:
             object.__setattr__(self, name, array)
 
     @classmethod
-    def from_package_data(cls) -> "LBLRTMN2FundamentalContinuum":
-        with resources.files("pymolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
+    def from_package_data(cls) -> LBLRTMN2FundamentalContinuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA)
+            .open("rb") as handle
+        ):
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["wavenumber_cm"], dtype=float),
@@ -555,9 +843,10 @@ class LBLRTMN2FundamentalContinuum:
         linear_fraction = (temperature - 272.0) / (228.0 - 272.0)
         positive = (self.n2_n2_272 > 0) & (self.n2_n2_228 > 0)
         n2_n2 = self.n2_n2_272 + (self.n2_n2_228 - self.n2_n2_272) * linear_fraction
-        n2_n2[positive] = self.n2_n2_272[positive] * (
-            self.n2_n2_228[positive] / self.n2_n2_272[positive]
-        ) ** reciprocal_fraction
+        n2_n2[positive] = (
+            self.n2_n2_272[positive]
+            * (self.n2_n2_228[positive] / self.n2_n2_272[positive]) ** reciprocal_fraction
+        )
 
         # n2_ver_1 removes the radiation field by dividing by wavenumber.
         n2_n2 = n2_n2 / self.wavenumber_cm
@@ -665,8 +954,12 @@ class LBLRTMN2OvertoneContinuum:
         object.__setattr__(self, "n2_n2", coefficient)
 
     @classmethod
-    def from_package_data(cls) -> "LBLRTMN2OvertoneContinuum":
-        with resources.files("pymolfit").joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA).open("rb") as handle:
+    def from_package_data(cls) -> LBLRTMN2OvertoneContinuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_N2_FUNDAMENTAL_DATA)
+            .open("rb") as handle
+        ):
             data = np.load(handle)
             return cls(
                 wavenumber_cm=np.asarray(data["overtone_wavenumber_cm"], dtype=float),
@@ -710,9 +1003,7 @@ class LBLRTMN2OvertoneContinuum:
             target,
         )
         coefficient = interpolation_plan.apply(source)
-        partner_efficiency = sum(
-            max(0.0, float(value)) for value in (n2_vmr, o2_vmr, h2o_vmr)
-        )
+        partner_efficiency = sum(max(0.0, float(value)) for value in (n2_vmr, o2_vmr, h2o_vmr))
         return (
             float(xn2cn)
             * (float(n2_column_cm2) / LBLRTM_CONTNM_LOSCHMIDT_CM3)
@@ -785,11 +1076,17 @@ class LBLRTMO2Continuum:
         object.__setattr__(self, "visible_coefficient", converted["visible_coefficient"])
 
     @classmethod
-    def from_package_data(cls) -> "LBLRTMO2Continuum":
-        with resources.files("pymolfit").joinpath("data", LBLRTM_O2_CONTINUUM_DATA).open("rb") as handle:
+    def from_package_data(cls) -> LBLRTMO2Continuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_O2_CONTINUUM_DATA)
+            .open("rb") as handle
+        ):
             data = np.load(handle)
             return cls(
-                fundamental_wavenumber_cm=np.asarray(data["fundamental_wavenumber_cm"], dtype=float),
+                fundamental_wavenumber_cm=np.asarray(
+                    data["fundamental_wavenumber_cm"], dtype=float
+                ),
                 fundamental_coefficient=np.asarray(data["fundamental_coefficient"], dtype=float),
                 fundamental_temperature_coefficient=np.asarray(
                     data["fundamental_temperature_coefficient"], dtype=float
@@ -894,10 +1191,14 @@ class LBLRTMO2Continuum:
         delta2 = inf2_grid - 9439.0
         damp1 = np.where(delta1 < 0.0, np.exp(delta1 / 176.1), 1.0)
         damp2 = np.where(delta2 < 0.0, np.exp(delta2 / 176.1), 1.0)
-        inf2 = 0.31831 * (
-            (1.166e-4 * damp1 / 58.96) / (1.0 + (delta1 / 58.96) ** 2)
-            + (3.086e-5 * damp2 / 45.04) / (1.0 + (delta2 / 45.04) ** 2)
-        ) * 1.054
+        inf2 = (
+            0.31831
+            * (
+                (1.166e-4 * damp1 / 58.96) / (1.0 + (delta1 / 58.96) ** 2)
+                + (3.086e-5 * damp2 / 45.04) / (1.0 + (delta2 / 45.04) ** 2)
+            )
+            * 1.054
+        )
         inf2_source = inf2 / inf2_grid
         inf2_source[[0, -1]] = 0.0
         density_296 = (float(pressure_mbar) / 1013.0) * (296.0 / float(temperature_k))
@@ -935,10 +1236,7 @@ class LBLRTMO2Continuum:
         # Greenblatt visible O2-O2 continuum, activated by LBLRTM above
         # 15000 cm-1 even though the source table starts at 15140 cm-1.
         visible_factor = 1.0 / (
-            LBLRTM_CONTNM_LOSCHMIDT_CM3
-            * 1.0e-20
-            * (55.0 * 273.0 / 296.0) ** 2
-            * 89.5
+            LBLRTM_CONTNM_LOSCHMIDT_CM3 * 1.0e-20 * (55.0 * 273.0 / 296.0) ** 2 * 89.5
         )
         visible_source = visible_factor * self.visible_coefficient / self.visible_wavenumber_cm
         tau += (
@@ -988,12 +1286,7 @@ def _lblrtm_h2o_foreign_scale(
         vmf1 = ((v + v0f1) / beta1) ** n1
         vf2 = (v / beta2) ** n2
         scale[high] = 1.0 + (
-            f0
-            + c1
-            * (
-                hwsq1 / (vdelsq1 + hwsq1 + vf1)
-                + hwsq1 / (vdelmsq1 + hwsq1 + vmf1)
-            )
+            f0 + c1 * (hwsq1 / (vdelsq1 + hwsq1 + vf1) + hwsq1 / (vdelmsq1 + hwsq1 + vmf1))
         ) / (1.0 + c2 * vf2)
     return scale
 
@@ -1074,7 +1367,9 @@ def radiation_term_interval_cm(
     if vinew_cm < 0:
         intervals = max(int((vinew - vi) / dvi), 1)
 
-    rdnext = float(radiation_term_cm(np.array([vinew]), temperature, second_radiation_constant_cm_k=c2)[0])
+    rdnext = float(
+        radiation_term_cm(np.array([vinew]), temperature, second_radiation_constant_cm_k=c2)[0]
+    )
     rdel = (rdnext - radfni) / float(intervals)
     return radfni, vinew, rdel, rdnext, intervals
 
@@ -1336,16 +1631,22 @@ class TabulatedContinuum:
     def __post_init__(self) -> None:
         wavenumber = np.asarray(self.wavenumber_cm, dtype=float)
         coefficient = np.asarray(self.coefficient, dtype=float)
-        temperature = None if self.temperature_k is None else np.asarray(self.temperature_k, dtype=float)
+        temperature = (
+            None if self.temperature_k is None else np.asarray(self.temperature_k, dtype=float)
+        )
 
         if temperature is None:
             if wavenumber.ndim != 1 or coefficient.ndim != 1:
-                raise ValueError("wavenumber_cm and coefficient must be one-dimensional without temperature_k")
+                raise ValueError(
+                    "wavenumber_cm and coefficient must be one-dimensional without temperature_k"
+                )
             if wavenumber.shape != coefficient.shape:
                 raise ValueError("wavenumber_cm and coefficient must have the same shape")
         else:
             if wavenumber.shape != coefficient.shape or temperature.shape != coefficient.shape:
-                raise ValueError("wavenumber_cm, temperature_k, and coefficient must have the same shape")
+                raise ValueError(
+                    "wavenumber_cm, temperature_k, and coefficient must have the same shape"
+                )
         if np.any(~np.isfinite(wavenumber)):
             raise ValueError("wavenumber_cm must be finite")
         if np.any(~np.isfinite(coefficient)):
@@ -1366,7 +1667,7 @@ class TabulatedContinuum:
         coefficient_col: str = "coefficient",
         temperature_col: str | None = "temperature_k",
         format: str | None = None,
-    ) -> "TabulatedContinuum":
+    ) -> TabulatedContinuum:
         table = Table.read(path, format=format)
         temperature = None
         if temperature_col is not None and temperature_col in table.colnames:
@@ -1438,7 +1739,7 @@ class HitranCIATable:
         object.__setattr__(self, "pair", pair)
 
     @classmethod
-    def from_hitran_cia(cls, path: str | Path) -> "HitranCIATable":
+    def from_hitran_cia(cls, path: str | Path) -> HitranCIATable:
         path = Path(path)
         blocks: list[CIABlock] = []
         pending_comments: list[str] = []
@@ -1488,7 +1789,7 @@ class HitranCIATable:
         coefficient_col: str = "coefficient_cm5_molecule2",
         temperature_col: str = "temperature_k",
         format: str | None = None,
-    ) -> "HitranCIATable":
+    ) -> HitranCIATable:
         table = Table.read(path, format=format)
         blocks = []
         for temperature in np.unique(np.asarray(table[temperature_col], dtype=float)):
@@ -1501,7 +1802,9 @@ class HitranCIATable:
                     coefficient_cm5_molecule2=np.asarray(table[coefficient_col], dtype=float)[keep],
                 )
             )
-        return cls(blocks=tuple(blocks), pair=pair, name=str(table.meta.get("name", Path(path).stem)))
+        return cls(
+            blocks=tuple(blocks), pair=pair, name=str(table.meta.get("name", Path(path).stem))
+        )
 
     def coefficient_at(self, wavenumber_cm: np.ndarray, temperature_k: float) -> np.ndarray:
         return self.coefficients_at(wavenumber_cm, np.array([temperature_k], dtype=float))[0]
@@ -1565,7 +1868,9 @@ def _interpolate_temperature_wavenumber(
     target_temperature_k: float,
 ) -> np.ndarray:
     unique_temperatures = np.unique(temperature_k)
-    by_temperature = np.full((unique_temperatures.size, target_wavenumber_cm.size), np.nan, dtype=float)
+    by_temperature = np.full(
+        (unique_temperatures.size, target_wavenumber_cm.size), np.nan, dtype=float
+    )
     for index, temperature in enumerate(unique_temperatures):
         keep = temperature_k == temperature
         by_temperature[index] = _interp_1d_sorted(

@@ -74,9 +74,7 @@ def extract(source: Path, output: Path) -> None:
     text = source.read_text(encoding="utf-8", errors="ignore")
 
     fundamental_block = _block(text, "bo2f")
-    fundamental_grid, fundamental_count = _grid(
-        fundamental_block, "V1S,V2S,DVS,NPTS"
-    )
+    fundamental_grid, fundamental_count = _grid(fundamental_block, "V1S,V2S,DVS,NPTS")
     fundamental = _require_size(
         "O2 fundamental", _series(fundamental_block, "o0"), fundamental_count
     )
@@ -94,9 +92,7 @@ def extract(source: Path, output: Path) -> None:
 
     visible_block = _block(text, "bo2in_vis")
     visible_grid, visible_count = _grid(visible_block)
-    visible = _require_size(
-        "O2 visible", _series(visible_block, "o2vis"), visible_count
-    )
+    visible = _require_size("O2 visible", _series(visible_block, "o2vis"), visible_count)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -110,9 +106,7 @@ def extract(source: Path, output: Path) -> None:
         aband_coefficient=aband,
         visible_wavenumber_cm=visible_grid,
         visible_coefficient=visible,
-        source=np.asarray(
-            "LBLRTM 12.11 contnm.f90 bo2f, bo2inf1, bo2inf3, and bo2in_vis tables"
-        ),
+        source=np.asarray("LBLRTM 12.11 contnm.f90 bo2f, bo2inf1, bo2inf3, and bo2in_vis tables"),
     )
     print(
         "wrote "

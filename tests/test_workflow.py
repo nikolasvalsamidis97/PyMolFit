@@ -1,5 +1,5 @@
-from dataclasses import replace
 import inspect
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -22,24 +22,23 @@ from pymolfit import (
     transmission_model,
     vacuum_to_air_wavelength,
 )
-from pymolfit.fit import FitConfig, fit_telluric_segments, fit_tellurics
+from pymolfit.fit import FitConfig, _shift_basis, fit_telluric_segments, fit_tellurics
+from pymolfit.model import optical_depth_basis, transmission_from_basis
 from pymolfit.physics import SPEED_OF_LIGHT_M_PER_S
 from pymolfit.workflow import (
     _barycentric_velocity_from_header_km_s,
     _estimate_lsf_sigma_from_resolving_power,
     _estimate_lsf_sigma_from_spectral_features,
-    _make_atmosphere,
     _infer_wavelength_medium_from_header,
+    _make_atmosphere,
     _ranges_to_observatory_vacuum,
     _resolve_initial_wavelength_shift,
-    _resolve_lsf_sigma,
     _resolve_line_list,
-    _split_spectrum,
+    _resolve_lsf_sigma,
     _spectrum_to_observatory_vacuum,
+    _split_spectrum,
     _stitch_segment_results,
 )
-from pymolfit.fit import _shift_basis
-from pymolfit.model import optical_depth_basis, transmission_from_basis
 
 
 def _fixed_decimal(value, width, decimals):
@@ -128,9 +127,7 @@ def test_correct_arrays_preserves_overlapping_echelle_group_ids():
     first = np.linspace(1.500, 1.530, 120)
     second = np.linspace(1.510, 1.540, 120)
     wavelength = np.concatenate((first, second))
-    group_id = np.concatenate(
-        (np.full(first.size, "order-1"), np.full(second.size, "order-2"))
-    )
+    group_id = np.concatenate((np.full(first.size, "order-1"), np.full(second.size, "order-2")))
     line_list = LineList(
         wavelength=np.array([1.520]),
         strength=np.array([0.01]),
@@ -155,9 +152,7 @@ def test_correct_arrays_preserves_overlapping_echelle_group_ids():
 
 
 def test_multi_order_auto_alignment_uses_constant_shift_per_physical_group():
-    wavelength = np.concatenate(
-        (np.linspace(1.500, 1.506, 240), np.linspace(1.510, 1.516, 240))
-    )
+    wavelength = np.concatenate((np.linspace(1.500, 1.506, 240), np.linspace(1.510, 1.516, 240)))
     group_id = np.repeat((10, 20), 240)
     line_list = LineList(
         wavelength=np.array([1.503, 1.513]),
@@ -199,9 +194,7 @@ def test_multi_order_auto_alignment_uses_constant_shift_per_physical_group():
 
 
 def test_unified_correct_passes_array_group_ids():
-    wavelength = np.concatenate(
-        (np.linspace(1.500, 1.510, 40), np.linspace(1.505, 1.515, 40))
-    )
+    wavelength = np.concatenate((np.linspace(1.500, 1.510, 40), np.linspace(1.505, 1.515, 40)))
     group_id = np.repeat((3, 7), 40)
     observation = Observation(wavelength_frame="observatory")
 
@@ -788,8 +781,7 @@ def test_correct_file_automatically_segments_native_grid_and_stitches_output(tmp
     segmentation = result.provenance["segmentation"]
     assert segmentation["segment_count"] >= 3
     assert all(
-        upper - lower <= 0.01 + 1.0e-12
-        for lower, upper in segmentation["boundaries_micron"]
+        upper - lower <= 0.01 + 1.0e-12 for lower, upper in segmentation["boundaries_micron"]
     )
     assert result.spectrum.wavelength.size == wavelength.size
     assert result.corrected.wavelength.size == wavelength.size
@@ -877,9 +869,7 @@ def test_segmented_overlap_convolution_matches_unsegmented_at_boundary(tmp_path)
         line_list=line_list,
         config=config,
     )
-    stitched = np.concatenate(
-        [result.transmission for result in segmented.segment_results]
-    )
+    stitched = np.concatenate([result.transmission for result in segmented.segment_results])
 
     np.testing.assert_allclose(
         stitched,
@@ -933,9 +923,7 @@ def test_stitching_keeps_overlapping_physical_groups_contiguous():
     spectrum = Spectrum(
         wavelength=np.concatenate((first, second)),
         flux=np.ones(first.size + second.size),
-        group_id=np.concatenate(
-            (np.full(first.size, 10), np.full(second.size, 20))
-        ),
+        group_id=np.concatenate((np.full(first.size, 10), np.full(second.size, 20))),
     )
     line_list = LineList(
         wavelength=np.array([1.520]),
@@ -1033,17 +1021,13 @@ def test_correct_arrays_auto_selects_wavelength_dependent_pixel_shift():
     pixel = np.arange(6000, dtype=float)
     wavelength = 2.30 + 6.0e-6 * pixel + 3.0e-10 * pixel**2
     line_list = LineList(
-        wavelength=np.array(
-            [2.303, 2.308, 2.315, 2.322, 2.329, 2.337, 2.345]
-        ),
+        wavelength=np.array([2.303, 2.308, 2.315, 2.322, 2.329, 2.337, 2.345]),
         strength=np.array([0.006, 0.008, 0.005, 0.009, 0.007, 0.008, 0.006]),
         sigma=np.full(7, 1.2e-5),
         gamma=np.full(7, 6.0e-6),
         species=np.full(7, "H2O"),
     )
-    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(
-        wavelength
-    )
+    x = 2.0 * (wavelength - np.mean((wavelength[0], wavelength[-1]))) / np.ptp(wavelength)
     true_coefficients = np.array([0.25, 1.15])
     species_names, basis = optical_depth_basis(wavelength, line_list)
     flux = transmission_from_basis(
@@ -1051,8 +1035,7 @@ def test_correct_arrays_auto_selects_wavelength_dependent_pixel_shift():
         _shift_basis(
             wavelength,
             basis,
-            (true_coefficients[0] + true_coefficients[1] * x)
-            * np.gradient(wavelength),
+            (true_coefficients[0] + true_coefficients[1] * x) * np.gradient(wavelength),
         ),
         species_scales={"H2O": 1.2},
     )
@@ -1291,7 +1274,9 @@ def test_correct_file_converts_air_wavelengths_before_hitran_fit(tmp_path):
 
     assert result.success
     assert result.spectrum.wavelength_medium == "vacuum"
-    np.testing.assert_allclose(result.spectrum.wavelength, wavelength_vacuum_nm * 1.0e-3, rtol=0, atol=1e-10)
+    np.testing.assert_allclose(
+        result.spectrum.wavelength, wavelength_vacuum_nm * 1.0e-3, rtol=0, atol=1e-10
+    )
     assert output_path.exists()
 
 
@@ -1346,10 +1331,7 @@ def test_fits_wcs_infers_wavelength_medium(ctype, expected_medium):
 
 
 def test_explicit_fits_metadata_infers_wavelength_medium():
-    assert (
-        _infer_wavelength_medium_from_header({"PYMOLFIT WAVE": "air micron"})
-        == "air"
-    )
+    assert _infer_wavelength_medium_from_header({"PYMOLFIT WAVE": "air micron"}) == "air"
     assert _infer_wavelength_medium_from_header({"VACUUM": True}) == "vacuum"
     assert _infer_wavelength_medium_from_header({"VACUUM": False}) == "air"
     assert _infer_wavelength_medium_from_header({"SPECSYS": "BARYCENT"}) is None
@@ -1382,14 +1364,8 @@ def test_tucd_inference_follows_selected_wavelength_column():
         "TUCD3": "phot.flux.density;em.wl;meta.main",
     }
 
-    assert (
-        _infer_wavelength_medium_from_header(header, wavelength_col="WAVE")
-        == "vacuum"
-    )
-    assert (
-        _infer_wavelength_medium_from_header(header, wavelength_col="WAVE_AIR")
-        == "air"
-    )
+    assert _infer_wavelength_medium_from_header(header, wavelength_col="WAVE") == "vacuum"
+    assert _infer_wavelength_medium_from_header(header, wavelength_col="WAVE_AIR") == "air"
 
 
 def test_espresso_wave_column_infers_vacuum_wavelength():
@@ -1412,9 +1388,7 @@ def test_generic_wave_table_column_does_not_assume_a_medium():
 
 def test_conflicting_fits_wavelength_medium_is_rejected():
     with pytest.raises(ValueError, match="conflicting FITS metadata"):
-        _infer_wavelength_medium_from_header(
-            {"CTYPE1": "AWAV", "WAVEMED": "vacuum"}
-        )
+        _infer_wavelength_medium_from_header({"CTYPE1": "AWAV", "WAVEMED": "vacuum"})
 
 
 @pytest.mark.parametrize("ctype", ("AWAV", "WAVE"))
@@ -1434,11 +1408,7 @@ def test_correct_file_uses_fits_wavelength_medium_when_omitted(tmp_path, ctype):
 
     result = correct_file(input_path, demo_line_list=True, continuum_order=0)
 
-    expected = (
-        air_to_vacuum_wavelength(wavelength)
-        if ctype == "AWAV"
-        else wavelength
-    )
+    expected = air_to_vacuum_wavelength(wavelength) if ctype == "AWAV" else wavelength
     np.testing.assert_allclose(result.spectrum.wavelength, expected)
 
 
@@ -1515,7 +1485,11 @@ def test_workflow_infers_barycentric_berv_initial_wavelength_shift():
 
     shift = _resolve_initial_wavelength_shift(spectrum, None, header)
 
-    expected = np.nanmedian(spectrum.wavelength) * header["ESO DRS BERV"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
+    expected = (
+        np.nanmedian(spectrum.wavelength)
+        * header["ESO DRS BERV"]
+        / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
+    )
     np.testing.assert_allclose(shift, expected)
     assert _resolve_initial_wavelength_shift(spectrum, 1.2e-5, header) == 1.2e-5
     assert _resolve_initial_wavelength_shift(spectrum, None, {"SPECSYS": "TOPOCENT"}) == 0.0
@@ -1536,9 +1510,7 @@ def test_workflow_reconstructs_missing_barycentric_velocity_from_fits_metadata()
 
     assert velocity == pytest.approx(-20.72, abs=0.03)
     spectrum = Spectrum(wavelength=np.array([0.686, 0.688, 0.690]), flux=np.ones(3))
-    expected = np.nanmedian(spectrum.wavelength) * velocity / (
-        SPEED_OF_LIGHT_M_PER_S / 1000.0
-    )
+    expected = np.nanmedian(spectrum.wavelength) * velocity / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
     np.testing.assert_allclose(
         _resolve_initial_wavelength_shift(spectrum, None, header),
         expected,
@@ -1601,9 +1573,7 @@ def test_workflow_converts_documented_heliocentric_product_to_observatory_frame(
 
     converted = _spectrum_to_observatory_vacuum(spectrum, header)
 
-    factor = (1.0 + 1.55e-8) * (
-        1.0 + header["HELIOVEL"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
-    )
+    factor = (1.0 + 1.55e-8) * (1.0 + header["HELIOVEL"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0))
     np.testing.assert_allclose(converted.wavelength, spectrum.wavelength / factor)
     assert converted.meta["original_spectral_frame"] == "HELIOCENTRIC"
     assert converted.meta["observatory_frame_velocity_km_s"] == header["HELIOVEL"]
@@ -1652,15 +1622,10 @@ def test_unified_correct_declares_public_options_for_editor_completion():
     file_parameters = inspect.signature(correct_file).parameters
     array_parameters = inspect.signature(correct_arrays).parameters
 
-    assert all(
-        name in correct_parameters
-        for name in file_parameters
-        if name != "input_path"
-    )
+    assert all(name in correct_parameters for name in file_parameters if name != "input_path")
     assert all(name in correct_parameters for name in array_parameters)
     assert not any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in correct_parameters.values()
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in correct_parameters.values()
     )
     assert correct_parameters["continuum_order"].default == 1
     assert correct_parameters["continuum_order"].kind is inspect.Parameter.KEYWORD_ONLY

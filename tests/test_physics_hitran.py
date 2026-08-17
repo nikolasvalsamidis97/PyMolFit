@@ -16,6 +16,7 @@ from pymolfit import (
     read_aer_line_file,
     read_hitran_par,
 )
+from pymolfit.components import hitran_line_optical_depth_basis, line_wing_effective_cutoff_cm
 from pymolfit.physics import (
     lblrtm_dynamic_line_cutoff_cm,
     lblrtm_dynamic_max_line_cutoff_cm,
@@ -23,7 +24,6 @@ from pymolfit.physics import (
     lblrtm_voigt_hwhm,
     line_strength_temperature,
 )
-from pymolfit.components import hitran_line_optical_depth_basis, line_wing_effective_cutoff_cm
 
 
 def _fixed_decimal(value, width, decimals):
@@ -83,7 +83,7 @@ def _hitran_row(
 
 def _aer_row_with_broadener_flags(row, flags):
     flag_text = f"{0:2d}" + "".join(f"{flag:2d}" for flag in flags) + f"{0.0:9.5f}"
-    return row[:98] + flag_text + row[98 + len(flag_text):]
+    return row[:98] + flag_text + row[98 + len(flag_text) :]
 
 
 def _aer_row_with_f100_flag(row, flag):
@@ -139,9 +139,12 @@ def test_read_aer_line_file_skips_headers_and_auxiliary_rows(tmp_path):
 def test_read_aer_line_file_uses_lblrtm_isotopologue_masses(tmp_path):
     path = tmp_path / "aer_h2o_isotopologues.dat"
     path.write_text(
-        _hitran_row(mol_id=1, iso_id=1, wavenumber=4319.0) + "\n"
-        + _hitran_row(mol_id=1, iso_id=2, wavenumber=4320.0) + "\n"
-        + _hitran_row(mol_id=1, iso_id=3, wavenumber=4321.0) + "\n"
+        _hitran_row(mol_id=1, iso_id=1, wavenumber=4319.0)
+        + "\n"
+        + _hitran_row(mol_id=1, iso_id=2, wavenumber=4320.0)
+        + "\n"
+        + _hitran_row(mol_id=1, iso_id=3, wavenumber=4321.0)
+        + "\n"
     )
 
     line_list = read_aer_line_file(path)
@@ -213,8 +216,7 @@ def test_read_aer_line_file_reads_f100_negative_line_coupling_rows(tmp_path):
 def test_read_aer_line_file_imports_extra_broadener_files(tmp_path):
     line_path = tmp_path / "aer_lines.dat"
     line_path.write_text(
-        _hitran_row(mol_id=2, iso_id=1, wavenumber=4320.0, intensity=1.0e-24)
-        + "\n"
+        _hitran_row(mol_id=2, iso_id=1, wavenumber=4320.0, intensity=1.0e-24) + "\n"
     )
     (tmp_path / "co2_h2o_brd_param").write_text("0 4320.000000 0.5100 0.2300 0.0040\n")
 
@@ -280,7 +282,6 @@ def test_aer_line_coupling_table_roundtrip(tmp_path):
     np.testing.assert_allclose(loaded.line_coupling_b, [[0.001, 0.002, 0.003, 0.004]])
 
 
-
 def test_aer_line_source_uses_lblrtm_density_pressure_shift(tmp_path):
     row = _hitran_row(
         wavenumber=4320.0,
@@ -304,7 +305,9 @@ def test_aer_line_source_uses_lblrtm_density_pressure_shift(tmp_path):
     wavenumber_grid = np.array([4320.05, 4320.10])
     wavelength = 1.0e4 / wavenumber_grid
 
-    _, hitran_basis = hitran_line_optical_depth_basis(wavelength, hitran_lines, atmosphere, chunk_size=1)
+    _, hitran_basis = hitran_line_optical_depth_basis(
+        wavelength, hitran_lines, atmosphere, chunk_size=1
+    )
     _, aer_basis = hitran_line_optical_depth_basis(wavelength, aer_lines, atmosphere, chunk_size=1)
 
     assert hitran_basis[0, 0] > hitran_basis[0, 1]
@@ -408,8 +411,12 @@ def test_aer_broadener_parameters_affect_line_wings(tmp_path):
     )
     wavelength = 1.0e4 / np.array([4319.5])
 
-    _, base_basis = hitran_line_optical_depth_basis(wavelength, base_lines, atmosphere, chunk_size=1)
-    _, broadener_basis = hitran_line_optical_depth_basis(wavelength, broadener_lines, atmosphere, chunk_size=1)
+    _, base_basis = hitran_line_optical_depth_basis(
+        wavelength, base_lines, atmosphere, chunk_size=1
+    )
+    _, broadener_basis = hitran_line_optical_depth_basis(
+        wavelength, broadener_lines, atmosphere, chunk_size=1
+    )
 
     assert broadener_basis[0, 0] > base_basis[0, 0]
 
@@ -449,23 +456,23 @@ def test_lblrtm_line_coupling_makes_profile_asymmetric():
 
 
 def test_lblrtm_reduced_width_flag_changes_line_wing():
-    base_kwargs = dict(
-        wavelength=np.array([1.0e4 / 4320.0]),
-        strength=np.array([1.0e-20]),
-        sigma=np.array([1.0e-5]),
-        gamma=np.array([1.0e-5]),
-        species=np.array(["O2"]),
-        wavenumber=np.array([4320.0]),
-        mol_id=np.array([7]),
-        iso_id=np.array([1]),
-        air_width=np.array([0.05]),
-        self_width=np.array([0.05]),
-        lower_state_energy=np.array([100.0]),
-        temperature_exponent=np.array([0.75]),
-        pressure_shift=np.array([0.0]),
-        molecular_mass_amu=np.array([32.0]),
-        line_source="aer_lnfl_tape8",
-    )
+    base_kwargs = {
+        "wavelength": np.array([1.0e4 / 4320.0]),
+        "strength": np.array([1.0e-20]),
+        "sigma": np.array([1.0e-5]),
+        "gamma": np.array([1.0e-5]),
+        "species": np.array(["O2"]),
+        "wavenumber": np.array([4320.0]),
+        "mol_id": np.array([7]),
+        "iso_id": np.array([1]),
+        "air_width": np.array([0.05]),
+        "self_width": np.array([0.05]),
+        "lower_state_energy": np.array([100.0]),
+        "temperature_exponent": np.array([0.75]),
+        "pressure_shift": np.array([0.0]),
+        "molecular_mass_amu": np.array([32.0]),
+        "line_source": "aer_lnfl_tape8",
+    }
     base = LineList(**base_kwargs)
     reduced = LineList(
         **base_kwargs,
@@ -482,7 +489,9 @@ def test_lblrtm_reduced_width_flag_changes_line_wing():
     wavelength = 1.0e4 / np.array([4319.5])
 
     _, base_basis = hitran_line_optical_depth_basis(wavelength, base, atmosphere, chunk_size=1)
-    _, reduced_basis = hitran_line_optical_depth_basis(wavelength, reduced, atmosphere, chunk_size=1)
+    _, reduced_basis = hitran_line_optical_depth_basis(
+        wavelength, reduced, atmosphere, chunk_size=1
+    )
 
     assert reduced_basis[0, 0] < base_basis[0, 0]
 
@@ -661,8 +670,12 @@ def test_physical_transmission_uses_isotopologue_abundance_scale(tmp_path):
         mixing_ratios={"H2O": 1.0e-5},
     )
 
-    base_transmission = physical_transmission_model(wavelength, base, atmosphere, PhysicalModelConfig(chunk_size=4))
-    half_transmission = physical_transmission_model(wavelength, half, atmosphere, PhysicalModelConfig(chunk_size=4))
+    base_transmission = physical_transmission_model(
+        wavelength, base, atmosphere, PhysicalModelConfig(chunk_size=4)
+    )
+    half_transmission = physical_transmission_model(
+        wavelength, half, atmosphere, PhysicalModelConfig(chunk_size=4)
+    )
 
     assert np.nanmin(half_transmission) > np.nanmin(base_transmission)
 
@@ -880,7 +893,9 @@ def test_lblrtm_dynamic_line_wing_mode_uses_per_line_widths(tmp_path):
 
 def test_lblrtm_dynamic_does_not_subtract_cutoff_profile_by_default(tmp_path):
     path = tmp_path / "h2o.par"
-    path.write_text(_hitran_row(intensity=5.0e-20, air_width=0.2, self_width=0.2, pressure_shift=0.0) + "\n")
+    path.write_text(
+        _hitran_row(intensity=5.0e-20, air_width=0.2, self_width=0.2, pressure_shift=0.0) + "\n"
+    )
     line_list = LineList.from_hitran_par(path)
     wavenumber = np.linspace(4319.0, 4321.0, 201)
     wavelength = 1.0e4 / wavenumber

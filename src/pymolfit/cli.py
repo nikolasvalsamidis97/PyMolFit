@@ -6,8 +6,8 @@ from pathlib import Path
 from ._version import __version__
 from .aer_data import AERDataError, aer_catalog_status, install_aer_catalog
 from .io import load_spectrum
-from .linelist import LineList
 from .line_data import HitranAcquisitionError, cache_hitran_par, fetch_hitran_lines
+from .linelist import LineList
 from .physics import LBLRTM_DEFAULT_AVMASS_AMU
 from .validation import compare_spectra
 from .workflow import DEFAULT_SEGMENT_SIZE_MICRON, correct_file
@@ -35,19 +35,29 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument("input", type=Path, help="input spectrum")
     fit_parser.add_argument("output", type=Path, help="output corrected ASCII spectrum")
     fit_parser.add_argument("--product", type=Path, help="optional full fit-product table")
-    fit_parser.add_argument("--product-format", default="ascii.ecsv", help="Astropy table format for --product")
+    fit_parser.add_argument(
+        "--product-format", default="ascii.ecsv", help="Astropy table format for --product"
+    )
     fit_parser.add_argument("--plot", type=Path, help="optional diagnostic plot path")
     fit_parser.add_argument("--line-list", type=Path, help="Astropy-readable line-list table")
     fit_parser.add_argument("--hitran-par", type=Path, help="HITRAN .par line-list file")
-    fit_parser.add_argument("--hitran-species", action="append", default=[], help="species to keep from HITRAN .par")
-    fit_parser.add_argument("--hitran-min-strength", type=float, help="minimum HITRAN line intensity to keep")
-    fit_parser.add_argument("--hitran-max-lines", type=int, help="maximum strongest HITRAN lines to keep")
+    fit_parser.add_argument(
+        "--hitran-species", action="append", default=[], help="species to keep from HITRAN .par"
+    )
+    fit_parser.add_argument(
+        "--hitran-min-strength", type=float, help="minimum HITRAN line intensity to keep"
+    )
+    fit_parser.add_argument(
+        "--hitran-max-lines", type=int, help="maximum strongest HITRAN lines to keep"
+    )
     fit_parser.add_argument(
         "--aer-catalog",
         type=Path,
         help="exact AER 3.9 catalogue path; otherwise discover/download it automatically",
     )
-    fit_parser.add_argument("--aer-cache-dir", type=Path, help="AER catalogue and line-window cache directory")
+    fit_parser.add_argument(
+        "--aer-cache-dir", type=Path, help="AER catalogue and line-window cache directory"
+    )
     fit_parser.add_argument(
         "--aer-source",
         help="AER 3.9 archive URL/path used on cache miss; defaults to the official Zenodo record",
@@ -122,16 +132,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["txt", "dat", "csv", "ascii", "ecsv", "fits", "fit", "fz"],
         help="input spectrum format; omitted means infer from the filename",
     )
-    fit_parser.add_argument("--wavelength-col", default=None, help="wavelength column name or index")
+    fit_parser.add_argument(
+        "--wavelength-col", default=None, help="wavelength column name or index"
+    )
     fit_parser.add_argument("--flux-col", default=None, help="flux column name or index")
-    fit_parser.add_argument("--uncertainty-col", default=None, help="uncertainty column name or index")
+    fit_parser.add_argument(
+        "--uncertainty-col", default=None, help="uncertainty column name or index"
+    )
     fit_parser.add_argument("--hdu", type=int, default=1, help="FITS HDU containing the spectrum")
     fit_parser.add_argument(
         "--image-index",
         type=int,
         help="row to extract from a two-dimensional FITS image spectrum",
     )
-    fit_parser.add_argument("--wavelength-unit", default="micron", help="input wavelength unit: micron, nm, angstrom")
+    fit_parser.add_argument(
+        "--wavelength-unit", default="micron", help="input wavelength unit: micron, nm, angstrom"
+    )
     fit_parser.add_argument(
         "--wavelength-medium",
         choices=["vacuum", "air"],
@@ -281,8 +297,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="subtract the Voigt value at --line-cutoff-cm before truncating each line wing",
     )
-    fit_parser.add_argument("--line-taper-cm", type=float, default=0.0, help="cosine taper width at the line cutoff")
-    fit_parser.add_argument("--lblrtm-sample", type=float, default=4.0, help="LBLRTM SAMPLE control for LBLRTM line-wing modes")
+    fit_parser.add_argument(
+        "--line-taper-cm", type=float, default=0.0, help="cosine taper width at the line cutoff"
+    )
+    fit_parser.add_argument(
+        "--lblrtm-sample",
+        type=float,
+        default=4.0,
+        help="LBLRTM SAMPLE control for LBLRTM line-wing modes",
+    )
     fit_parser.add_argument(
         "--lblrtm-alfal0",
         type=float,
@@ -295,22 +318,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=LBLRTM_DEFAULT_AVMASS_AMU,
         help="LBLRTM representative molecular mass used to construct layer sampling grids",
     )
-    fit_parser.add_argument("--lblrtm-hwf3", type=float, default=64.0, help="LBLRTM outer Voigt domain in half-widths")
-    fit_parser.add_argument("--rayleigh", action="store_true", help="include the LBLRTM contnm.f90 Rayleigh scattering branch")
-    fit_parser.add_argument("--rayleigh-xrayl", type=float, default=1.0, help="LBLRTM Rayleigh scale factor")
+    fit_parser.add_argument(
+        "--lblrtm-hwf3", type=float, default=64.0, help="LBLRTM outer Voigt domain in half-widths"
+    )
+    fit_parser.add_argument(
+        "--rayleigh",
+        action="store_true",
+        help="include the LBLRTM contnm.f90 Rayleigh scattering branch",
+    )
+    fit_parser.add_argument(
+        "--rayleigh-xrayl", type=float, default=1.0, help="LBLRTM Rayleigh scale factor"
+    )
     fit_parser.add_argument(
         "--n2-continuum",
         action="store_true",
         help="include the LBLRTM N2 pure-rotation, fundamental, and first-overtone branches",
     )
-    fit_parser.add_argument("--n2-continuum-xn2cn", type=float, default=1.0, help="LBLRTM N2 continuum scale factor")
+    fit_parser.add_argument(
+        "--n2-continuum-xn2cn", type=float, default=1.0, help="LBLRTM N2 continuum scale factor"
+    )
     fit_parser.add_argument(
         "--o2-continuum",
         action="store_true",
         help="include the source-backed LBLRTM ground-based O2 continuum branches",
     )
-    fit_parser.add_argument("--o2-continuum-xo2cn", type=float, default=1.0, help="LBLRTM O2 continuum scale factor")
-    fit_parser.add_argument("--line-margin-micron", type=float, default=0.01, help="minimum extra wavelength margin for selected lines")
+    fit_parser.add_argument(
+        "--o2-continuum-xo2cn", type=float, default=1.0, help="LBLRTM O2 continuum scale factor"
+    )
+    fit_parser.add_argument(
+        "--line-margin-micron",
+        type=float,
+        default=0.01,
+        help="minimum extra wavelength margin for selected lines",
+    )
     fit_parser.add_argument(
         "--min-transmission",
         type=float,
@@ -385,7 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional lower and upper Gaussian LSF sigma bounds in pixels",
     )
-    fit_parser.add_argument("--fit-lsf-box-width", action="store_true", help="fit boxcar LSF width in pixels")
+    fit_parser.add_argument(
+        "--fit-lsf-box-width", action="store_true", help="fit boxcar LSF width in pixels"
+    )
     fit_parser.add_argument("--lsf-box-width-bounds", nargs=2, type=float, default=(0.0, 10.0))
     fit_parser.add_argument(
         "--fit-lsf-lorentz-fwhm",
@@ -428,15 +470,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="inlier/outlier residual scale for robust losses; ignored by linear loss",
     )
-    fit_parser.add_argument("--ftol", type=float, default=1.0e-10, help="relative cost convergence tolerance")
-    fit_parser.add_argument("--xtol", type=float, default=1.0e-10, help="relative parameter convergence tolerance")
-    fit_parser.add_argument("--gtol", type=float, default=1.0e-10, help="gradient convergence tolerance")
+    fit_parser.add_argument(
+        "--ftol", type=float, default=1.0e-10, help="relative cost convergence tolerance"
+    )
+    fit_parser.add_argument(
+        "--xtol", type=float, default=1.0e-10, help="relative parameter convergence tolerance"
+    )
+    fit_parser.add_argument(
+        "--gtol", type=float, default=1.0e-10, help="gradient convergence tolerance"
+    )
     fit_parser.add_argument(
         "--estimate-uncertainties",
         action="store_true",
         help="estimate local parameter/transmission errors and propagate them to corrected flux",
     )
-    fit_parser.add_argument("--physical", action="store_true", help="use self-contained HITRAN atmosphere physics")
+    fit_parser.add_argument(
+        "--physical", action="store_true", help="use self-contained HITRAN atmosphere physics"
+    )
     fit_parser.add_argument(
         "--atmosphere",
         choices=["mipas_gdas", "single", "standard"],
@@ -491,13 +541,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly allow Paranal geometry when the input has no resolvable site coordinates",
     )
-    fit_parser.add_argument("--atmosphere-table", type=Path, help="Astropy-readable atmosphere profile table")
+    fit_parser.add_argument(
+        "--atmosphere-table", type=Path, help="Astropy-readable atmosphere profile table"
+    )
     fit_parser.add_argument("--pressure-atm", type=float, default=0.75)
     fit_parser.add_argument("--temperature-k", type=float, default=280.0)
     fit_parser.add_argument("--path-length-m", type=float, default=8000.0)
-    fit_parser.add_argument("--pwv-mm", type=float, help="scale H2O to precipitable water vapor in mm")
-    fit_parser.add_argument("--relative-humidity", type=float, help="local relative humidity in percent")
-    fit_parser.add_argument("--partition-table", type=Path, help="optional partition-function table")
+    fit_parser.add_argument(
+        "--pwv-mm", type=float, help="scale H2O to precipitable water vapor in mm"
+    )
+    fit_parser.add_argument(
+        "--relative-humidity", type=float, help="local relative humidity in percent"
+    )
+    fit_parser.add_argument(
+        "--partition-table", type=Path, help="optional partition-function table"
+    )
     fit_parser.add_argument(
         "--mixing-ratio",
         action="append",
@@ -506,7 +564,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="override a volume mixing ratio, e.g. H2O=0.001",
     )
 
-    convert_parser = subparsers.add_parser("convert-hitran", help="convert HITRAN .par to a line-list table")
+    convert_parser = subparsers.add_parser(
+        "convert-hitran", help="convert HITRAN .par to a line-list table"
+    )
     convert_parser.add_argument("input", type=Path)
     convert_parser.add_argument("output", type=Path)
     convert_parser.add_argument("--wavenumber-min", type=float)
@@ -514,16 +574,26 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--species", action="append", default=[])
     convert_parser.add_argument("--min-strength", type=float)
     convert_parser.add_argument("--max-lines", type=int)
-    convert_parser.add_argument("--format", default="ascii.ecsv", help="Astropy output table format")
+    convert_parser.add_argument(
+        "--format", default="ascii.ecsv", help="Astropy output table format"
+    )
 
     fetch_parser = subparsers.add_parser(
         "fetch-hitran", help="download and cache an authenticated HITRAN line window"
     )
     fetch_parser.add_argument("--species", action="append", required=True)
-    fetch_parser.add_argument("--wavelength-min", type=float, help="vacuum wavelength lower bound in micron")
-    fetch_parser.add_argument("--wavelength-max", type=float, help="vacuum wavelength upper bound in micron")
-    fetch_parser.add_argument("--wavenumber-min", type=float, help="wavenumber lower bound in cm^-1")
-    fetch_parser.add_argument("--wavenumber-max", type=float, help="wavenumber upper bound in cm^-1")
+    fetch_parser.add_argument(
+        "--wavelength-min", type=float, help="vacuum wavelength lower bound in micron"
+    )
+    fetch_parser.add_argument(
+        "--wavelength-max", type=float, help="vacuum wavelength upper bound in micron"
+    )
+    fetch_parser.add_argument(
+        "--wavenumber-min", type=float, help="wavenumber lower bound in cm^-1"
+    )
+    fetch_parser.add_argument(
+        "--wavenumber-max", type=float, help="wavenumber upper bound in cm^-1"
+    )
     fetch_parser.add_argument("--api-key-env", default="HITRAN_API_KEY")
     fetch_parser.add_argument("--cache-dir", type=Path)
     fetch_parser.add_argument("--force", action="store_true")
@@ -550,7 +620,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="AER 3.9 archive URL/path; defaults to the official pinned Zenodo record",
     )
     install_aer_parser.add_argument("--source-sha256", help="optional source archive SHA-256")
-    install_aer_parser.add_argument("--catalog-path", type=Path, help="existing exact AER catalogue to reuse")
+    install_aer_parser.add_argument(
+        "--catalog-path", type=Path, help="existing exact AER catalogue to reuse"
+    )
     install_aer_parser.add_argument("--cache-dir", type=Path)
     install_aer_parser.add_argument("--force", action="store_true")
     install_aer_parser.add_argument("--offline", action="store_true")
@@ -687,8 +759,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("choose only one explicit wavelength-correction model")
         if args.fit_wavelength_shift is True and explicit_wavelength_models:
             parser.error(
-                "--fit-wavelength-shift cannot be combined with another "
-                "wavelength-correction model"
+                "--fit-wavelength-shift cannot be combined with another wavelength-correction model"
             )
         if args.hitran_par is not None and args.line_list is not None:
             parser.error("use either --hitran-par or --line-list, not both")
@@ -725,13 +796,8 @@ def main(argv: list[str] | None = None) -> int:
             exclude_ranges = _parse_ranges(args.exclude_range)
         except ValueError as exc:
             parser.error(str(exc))
-        if args.region_file is not None and (
-            fit_ranges is not None or exclude_ranges is not None
-        ):
-            parser.error(
-                "--region-file cannot be combined with --fit-range or "
-                "--exclude-range"
-            )
+        if args.region_file is not None and (fit_ranges is not None or exclude_ranges is not None):
+            parser.error("--region-file cannot be combined with --fit-range or --exclude-range")
 
         correct_file(
             args.input,
@@ -772,7 +838,13 @@ def main(argv: list[str] | None = None) -> int:
                 or args.lblrtm_co2_continuum
                 or any(
                     value is not None
-                    for value in (args.hitran_par, args.mtckd_h2o, args.co2_continuum, args.o2_cia, args.n2_cia)
+                    for value in (
+                        args.hitran_par,
+                        args.mtckd_h2o,
+                        args.co2_continuum,
+                        args.o2_cia,
+                        args.n2_cia,
+                    )
                 )
                 else (True if args.physical else None)
             ),
@@ -842,9 +914,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             fit_lsf_sigma=args.fit_lsf_sigma,
             lsf_sigma_bounds=(
-                None
-                if args.lsf_sigma_bounds is None
-                else tuple(args.lsf_sigma_bounds)
+                None if args.lsf_sigma_bounds is None else tuple(args.lsf_sigma_bounds)
             ),
             fit_lsf_box_width=args.fit_lsf_box_width,
             lsf_box_width_bounds=tuple(args.lsf_box_width_bounds),

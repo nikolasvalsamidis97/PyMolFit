@@ -81,9 +81,7 @@ def extract(source: Path, output: Path) -> None:
         raise ValueError(f"expected {overtone_n} bn2f1 values, found {overtone.size}")
     overtone_wavenumber = overtone_v1 + overtone_dv * np.arange(overtone_n, dtype=float)
     if not np.isclose(overtone_wavenumber[-1], overtone_v2, rtol=0.0, atol=1.0e-5):
-        raise ValueError(
-            f"bn2f1 grid ends at {overtone_wavenumber[-1]}, expected {overtone_v2}"
-        )
+        raise ValueError(f"bn2f1 grid ends at {overtone_wavenumber[-1]}, expected {overtone_v2}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -96,9 +94,7 @@ def extract(source: Path, output: Path) -> None:
         overtone_n2_n2=overtone,
         source=np.asarray("LBLRTM 12.11 contnm.f90 bn2f and bn2f1 tables"),
     )
-    print(
-        f"wrote {output} ({n_points} fundamental and {overtone_n} overtone coefficients)"
-    )
+    print(f"wrote {output} ({n_points} fundamental and {overtone_n} overtone coefficients)")
 
 
 def main() -> None:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -50,11 +51,7 @@ def standard_air_refractive_index(wavelength_micron: np.ndarray) -> np.ndarray:
 
     wavelength_micron = np.asarray(wavelength_micron, dtype=float)
     sigma2 = (1.0 / wavelength_micron) ** 2
-    return 1.0 + 1.0e-8 * (
-        8342.13
-        + 2_406_030.0 / (130.0 - sigma2)
-        + 15_997.0 / (38.9 - sigma2)
-    )
+    return 1.0 + 1.0e-8 * (8342.13 + 2_406_030.0 / (130.0 - sigma2) + 15_997.0 / (38.9 - sigma2))
 
 
 def air_to_vacuum_wavelength(wavelength: np.ndarray, *, unit: str = "micron") -> np.ndarray:
@@ -99,9 +96,7 @@ class Spectrum:
         wavelength = np.array(self.wavelength, dtype=float, copy=True)
         flux = np.array(self.flux, dtype=float, copy=True)
         uncertainty = (
-            None
-            if self.uncertainty is None
-            else np.array(self.uncertainty, dtype=float, copy=True)
+            None if self.uncertainty is None else np.array(self.uncertainty, dtype=float, copy=True)
         )
         mask = None if self.mask is None else np.array(self.mask, dtype=bool, copy=True)
         group_id = None if self.group_id is None else np.array(self.group_id, copy=True)
@@ -124,7 +119,9 @@ class Spectrum:
         object.__setattr__(self, "uncertainty", uncertainty)
         object.__setattr__(self, "mask", mask)
         object.__setattr__(self, "group_id", group_id)
-        object.__setattr__(self, "wavelength_medium", normalize_wavelength_medium(self.wavelength_medium))
+        object.__setattr__(
+            self, "wavelength_medium", normalize_wavelength_medium(self.wavelength_medium)
+        )
         object.__setattr__(self, "meta", dict(self.meta))
 
     @property
@@ -143,7 +140,7 @@ class Spectrum:
         value = self.meta.get("name")
         return None if value is None else str(value)
 
-    def with_flux(self, flux: np.ndarray, *, uncertainty: np.ndarray | None = None) -> "Spectrum":
+    def with_flux(self, flux: np.ndarray, *, uncertainty: np.ndarray | None = None) -> Spectrum:
         return Spectrum(
             wavelength=self.wavelength.copy(),
             flux=np.asarray(flux, dtype=float),
@@ -155,7 +152,7 @@ class Spectrum:
             meta=dict(self.meta),
         )
 
-    def to_unit(self, wavelength_unit: str) -> "Spectrum":
+    def to_unit(self, wavelength_unit: str) -> Spectrum:
         if wavelength_unit == self.wavelength_unit:
             return self
         source = wavelength_scale_to_micron(self.wavelength_unit)
@@ -172,7 +169,7 @@ class Spectrum:
             meta={**dict(self.meta), "original_wavelength_unit": self.wavelength_unit},
         )
 
-    def to_vacuum(self) -> "Spectrum":
+    def to_vacuum(self) -> Spectrum:
         if self.wavelength_medium == "vacuum":
             return self
         return Spectrum(
@@ -186,7 +183,7 @@ class Spectrum:
             meta={**dict(self.meta), "original_wavelength_medium": self.wavelength_medium},
         )
 
-    def to_air(self) -> "Spectrum":
+    def to_air(self) -> Spectrum:
         if self.wavelength_medium == "air":
             return self
         return Spectrum(
@@ -200,7 +197,7 @@ class Spectrum:
             meta={**dict(self.meta), "original_wavelength_medium": self.wavelength_medium},
         )
 
-    def sorted(self) -> "Spectrum":
+    def sorted(self) -> Spectrum:
         order = np.argsort(self.wavelength)
         uncertainty = None if self.uncertainty is None else self.uncertainty[order]
         mask = None if self.mask is None else self.mask[order]
@@ -254,9 +251,7 @@ def correct_spectrum(
             variance += (spectrum.uncertainty[safe] / transmission[safe]) ** 2
         if transmission_uncertainty is not None:
             variance += (
-                spectrum.flux[safe]
-                * transmission_uncertainty[safe]
-                / transmission[safe] ** 2
+                spectrum.flux[safe] * transmission_uncertainty[safe] / transmission[safe] ** 2
             ) ** 2
         corrected_uncertainty[safe] = np.sqrt(variance)
 
@@ -266,11 +261,7 @@ def correct_spectrum(
         flux=corrected_flux,
         uncertainty=corrected_uncertainty,
         mask=corrected_mask,
-        group_id=(
-            None
-            if spectrum.group_id is None
-            else spectrum.group_id.copy()
-        ),
+        group_id=(None if spectrum.group_id is None else spectrum.group_id.copy()),
         wavelength_unit=spectrum.wavelength_unit,
         wavelength_medium=spectrum.wavelength_medium,
         meta={

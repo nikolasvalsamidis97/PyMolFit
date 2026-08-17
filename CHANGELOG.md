@@ -3,6 +3,25 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.1 - 2026-08-17
+
+### Changed
+
+- Reused prepared opacity bases across automatic pilot fits and accelerated
+  wide-grid LBLRTM Voigt table lookup without changing model values. The Na D
+  regression transmission and corrected flux remain bit-for-bit identical.
+- Tightened runtime annotations, defensive validation, cache locking, and
+  segmented-uncertainty callback handling across the fitting and
+  radiative-transfer paths.
+- Extended linting and CI quality checks to cover source, tests, tools, and
+  examples consistently.
+
+### Removed
+
+- Removed retired local validation campaigns, generated plots and products,
+  build artifacts, and stale science-readiness documentation. The maintained
+  automated test suite remains part of the project.
+
 ## 0.7.0 - 2026-08-14
 
 ### Added

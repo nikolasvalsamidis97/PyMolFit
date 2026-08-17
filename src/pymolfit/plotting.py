@@ -44,9 +44,7 @@ def plot_fit(
             "plotting requires matplotlib; install with `pip install pymolfit[plot]`"
         ) from exc
 
-    wavelength, observed, corrected, transmission, wavelength_unit = (
-        _fit_plot_data(result)
-    )
+    wavelength, observed, corrected, transmission, wavelength_unit = _fit_plot_data(result)
     sections = _continuous_wavelength_sections(wavelength)
 
     figure, axes = plt.subplots(
@@ -181,23 +179,10 @@ def _continuous_wavelength_sections(
     spacing = np.diff(wavelength[finite_indices])
     adjacent = np.diff(finite_indices) == 1
     positive = spacing[adjacent & np.isfinite(spacing) & (spacing > 0)]
-    gap_limit = (
-        20.0 * float(np.nanmedian(positive))
-        if positive.size
-        else np.inf
-    )
-    discontinuity = (
-        ~adjacent
-        | ~np.isfinite(spacing)
-        | (spacing <= 0)
-        | (spacing > gap_limit)
-    )
+    gap_limit = 20.0 * float(np.nanmedian(positive)) if positive.size else np.inf
+    discontinuity = ~adjacent | ~np.isfinite(spacing) | (spacing <= 0) | (spacing > gap_limit)
     breaks = np.flatnonzero(discontinuity) + 1
-    return tuple(
-        section
-        for section in np.split(finite_indices, breaks)
-        if section.size
-    )
+    return tuple(section for section in np.split(finite_indices, breaks) if section.size)
 
 
 def _set_complete_flux_limits(axis, *values: np.ndarray) -> None:
@@ -217,8 +202,5 @@ def _set_complete_flux_limits(axis, *values: np.ndarray) -> None:
     upper = float(np.max(finite))
     if not np.isfinite(lower) or not np.isfinite(upper):
         return
-    if upper <= lower:
-        padding = max(abs(lower), 1.0) * 0.05
-    else:
-        padding = 0.08 * (upper - lower)
+    padding = max(abs(lower), 1.0) * 0.05 if upper <= lower else 0.08 * (upper - lower)
     axis.set_ylim(lower - padding, upper + padding)

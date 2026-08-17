@@ -14,23 +14,20 @@ from pymolfit import (
     load_region_file,
     select_telluric_regions,
 )
+from pymolfit.diagnostics import format_fit_summary
 from pymolfit.model import ModelConfig, transmission_model
 from pymolfit.theoretical import SPEED_OF_LIGHT_KM_S
-from pymolfit.diagnostics import format_fit_summary
 
 
 def _write_template(path, wavelength, flux) -> None:
     rows = "\n".join(
-        f"{wave:.8f} {value:.12e}"
-        for wave, value in zip(wavelength, flux, strict=True)
+        f"{wave:.8f} {value:.12e}" for wave, value in zip(wavelength, flux, strict=True)
     )
     path.write_text(
         "# BT-NextGen test spectrum\n"
         "# teff = 8000 K\n"
         "# column 1: WAVELENGTH (ANGSTROM)\n"
-        "# column 2: FLUX (ERG/CM2/S/A)\n"
-        + rows
-        + "\n"
+        "# column 2: FLUX (ERG/CM2/S/A)\n" + rows + "\n"
     )
 
 
@@ -114,25 +111,18 @@ def test_automatic_mask_padding_tracks_line_broadening(tmp_path) -> None:
         resolving_power=100_000.0,
     )
 
-    automatic_width = sum(
-        upper - lower for lower, upper in automatic.selection.exclude_ranges
-    )
+    automatic_width = sum(upper - lower for lower, upper in automatic.selection.exclude_ranges)
     fixed_width = sum(upper - lower for lower, upper in fixed.selection.exclude_ranges)
     assert automatic.diagnostics["mask_padding_mode"] == "auto"
     assert automatic.diagnostics["mask_padding_kms"] == pytest.approx(60.0, rel=0.01)
-    assert (
-        automatic.diagnostics["masked_pixel_count"]
-        > automatic.diagnostics["core_pixel_count"]
-    )
+    assert automatic.diagnostics["masked_pixel_count"] > automatic.diagnostics["core_pixel_count"]
     assert automatic_width > fixed_width
 
 
 def test_selector_opens_with_editable_theoretical_exclusions(tmp_path) -> None:
     path = tmp_path / "stellar.dat"
     wavelength = np.linspace(4_990.0, 5_010.0, 2_001)
-    flux = 1.0 - 0.5 * np.exp(
-        -0.5 * ((wavelength - 5_000.0) / 0.08) ** 2
-    )
+    flux = 1.0 - 0.5 * np.exp(-0.5 * ((wavelength - 5_000.0) / 0.08) ** 2)
     _write_template(path, wavelength, flux)
     template = TheoreticalSpectrum(
         path,
@@ -169,9 +159,7 @@ def test_selector_opens_with_editable_theoretical_exclusions(tmp_path) -> None:
 def test_selector_updates_stellar_width_and_saves_combined_file(tmp_path) -> None:
     path = tmp_path / "stellar.dat"
     wavelength = np.linspace(4_990.0, 5_010.0, 2_001)
-    flux = 1.0 - 0.5 * np.exp(
-        -0.5 * ((wavelength - 5_000.0) / 0.08) ** 2
-    )
+    flux = 1.0 - 0.5 * np.exp(-0.5 * ((wavelength - 5_000.0) / 0.08) ** 2)
     _write_template(path, wavelength, flux)
     template = TheoreticalSpectrum(
         path,
@@ -198,9 +186,7 @@ def test_selector_updates_stellar_width_and_saves_combined_file(tmp_path) -> Non
         show=False,
     )
     selector.add_region(5_003.0, 5_004.0, kind="fit")
-    initial_width = sum(
-        upper - lower for lower, upper in selector.selection.exclude_ranges
-    )
+    initial_width = sum(upper - lower for lower, upper in selector.selection.exclude_ranges)
 
     selector.stellar_padding_box.set_val("40")
     updated = selector.update_stellar_mask()
@@ -218,9 +204,7 @@ def test_selector_updates_stellar_width_and_saves_combined_file(tmp_path) -> Non
 def test_correct_arrays_uses_stellar_template_only_as_fit_exclusion(tmp_path) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_990.0, 5_010.0, 2_001)
-    stellar_profile = 1.0 - 0.35 * np.exp(
-        -0.5 * ((template_wavelength - 5_000.0) / 0.10) ** 2
-    )
+    stellar_profile = 1.0 - 0.35 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.10) ** 2)
     _write_template(template_path, template_wavelength, stellar_profile)
     template = TheoreticalSpectrum(
         template_path,
@@ -285,9 +269,7 @@ def test_correct_arrays_uses_opt_in_stellar_confidence_weights_without_binary_ex
 ) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_990.0, 5_010.0, 2_001)
-    stellar_profile = 1.0 - 0.4 * np.exp(
-        -0.5 * ((template_wavelength - 5_000.0) / 0.10) ** 2
-    )
+    stellar_profile = 1.0 - 0.4 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.10) ** 2)
     _write_template(template_path, template_wavelength, stellar_profile)
     template = TheoreticalSpectrum(
         template_path,
@@ -358,9 +340,7 @@ def test_joint_stellar_model_is_opt_in_on_unified_correct_only(tmp_path) -> None
 def test_unified_correct_runs_joint_stellar_model_for_array_input(tmp_path) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_995.0, 5_005.0, 2_001)
-    stellar_profile = 1.0 - 0.25 * np.exp(
-        -0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2
-    )
+    stellar_profile = 1.0 - 0.25 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2)
     _write_template(template_path, template_wavelength, stellar_profile)
     template = TheoreticalSpectrum(
         template_path,
@@ -418,9 +398,7 @@ def test_unified_correct_runs_joint_stellar_model_for_array_input(tmp_path) -> N
 def test_unified_correct_runs_joint_stellar_model_for_file_input(tmp_path) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_995.0, 5_005.0, 1_001)
-    stellar_profile = 1.0 - 0.2 * np.exp(
-        -0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2
-    )
+    stellar_profile = 1.0 - 0.2 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2)
     _write_template(template_path, template_wavelength, stellar_profile)
     template = TheoreticalSpectrum(
         template_path,

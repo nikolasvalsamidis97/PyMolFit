@@ -262,7 +262,6 @@ one-dimensional echelle spectrum.
 
 - [Software guide and public API](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/software_guide.md)
 - [Troubleshooting](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/troubleshooting.md)
-- [Scientific-readiness validation](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/science_readiness_validation.md)
 - [Physics parity audit](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/docs/physics_parity_audit.md)
 - [Changelog](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/CHANGELOG.md)
 - [Contributing](https://github.com/nikolasvalsamidis97/PyMolFit/blob/main/CONTRIBUTING.md)

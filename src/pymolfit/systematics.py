@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import re
-from typing import Mapping, Sequence
 
 import numpy as np
 from astropy.table import Table
@@ -218,17 +218,12 @@ def fit_telluric_segments_with_systematics(
     segment_results = tuple(
         _combine_single_systematics(
             baseline.segment_results[index],
-            {
-                label: result.segment_results[index]
-                for label, result in variants.items()
-            },
+            {label: result.segment_results[index] for label, result in variants.items()},
             min_transmission=baseline_config.min_transmission,
         )
         for index in range(len(spectra))
     )
-    rms = np.concatenate(
-        [result.transmission_systematic_uncertainty for result in segment_results]
-    )
+    rms = np.concatenate([result.transmission_systematic_uncertainty for result in segment_results])
     envelope = np.concatenate(
         [result.transmission_systematic_envelope for result in segment_results]
     )
@@ -368,10 +363,10 @@ def _validate_multi_result(
 ) -> None:
     if len(result.segment_results) != len(spectra):
         raise ValueError(f"{label} result segment count does not match the spectra")
-    for index, (segment, spectrum) in enumerate(
-        zip(result.segment_results, spectra, strict=True)
-    ):
-        _validate_result_grid(segment, spectrum.to_unit("micron").sorted(), label=f"{label}[{index}]")
+    for index, (segment, spectrum) in enumerate(zip(result.segment_results, spectra, strict=True)):
+        _validate_result_grid(
+            segment, spectrum.to_unit("micron").sorted(), label=f"{label}[{index}]"
+        )
 
 
 def _format_suffix(format: str) -> str:

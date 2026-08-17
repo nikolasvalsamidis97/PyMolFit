@@ -56,8 +56,7 @@ def test_format_fit_summary_distinguishes_profile_and_multiplier_airmass():
     report = format_fit_summary(result)
 
     assert (
-        "observation airmass: 1.2392654 "
-        "(incorporated into atmospheric layer path lengths)"
+        "observation airmass: 1.2392654 (incorporated into atmospheric layer path lengths)"
     ) in report
     assert "additional opacity airmass multiplier: 1" in report
     assert "airmass used by fit" not in report

@@ -1,26 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import shutil
 import tarfile
 import tempfile
 import time
-from typing import Any, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from .errors import ExternalDataError
 from .hitran import HITRAN_MOLECULES
 from .linelist import LineList
 from .provenance import file_sha256
-from .errors import ExternalDataError
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +32,7 @@ AER_ARCHIVE_SHA256 = "3a55d5deb9430894ce61e1a23475ad1ed7ef01f0a5c527ee6f08d9e567
 AER_CATALOG_SHA256 = "08c990768fc3b69dc65538325eadd4df633106a0e6456cba3da072cf4357acb8"
 AER_ZENODO_RECORD = "18881607"
 AER_SOURCE_URL = (
-    f"https://zenodo.org/records/{AER_ZENODO_RECORD}/files/"
-    f"{AER_ARCHIVE_FILENAME}?download=1"
+    f"https://zenodo.org/records/{AER_ZENODO_RECORD}/files/{AER_ARCHIVE_FILENAME}?download=1"
 )
 AER_CACHE_ENV = "PYMOLFIT_AER_CACHE"
 AER_SOURCE_URL_ENV = "PYMOLFIT_AER_URL"
@@ -40,9 +40,7 @@ AER_CATALOG_PATH_ENV = "PYMOLFIT_AER_CATALOG"
 AER_MOLECFIT_ROOT_ENV = "PYMOLFIT_MOLECFIT_ROOT"
 AER_DATA_SCHEMA_VERSION = 2
 AER_WINDOW_SCHEMA_VERSION = 3
-AER_LICENSE_URL = (
-    f"https://zenodo.org/records/{AER_ZENODO_RECORD}/files/LICENSE?download=1"
-)
+AER_LICENSE_URL = f"https://zenodo.org/records/{AER_ZENODO_RECORD}/files/LICENSE?download=1"
 AER_SOURCE_PAGE = f"https://doi.org/10.5281/zenodo.{AER_ZENODO_RECORD}"
 AER_LICENSE_TEXT = """Copyright ©, Atmospheric and Environmental Research, Inc., 2020. All rights reserved.  Atmospheric and Environmental Research,  Inc. (AER) grants USER the right to download, install, use and copy this  database for scientific and research purposes only.  This database may be redistributed as long as this copyright notice is reproduced on any copy made and appropriate acknowledgment is given to AER. This database or any modified version of this database may not be incorporated into any proprietary product or commercial product offered for sale without express written consent of AER. This database is provided as is without any express or implied warranties."""
 
@@ -347,9 +345,7 @@ def load_aer_line_window(
         catalog_source_page = str(
             resolved_catalog.manifest.get("source_page", resolved_catalog.source)
         )
-        source_archive_sha256 = str(
-            resolved_catalog.manifest.get("source_archive_sha256", "")
-        )
+        source_archive_sha256 = str(resolved_catalog.manifest.get("source_archive_sha256", ""))
         provenance = {
             "source": "aer_catalog",
             "catalog_version": AER_CATALOG_VERSION,
@@ -576,10 +572,11 @@ def _load_managed_artifact(directory: Path) -> AERCatalogArtifact | None:
             return None
         stat = path.stat()
         unchanged = (
-            record.get("size_bytes") == stat.st_size
-            and record.get("mtime_ns") == stat.st_mtime_ns
+            record.get("size_bytes") == stat.st_size and record.get("mtime_ns") == stat.st_mtime_ns
         )
-        if record.get("sha256") != expected_hash or (not unchanged and file_sha256(path) != expected_hash):
+        if record.get("sha256") != expected_hash or (
+            not unchanged and file_sha256(path) != expected_hash
+        ):
             return None
     return AERCatalogArtifact(
         catalog_path=directory / AER_CATALOG_FILENAME,
@@ -634,7 +631,9 @@ def _download_archive(
         raise AERDataError(f"AER download from {url} was empty")
 
 
-def _extract_aer_payload(archive_path: Path, destination: Path, *, temp_root: Path, depth: int = 0) -> None:
+def _extract_aer_payload(
+    archive_path: Path, destination: Path, *, temp_root: Path, depth: int = 0
+) -> None:
     if depth > 3:
         raise AERDataError("AER archive nesting exceeded the supported layout")
     try:
@@ -767,9 +766,7 @@ def _canonical_window_request(
         )
         lower_nu, upper_nu = 1.0e4 / upper_wave, 1.0e4 / lower_wave
     else:
-        lower_nu, upper_nu = _ordered_interval(
-            wavenumber_min_cm, wavenumber_max_cm, "wavenumber"
-        )
+        lower_nu, upper_nu = _ordered_interval(wavenumber_min_cm, wavenumber_max_cm, "wavenumber")
         lower_wave, upper_wave = 1.0e4 / upper_nu, 1.0e4 / lower_nu
     if min_strength is not None and (not _finite_positive(min_strength)):
         raise ValueError("min_strength must be finite and positive")
@@ -906,13 +903,13 @@ class _CacheLock:
                 except FileNotFoundError:
                     continue
                 if stale:
-                    try:
+                    with suppress(FileNotFoundError):
                         self.path.unlink()
-                    except FileNotFoundError:
-                        pass
                     continue
                 if time.monotonic() >= deadline:
-                    raise AERDataError(f"timed out waiting for AER cache lock {self.path}")
+                    raise AERDataError(
+                        f"timed out waiting for AER cache lock {self.path}"
+                    ) from None
                 time.sleep(0.1)
                 continue
             with os.fdopen(descriptor, "w", encoding="ascii") as handle:
@@ -920,10 +917,8 @@ class _CacheLock:
             self.acquired = True
             return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, _exc_type, _exc_value, _traceback):
         if self.acquired:
-            try:
+            with suppress(FileNotFoundError):
                 self.path.unlink()
-            except FileNotFoundError:
-                pass
         return False

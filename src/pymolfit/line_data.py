@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
-from typing import Any, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -103,7 +104,9 @@ def fetch_hitran_lines(
         info = _request_json(f"{api_root}/info", opener=opener, timeout_s=timeout_s)
         isotopologues = _request_json(
             f"{api_root}/isotopologues?"
-            + urlencode({"molecule_id__in": ",".join(str(value) for value in request_spec["molecule_ids"])}),
+            + urlencode(
+                {"molecule_id__in": ",".join(str(value) for value in request_spec["molecule_ids"])}
+            ),
             opener=opener,
             timeout_s=timeout_s,
         )
@@ -118,7 +121,9 @@ def fetch_hitran_lines(
             }
         )
         if not global_iso_ids:
-            raise HitranAcquisitionError("HITRAN returned no isotopologues for the requested molecules")
+            raise HitranAcquisitionError(
+                "HITRAN returned no isotopologues for the requested molecules"
+            )
 
         query = urlencode(
             {
@@ -136,7 +141,9 @@ def fetch_hitran_lines(
         result_name = _response_data(transition_header, expected="transition result filename")
         if not isinstance(result_name, str) or not result_name.strip():
             raise HitranAcquisitionError("HITRAN returned no transition result filename")
-        results_dir = _find_named_value(_response_data(info, expected="server information"), "results_dir")
+        results_dir = _find_named_value(
+            _response_data(info, expected="server information"), "results_dir"
+        )
         if not isinstance(results_dir, str) or not results_dir.strip():
             raise HitranAcquisitionError("HITRAN server information did not include results_dir")
         result_url = f"{host}/{results_dir.strip('/')}/{result_name.strip('/')}"
@@ -201,7 +208,10 @@ def cache_hitran_par(
         request_spec,
         selected_text,
         line_list,
-        manifest_extra={"input_path": str(input_path), "input_sha256": request_spec["input_sha256"]},
+        manifest_extra={
+            "input_path": str(input_path),
+            "input_sha256": request_spec["input_sha256"],
+        },
     )
 
 
@@ -220,7 +230,9 @@ def _canonical_request(
     unsupported = tuple(name for name in names if name not in _SPECIES_TO_MOLECULE_ID)
     if unsupported:
         supported = ", ".join(sorted(_SPECIES_TO_MOLECULE_ID))
-        raise ValueError(f"unsupported HITRAN species {unsupported}; supported names are: {supported}")
+        raise ValueError(
+            f"unsupported HITRAN species {unsupported}; supported names are: {supported}"
+        )
 
     use_wavelength = wavelength_min_micron is not None or wavelength_max_micron is not None
     use_wavenumber = wavenumber_min_cm is not None or wavenumber_max_cm is not None
@@ -346,7 +358,9 @@ def _extract_par_records(text: str) -> tuple[str, list[int | None]]:
             parse_hitran_local_iso_id(record[2:3])
             float(record[3:15])
         except ValueError as exc:
-            raise HitranAcquisitionError("HITRAN returned a malformed fixed-width transition") from exc
+            raise HitranAcquisitionError(
+                "HITRAN returned a malformed fixed-width transition"
+            ) from exc
         rows.append(record)
         extras = raw[160:].lstrip(",").split(",") if raw[160:].strip(" ,") else []
         try:
@@ -359,7 +373,7 @@ def _extract_par_records(text: str) -> tuple[str, list[int | None]]:
 
 
 def _select_par_records(text: str, request_spec: Mapping[str, Any]) -> str:
-    wanted_ids = set(int(value) for value in request_spec["molecule_ids"])
+    wanted_ids = {int(value) for value in request_spec["molecule_ids"]}
     lower = float(request_spec["wavenumber_min_cm"])
     upper = float(request_spec["wavenumber_max_cm"])
     rows = []
@@ -371,12 +385,16 @@ def _select_par_records(text: str, request_spec: Mapping[str, Any]) -> str:
         if molecule_id in wanted_ids and lower <= wavenumber <= upper:
             rows.append(raw[:160].ljust(160))
     if not rows:
-        raise HitranAcquisitionError("no records in the supplied HITRAN file match the requested window")
+        raise HitranAcquisitionError(
+            "no records in the supplied HITRAN file match the requested window"
+        )
     return "\n".join(rows) + "\n"
 
 
 def _validated_line_list(par_text: str, request_spec: Mapping[str, Any]) -> LineList:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".par", encoding="utf-8", delete=False) as handle:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".par", encoding="utf-8", delete=False
+    ) as handle:
         temporary = Path(handle.name)
         handle.write(par_text)
     try:
@@ -385,7 +403,9 @@ def _validated_line_list(par_text: str, request_spec: Mapping[str, Any]) -> Line
         temporary.unlink(missing_ok=True)
     unexpected = set(line_list.species_names) - set(request_spec["species"])
     if unexpected:
-        raise HitranAcquisitionError(f"line data contained unexpected species: {sorted(unexpected)}")
+        raise HitranAcquisitionError(
+            f"line data contained unexpected species: {sorted(unexpected)}"
+        )
     wavenumber = np.asarray(line_list.wavenumber, dtype=float)
     tolerance = 1.0e-7
     if np.any(wavenumber < float(request_spec["wavenumber_min_cm"]) - tolerance) or np.any(
@@ -401,7 +421,9 @@ def _attach_api_isotopologue_metadata(
     iso_rows: list[Any],
 ) -> LineList:
     if len(row_global_ids) != line_list.wavelength.size:
-        raise HitranAcquisitionError("HITRAN isotopologue metadata was not aligned with transition rows")
+        raise HitranAcquisitionError(
+            "HITRAN isotopologue metadata was not aligned with transition rows"
+        )
     metadata = {
         int(row["id"]): row
         for row in iso_rows
@@ -439,7 +461,9 @@ def _artifact_paths(cache_dir: Path, request_spec: Mapping[str, Any]) -> dict[st
 
 
 def _request_fingerprint(request_spec: Mapping[str, Any]) -> str:
-    encoded = json.dumps(request_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    encoded = json.dumps(
+        request_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -553,7 +577,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _atomic_write_table(path: Path, table: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".ecsv", delete=False) as handle:
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".ecsv", delete=False
+    ) as handle:
         temporary = Path(handle.name)
     try:
         table.write(temporary, format="ascii.ecsv", overwrite=True)

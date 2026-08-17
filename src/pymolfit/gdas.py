@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
 import os
-from pathlib import Path
 import tarfile
 import tempfile
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -60,7 +60,9 @@ def resolve_time_local_gdas_profile(
     time = _coerce_time(observation_time)
     if time is None or latitude_deg is None or longitude_deg is None:
         if normalized_mode in {"online", "cache"}:
-            raise GDASProfileUnavailable("exact GDAS requires observation time, latitude, and longitude")
+            raise GDASProfileUnavailable(
+                "exact GDAS requires observation time, latitude, and longitude"
+            )
         return None
 
     cache_root = _cache_root(cache_dir)
@@ -84,9 +86,7 @@ def resolve_time_local_gdas_profile(
     downloaded = False
     if tarball_path.exists() and not _valid_gdas_tarball(tarball_path):
         if normalized_mode == "cache":
-            raise GDASProfileUnavailable(
-                f"cached GDAS tarball is corrupt: {tarball_path}"
-            )
+            raise GDASProfileUnavailable(f"cached GDAS tarball is corrupt: {tarball_path}")
         tarball_path.unlink()
     if not tarball_path.exists():
         if normalized_mode == "cache":
@@ -96,7 +96,9 @@ def resolve_time_local_gdas_profile(
             downloaded = True
         except Exception as exc:
             if normalized_mode == "online":
-                raise GDASProfileUnavailable(f"could not download GDAS tarball {tarball_path.name}") from exc
+                raise GDASProfileUnavailable(
+                    f"could not download GDAS tarball {tarball_path.name}"
+                ) from exc
             return None
 
     try:
@@ -139,7 +141,9 @@ def resolve_time_local_gdas_profile(
         )
     except Exception as exc:
         if normalized_mode in {"online", "cache"}:
-            raise GDASProfileUnavailable("could not resolve exact GDAS profiles from cached tarball") from exc
+            raise GDASProfileUnavailable(
+                "could not resolve exact GDAS profiles from cached tarball"
+            ) from exc
         return None
 
 
@@ -228,8 +232,7 @@ def _valid_gdas_tarball(path: Path) -> bool:
         with tarfile.open(path, "r:gz") as archive:
             members = archive.getmembers()
         return bool(members) and any(
-            member.isfile() and member.name.endswith(".gdas")
-            for member in members
+            member.isfile() and member.name.endswith(".gdas") for member in members
         )
     except (OSError, tarfile.TarError):
         return False
@@ -253,7 +256,12 @@ def _find_bracketing_members(
         raise GDASProfileUnavailable(f"no GDAS profiles bracketing {observation_time.isot}")
     before_member = _member_name(site_id, before_time)
     after_member = _member_name(site_id, after_time)
-    return before_member, after_member, Time(before_time, scale="utc"), Time(after_time, scale="utc")
+    return (
+        before_member,
+        after_member,
+        Time(before_time, scale="utc"),
+        Time(after_time, scale="utc"),
+    )
 
 
 def _find_existing_time(
@@ -303,7 +311,9 @@ def _interpolate_gdas_tables(
         after_delta = abs((after_time - observation_time).to_value("hour"))
         return before.copy() if before_delta <= after_delta else after.copy()
     interval_h = (after_time - before_time).to_value("hour")
-    weight = 0.0 if interval_h == 0 else (observation_time - before_time).to_value("hour") / interval_h
+    weight = (
+        0.0 if interval_h == 0 else (observation_time - before_time).to_value("hour") / interval_h
+    )
     weight = float(np.clip(weight, 0.0, 1.0))
     table = Table()
     for colname in before.colnames:

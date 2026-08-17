@@ -46,8 +46,7 @@ def test_systematic_refits_produce_and_propagate_transmission_envelope(tmp_path)
     assert result.baseline.success
     assert result.variants["broader Gaussian LSF"].success
     expected = np.abs(
-        result.variants["broader Gaussian LSF"].transmission
-        - result.baseline.transmission
+        result.variants["broader Gaussian LSF"].transmission - result.baseline.transmission
     )
     np.testing.assert_allclose(result.transmission_systematic_uncertainty, expected)
     np.testing.assert_allclose(result.transmission_systematic_envelope, expected)

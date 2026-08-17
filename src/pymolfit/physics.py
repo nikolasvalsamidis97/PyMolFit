@@ -13,19 +13,14 @@ AMU_KG = const.u.si.value
 SECOND_RADIATION_CONSTANT_CM_K = (const.h * const.c / const.k_B).to_value(u.cm * u.K)
 LOSCHMIDT_CM3 = ((101_325.0 * u.Pa) / (const.k_B * (273.15 * u.K))).to_value(1 / u.cm**3)
 
-# Legacy constants used by the LBLRTM source bundled with Molecfit 4.4.4
-# (lblrtm/src/phys_consts.f90). PyMolFit defaults to modern Astropy values,
-# but these constants make source-parity tests explicit and reproducible.
-LBLRTM_BOLTZMANN_J_PER_K = 1.3806503e-23
-LBLRTM_SPEED_OF_LIGHT_M_PER_S = 2.99792458e8
-LBLRTM_AVOGADRO_PER_MOL = 6.02214199e23
-LBLRTM_LOSCHMIDT_CM3 = 2.6867775e19
+# Legacy second radiation constant from the LBLRTM source bundled with
+# Molecfit 4.4.4. PyMolFit defaults to the modern Astropy value, while this
+# source value remains explicit for parity calculations and tests.
 LBLRTM_SECOND_RADIATION_CONSTANT_CM_K = 1.4387752
 LBLRTM_VOIGT_DOMAIN_HWF3 = 64.0
 LBLRTM_DEFAULT_SAMPLE = 4.0
 LBLRTM_DEFAULT_ALFAL0 = 0.04
 LBLRTM_DEFAULT_AVMASS_AMU = 36.0
-LBLRTM_REFERENCE_PRESSURE_ATM = 1.0
 LBLRTM_REFERENCE_TEMPERATURE_K = 296.0
 # ``MANE`` in LBLRTM computes the representative Doppler HWHM as
 # 3.58115e-7 * wavenumber * sqrt(temperature / AVMASS).
@@ -236,7 +231,11 @@ def lorentz_hwhm_wavenumber(
     self_width_cm = np.asarray(self_width_cm, dtype=float)
     temperature_exponent = np.asarray(temperature_exponent, dtype=float)
     broadening = (1.0 - absorber_fraction) * air_width_cm + absorber_fraction * self_width_cm
-    return broadening * pressure_atm * (reference_temperature_k / temperature_k) ** temperature_exponent
+    return (
+        broadening
+        * pressure_atm
+        * (reference_temperature_k / temperature_k) ** temperature_exponent
+    )
 
 
 def lblrtm_voigt_hwhm(
@@ -311,13 +310,10 @@ def lblrtm_layer_wavenumber_spacing_cm(
         * h2o_self_factor
     )
     doppler_hwhm = (
-        LBLRTM_DOPPLER_HWHM_FACTOR
-        * wavenumber
-        * np.sqrt(temperature / float(avmass_amu))
+        LBLRTM_DOPPLER_HWHM_FACTOR * wavenumber * np.sqrt(temperature / float(avmass_amu))
     )
     voigt_hwhm = 0.5 * (
-        lorentz_hwhm
-        + np.sqrt(lorentz_hwhm * lorentz_hwhm + 4.0 * doppler_hwhm * doppler_hwhm)
+        lorentz_hwhm + np.sqrt(lorentz_hwhm * lorentz_hwhm + 4.0 * doppler_hwhm * doppler_hwhm)
     )
     return voigt_hwhm / float(sample)
 
@@ -492,7 +488,9 @@ def lblrtm_radiation_term(wavenumber_cm: float | np.ndarray, temperature_k: floa
     return np.where(
         ratio <= 0.01,
         0.5 * ratio * wavenumber,
-        np.where(ratio <= 10.0, wavenumber * -np.expm1(-ratio) / (1.0 + np.exp(-ratio)), wavenumber),
+        np.where(
+            ratio <= 10.0, wavenumber * -np.expm1(-ratio) / (1.0 + np.exp(-ratio)), wavenumber
+        ),
     )
 
 
@@ -646,10 +644,14 @@ def lblrtm_panel_voigt_profile_wavenumber(
     if not np.all(spacing > 0):
         raise ValueError("wavenumber grid points must be unique")
     median_spacing = float(np.nanmedian(spacing))
-    uniform = np.allclose(spacing, median_spacing, rtol=1.0e-5, atol=max(1.0e-10, 1.0e-8 * median_spacing))
+    uniform = np.allclose(
+        spacing, median_spacing, rtol=1.0e-5, atol=max(1.0e-10, 1.0e-8 * median_spacing)
+    )
 
     if not uniform:
-        uniform_grid = np.arange(sorted_grid[0], sorted_grid[-1] + 0.5 * median_spacing, median_spacing)
+        uniform_grid = np.arange(
+            sorted_grid[0], sorted_grid[-1] + 0.5 * median_spacing, median_spacing
+        )
         uniform_profile = _lblrtm_panel_voigt_profile_uniform(
             uniform_grid,
             centers,
@@ -766,7 +768,9 @@ def lblrtm_panel_accumulate_wavenumber(
             pad_grid_points=pad_grid_points,
         )
     else:
-        uniform_grid = np.arange(sorted_grid[0], sorted_grid[-1] + 0.5 * median_spacing, median_spacing)
+        uniform_grid = np.arange(
+            sorted_grid[0], sorted_grid[-1] + 0.5 * median_spacing, median_spacing
+        )
         uniform_result = _lblrtm_panel_accumulate_uniform(
             uniform_grid,
             centers,
@@ -836,12 +840,8 @@ def lblrtm_f4_profile_offset(
 
     zeta_index, zeta_fraction = _lblrtm_zeta_interpolation(zeta[rows])
     a3_table, b3_table = _lblrtm_f4_coefficient_tables()
-    a3 = a3_table[zeta_index] + zeta_fraction * (
-        a3_table[zeta_index + 1] - a3_table[zeta_index]
-    )
-    b3 = b3_table[zeta_index] + zeta_fraction * (
-        b3_table[zeta_index + 1] - b3_table[zeta_index]
-    )
+    a3 = a3_table[zeta_index] + zeta_fraction * (a3_table[zeta_index + 1] - a3_table[zeta_index])
+    b3 = b3_table[zeta_index] + zeta_fraction * (b3_table[zeta_index + 1] - b3_table[zeta_index])
 
     local_offset = offset[rows]
     offset_sq = local_offset**2
@@ -850,11 +850,7 @@ def lblrtm_f4_profile_offset(
     z_sq = offset_sq / alfv_local[:, None] ** 2
     z_bound_sq = LBLRTM_VOIGT_DOMAIN_HWF3**2
     f4_at_64 = a3 + b3 * z_bound_sq
-    lorentz_numerator = (
-        f4_at_64
-        / alfv_local
-        * (lorentz_sq + alfv_local**2 * z_bound_sq)
-    )
+    lorentz_numerator = f4_at_64 / alfv_local * (lorentz_sq + alfv_local**2 * z_bound_sq)
     boundary_value = lorentz_numerator / (lorentz_sq + float(bound_cm) ** 2)
 
     near = (a3[:, None] + b3[:, None] * z_sq) / alfv_local[:, None]
@@ -942,7 +938,9 @@ def lblrtm_panel_interpolate_f4_wavenumber(
         np.zeros((r4.shape[0], coarse2.size), dtype=float),
         r3,
     )[:, pad : pad + uniform_grid.size]
-    sorted_result = combined if uniform else _interp_uniform_rows(uniform_grid, combined, sorted_grid)
+    sorted_result = (
+        combined if uniform else _interp_uniform_rows(uniform_grid, combined, sorted_grid)
+    )
     result = np.empty_like(sorted_result)
     result[:, order] = sorted_result
     return result
@@ -1026,7 +1024,8 @@ def _lblrtm_voigt_subfunction_tables() -> tuple[np.ndarray, np.ndarray, np.ndarr
     # voigt_init performs the coefficient construction in double precision.
     # Retaining that final single-precision quantisation is part of reproducing
     # the numerical path used by LBLRTM rather than only its analytic profile.
-    return tuple(np.asarray(table, dtype=np.float32) for table in f_tables)
+    quantized = [np.asarray(table, dtype=np.float32) for table in f_tables]
+    return quantized[0], quantized[1], quantized[2]
 
 
 @lru_cache(maxsize=1)
@@ -1047,16 +1046,23 @@ def _lblrtm_f4_coefficient_tables() -> tuple[np.ndarray, np.ndarray]:
     domain = LBLRTM_VOIGT_DOMAIN_HWF3
     dz = domain / (LBLRTM_VOIGT_TABLE_POINTS - 1)
     sample_indices = np.array(
-        [LBLRTM_VOIGT_TABLE_POINTS - 3, LBLRTM_VOIGT_TABLE_POINTS - 2, LBLRTM_VOIGT_TABLE_POINTS - 1],
+        [
+            LBLRTM_VOIGT_TABLE_POINTS - 3,
+            LBLRTM_VOIGT_TABLE_POINTS - 2,
+            LBLRTM_VOIGT_TABLE_POINTS - 1,
+        ],
         dtype=float,
     )
     normalized_offset = sample_indices * dz
     offset = alfv[:, None] * normalized_offset[None, :]
-    scaled_profile = voigt_profile_offset(
-        offset,
-        sigma[:, None],
-        lorentz_hwhm[:, None],
-    ) * alfv[:, None]
+    scaled_profile = (
+        voigt_profile_offset(
+            offset,
+            sigma[:, None],
+            lorentz_hwhm[:, None],
+        )
+        * alfv[:, None]
+    )
 
     pure_lorentz = (1.0 / np.pi) / (1.0 + normalized_offset**2)
     scaled_profile[-1] = pure_lorentz
@@ -1066,9 +1072,11 @@ def _lblrtm_f4_coefficient_tables() -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate((a3, a3[-1:])), np.concatenate((b3, b3[-1:]))
 
 
-def _lblrtm_voigt_subfunction_values(z: np.ndarray, zeta: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _lblrtm_voigt_subfunction_values(
+    z: np.ndarray, zeta: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     zeta_index, zeta_fraction = _lblrtm_zeta_interpolation(zeta)
-    return tuple(
+    values = tuple(
         _lblrtm_voigt_subfunction_value(
             z,
             domain_index,
@@ -1077,6 +1085,7 @@ def _lblrtm_voigt_subfunction_values(z: np.ndarray, zeta: np.ndarray) -> tuple[n
         )
         for domain_index in range(3)
     )
+    return values[0], values[1], values[2]
 
 
 def _lblrtm_voigt_subfunction_value(
@@ -1125,9 +1134,7 @@ def _lblrtm_voigt_subfunction_nearest_value(
 
     table = _lblrtm_voigt_subfunction_tables()[domain_index]
     domain = LBLRTM_VOIGT_TABLE_DOMAINS[domain_index]
-    scaled_distance = np.asarray(z, dtype=float) * (
-        (LBLRTM_VOIGT_TABLE_POINTS - 1) / domain
-    )
+    scaled_distance = np.asarray(z, dtype=float) * ((LBLRTM_VOIGT_TABLE_POINTS - 1) / domain)
     distance_index = np.floor(scaled_distance + 0.5).astype(int)
     keep = (distance_index >= 0) & (distance_index < LBLRTM_VOIGT_TABLE_POINTS)
     distance_index = np.clip(distance_index, 0, LBLRTM_VOIGT_TABLE_POINTS - 1)
@@ -1135,9 +1142,18 @@ def _lblrtm_voigt_subfunction_nearest_value(
     row0 = zeta_index[:, None]
     row1 = row0 + 1
     zeta_weight = zeta_fraction[:, None]
-    value0 = table[row0, distance_index]
-    value1 = table[row1, distance_index]
-    values = value0 + zeta_weight * (value1 - value0)
+    if distance_index.shape[1] > LBLRTM_VOIGT_TABLE_POINTS:
+        # Interpolate each fixed table row once when the target grid is wider
+        # than the table. This avoids repeating identical zeta interpolation
+        # at every wavelength while preserving the source operation order.
+        interpolated_rows = table[zeta_index] + zeta_weight * (
+            table[zeta_index + 1] - table[zeta_index]
+        )
+        values = np.take_along_axis(interpolated_rows, distance_index, axis=1)
+    else:
+        value0 = table[row0, distance_index]
+        value1 = table[row1, distance_index]
+        values = value0 + zeta_weight * (value1 - value0)
     return np.where(keep, values, 0.0)
 
 
@@ -1162,8 +1178,12 @@ def _lblrtm_panel_voigt_profile_uniform(
     pad = max(32, int(pad_grid_points))
     pad += (-pad) % 16
     padded_grid = grid[0] + spacing * np.arange(-pad, grid.size + pad, dtype=float)
-    coarse2_grid = padded_grid[0] + 4.0 * spacing * np.arange(int(np.ceil(padded_grid.size / 4.0)) + 4)
-    coarse3_grid = padded_grid[0] + 16.0 * spacing * np.arange(int(np.ceil(padded_grid.size / 16.0)) + 4)
+    coarse2_grid = padded_grid[0] + 4.0 * spacing * np.arange(
+        int(np.ceil(padded_grid.size / 4.0)) + 4
+    )
+    coarse3_grid = padded_grid[0] + 16.0 * spacing * np.arange(
+        int(np.ceil(padded_grid.size / 16.0)) + 4
+    )
 
     gamma = np.asarray(gamma_cm, dtype=float)
     sigma = np.asarray(sigma_cm, dtype=float)
@@ -1215,7 +1235,7 @@ def _lblrtm_panel_voigt_profile_uniform(
     r3 += _lblrtm_xint_rows(r4_grid, r4, coarse3_grid)
 
     combined = lblrtm_panel_interpolate_r1_r2_r3(r1, r2, r3)
-    profile[rows] = combined[:, pad:pad + grid.size]
+    profile[rows] = combined[:, pad : pad + grid.size]
     return profile
 
 
@@ -1274,8 +1294,12 @@ def _lblrtm_panel_accumulate_uniform(
     r2 = np.zeros((n_groups, coarse2.size), dtype=float)
     r3 = np.zeros((n_groups, coarse3.size), dtype=float)
     _lblrtm_subfunction_accumulate(fine, 0, rows, centers, alfv, zeta, scale, groups, coupling, r1)
-    _lblrtm_subfunction_accumulate(coarse2, 1, rows, centers, alfv, zeta, scale, groups, coupling, r2)
-    _lblrtm_subfunction_accumulate(coarse3, 2, rows, centers, alfv, zeta, scale, groups, coupling, r3)
+    _lblrtm_subfunction_accumulate(
+        coarse2, 1, rows, centers, alfv, zeta, scale, groups, coupling, r2
+    )
+    _lblrtm_subfunction_accumulate(
+        coarse3, 2, rows, centers, alfv, zeta, scale, groups, coupling, r3
+    )
 
     if include_f4:
         r4_spacing = LBLRTM_F4_GRID_RATIO * spacing
@@ -1291,9 +1315,10 @@ def _lblrtm_panel_accumulate_uniform(
             effective_hwhm_cm=alfv[rows],
         )
         if np.any(coupling[rows] != 0):
-            r4_lines *= 1.0 + coupling[rows, None] * (
-                r4_grid[None, :] - centers[rows, None]
-            ) / alfv[rows, None]
+            r4_lines *= (
+                1.0
+                + coupling[rows, None] * (r4_grid[None, :] - centers[rows, None]) / alfv[rows, None]
+            )
         r4 = np.zeros((n_groups, r4_grid.size), dtype=float)
         for group in np.unique(groups[rows]):
             keep = groups[rows] == group
@@ -1325,12 +1350,15 @@ def _lblrtm_subfunction_accumulate(
         signed_offset = target_grid[None, :] - centers[rows, None]
         normalized = np.abs(signed_offset) / alfv[rows, None]
         zeta_index, zeta_fraction = _lblrtm_zeta_interpolation(zeta[rows])
-        values = _lblrtm_voigt_subfunction_nearest_value(
-            normalized,
-            domain_index,
-            zeta_index=zeta_index,
-            zeta_fraction=zeta_fraction,
-        ) / alfv[rows, None]
+        values = (
+            _lblrtm_voigt_subfunction_nearest_value(
+                normalized,
+                domain_index,
+                zeta_index=zeta_index,
+                zeta_fraction=zeta_fraction,
+            )
+            / alfv[rows, None]
+        )
         values = np.where(normalized <= domain, values, 0.0)
         if np.any(coupling[rows] != 0):
             values *= 1.0 + coupling[rows, None] * signed_offset / alfv[rows, None]
@@ -1383,9 +1411,9 @@ def _lblrtm_sparse_subfunction_deposit(
     grid_index = starts + offsets
     signed_offset = target_grid[grid_index] - centers[repeated]
     normalized = np.abs(signed_offset) / alfv[repeated]
-    distance_index = np.floor(
-        normalized * (LBLRTM_VOIGT_TABLE_POINTS - 1) / domain + 0.5
-    ).astype(int)
+    distance_index = np.floor(normalized * (LBLRTM_VOIGT_TABLE_POINTS - 1) / domain + 0.5).astype(
+        int
+    )
     inside = (distance_index >= 0) & (distance_index < LBLRTM_VOIGT_TABLE_POINTS)
     if not np.all(inside):
         repeated = repeated[inside]
@@ -1418,7 +1446,9 @@ def _lblrtm_xint_rows(x_source: np.ndarray, y_rows: np.ndarray, x_target: np.nda
     values = np.asarray(y_rows, dtype=float)
     target = np.asarray(x_target, dtype=float)
     if source.ndim != 1 or target.ndim != 1 or values.ndim != 2:
-        raise ValueError("XINT inputs must be one-dimensional grids and a two-dimensional value array")
+        raise ValueError(
+            "XINT inputs must be one-dimensional grids and a two-dimensional value array"
+        )
     if values.shape[1] != source.size or source.size < 4:
         raise ValueError("XINT requires at least four source samples per row")
 
@@ -1443,7 +1473,9 @@ def _lblrtm_xint_rows(x_source: np.ndarray, y_rows: np.ndarray, x_target: np.nda
     return np.where(valid[None, :], interpolated, 0.0)
 
 
-def _interp_uniform_rows(x_grid: np.ndarray, y_rows: np.ndarray, x_target: np.ndarray) -> np.ndarray:
+def _interp_uniform_rows(
+    x_grid: np.ndarray, y_rows: np.ndarray, x_target: np.ndarray
+) -> np.ndarray:
     """Linear interpolation for many rows sharing one regular x grid."""
 
     x_grid = np.asarray(x_grid, dtype=float)
@@ -1458,7 +1490,9 @@ def _interp_uniform_rows(x_grid: np.ndarray, y_rows: np.ndarray, x_target: np.nd
     fraction = position - left
     valid = (left >= 0) & (left + 1 < x_grid.size)
     left = np.clip(left, 0, x_grid.size - 2)
-    interpolated = (1.0 - fraction)[None, :] * y_rows[:, left] + fraction[None, :] * y_rows[:, left + 1]
+    interpolated = (1.0 - fraction)[None, :] * y_rows[:, left] + fraction[None, :] * y_rows[
+        :, left + 1
+    ]
     return np.where(valid[None, :], interpolated, 0.0)
 
 
@@ -1466,7 +1500,7 @@ def _lblrtm_interpolate_four_to_one(coarse: np.ndarray, fine_size: int) -> np.nd
     coarse_arr = np.asarray(coarse, dtype=float)
     if fine_size < 0:
         raise ValueError("fine_size must be non-negative")
-    result = np.zeros(coarse_arr.shape[:-1] + (fine_size,), dtype=float)
+    result = np.zeros((*coarse_arr.shape[:-1], fine_size), dtype=float)
     if fine_size == 0 or coarse_arr.shape[-1] == 0:
         return result
 

@@ -155,7 +155,9 @@ def test_hitran_cia_vectorized_temperatures_match_scalar_interpolation(tmp_path)
     temperatures = np.array([220.0, 250.0, 275.0, 300.0, 320.0])
 
     vectorized = cia.coefficients_at(wavenumber, temperatures)
-    scalar = np.vstack([cia.coefficient_at(wavenumber, temperature) for temperature in temperatures])
+    scalar = np.vstack(
+        [cia.coefficient_at(wavenumber, temperature) for temperature in temperatures]
+    )
 
     np.testing.assert_allclose(vectorized, scalar, rtol=2.0e-15, atol=0.0)
 

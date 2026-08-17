@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
 import hashlib
 import json
-from pathlib import Path
 import platform
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import fields, is_dataclass
+from pathlib import Path
+from typing import Any
 
 import astropy
 import numpy as np
@@ -73,7 +74,9 @@ def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return {
             "class": f"{type(value).__module__}.{type(value).__qualname__}",
-            "fields": {field.name: _jsonable(getattr(value, field.name)) for field in fields(value)},
+            "fields": {
+                field.name: _jsonable(getattr(value, field.name)) for field in fields(value)
+            },
         }
     return {"class": f"{type(value).__module__}.{type(value).__qualname__}"}
 
@@ -118,10 +121,7 @@ def build_fit_provenance(
 ) -> dict[str, Any]:
     """Build machine-readable provenance for a fitted telluric model."""
 
-    if hasattr(spectra, "wavelength"):
-        spectrum_items = (spectra,)
-    else:
-        spectrum_items = tuple(spectra)
+    spectrum_items = (spectra,) if hasattr(spectra, "wavelength") else tuple(spectra)
     spectrum_summaries = [_spectrum_summary(spectrum) for spectrum in spectrum_items]
     atmosphere = getattr(config, "atmosphere", None)
     components = getattr(config, "components", None)

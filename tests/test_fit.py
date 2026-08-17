@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
+import pymolfit.fit as fit_module
 from pymolfit import (
     FitConfig,
     LineList,
@@ -16,6 +17,56 @@ from pymolfit import (
 )
 from pymolfit.fit import StellarForwardModel, _linearized_parameter_covariance
 from pymolfit.model import convolve_lsf
+
+
+def test_multi_segment_opacity_cache_reuses_basis_without_changing_result(monkeypatch):
+    wavelength = np.linspace(2.31, 2.36, 240)
+    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    flux = transmission_model(
+        wavelength,
+        line_list,
+        ModelConfig(species_scales={"H2O": 1.25}),
+    )
+    spectra = (Spectrum(wavelength=wavelength, flux=flux),)
+    config = FitConfig(continuum_order=0, solve_continuum_linear=True)
+
+    calls = 0
+    original = fit_module.optical_depth_basis
+
+    def counted_basis(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fit_module, "optical_depth_basis", counted_basis)
+    opacity_cache = {}
+    first = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        config=config,
+        _opacity_cache=opacity_cache,
+    )
+    second = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        config=config,
+        _opacity_cache=opacity_cache,
+    )
+    assert calls == 1
+
+    uncached = fit_telluric_segments(
+        spectra,
+        line_list=line_list,
+        config=config,
+    )
+    assert calls == 2
+    first_segment = first.segment_results[0]
+    second_segment = second.segment_results[0]
+    uncached_segment = uncached.segment_results[0]
+    np.testing.assert_array_equal(first_segment.transmission, second_segment.transmission)
+    np.testing.assert_array_equal(first_segment.transmission, uncached_segment.transmission)
+    np.testing.assert_array_equal(first_segment.corrected.flux, second_segment.corrected.flux)
+    np.testing.assert_array_equal(first_segment.corrected.flux, uncached_segment.corrected.flux)
 
 
 def test_fit_tellurics_improves_synthetic_spectrum():
@@ -63,9 +114,7 @@ def test_joint_stellar_model_recovers_blended_telluric_line_and_round_trips():
             lsf_lorentz_fwhm_pixels=0.0,
         ),
     )
-    intrinsic_stellar = 1.0 - 0.35 * np.exp(
-        -0.5 * ((wavelength - 0.500006) / 1.4e-5) ** 2
-    )
+    intrinsic_stellar = 1.0 - 0.35 * np.exp(-0.5 * ((wavelength - 0.500006) / 1.4e-5) ** 2)
     lsf_sigma = 2.0
     observed = convolve_lsf(
         intrinsic_stellar * raw_transmission,
@@ -157,7 +206,7 @@ def test_fit_weights_downweight_a_biased_pixel():
     )
     biased = transmission.copy()
     center = int(np.argmin(np.abs(wavelength - 1.005)))
-    biased[center + 5:center + 14] *= 0.7
+    biased[center + 5 : center + 14] *= 0.7
     spectrum = Spectrum(wavelength, biased)
     config = FitConfig(
         continuum_order=0,
@@ -165,7 +214,7 @@ def test_fit_weights_downweight_a_biased_pixel():
         lsf_lorentz_fwhm_pixels=0.0,
     )
     weights = np.ones_like(wavelength)
-    weights[center + 5:center + 14] = 0.01
+    weights[center + 5 : center + 14] = 0.01
 
     unweighted = fit_tellurics(spectrum, line_list=line_list, config=config)
     weighted = fit_tellurics(
@@ -175,9 +224,7 @@ def test_fit_weights_downweight_a_biased_pixel():
         fit_weights=weights,
     )
 
-    assert abs(weighted.species_scales["H2O"] - 1.0) < abs(
-        unweighted.species_scales["H2O"] - 1.0
-    )
+    assert abs(weighted.species_scales["H2O"] - 1.0) < abs(unweighted.species_scales["H2O"] - 1.0)
     np.testing.assert_allclose(weighted.fit_weights, weights)
 
 
@@ -232,9 +279,7 @@ def test_species_outside_fit_ranges_is_applied_but_not_fitted():
     assert "log_scale:H2O" in result.parameter_names
     assert "log_scale:CO2" not in result.parameter_names
     assert result.species_scales["CO2"] == 1.0
-    assert result.provenance["species_observability"]["automatically_fixed"] == {
-        "CO2": 1.0
-    }
+    assert result.provenance["species_observability"]["automatically_fixed"] == {"CO2": 1.0}
     np.testing.assert_allclose(result.transmission, expected, rtol=0.0, atol=2.0e-9)
 
 
@@ -289,8 +334,7 @@ def test_fit_tellurics_estimates_and_propagates_local_uncertainties():
     assert result.corrected.uncertainty is not None
     valid = np.isfinite(result.corrected.uncertainty)
     assert np.all(
-        result.corrected.uncertainty[valid]
-        >= uncertainty[valid] / result.transmission[valid]
+        result.corrected.uncertainty[valid] >= uncertainty[valid] / result.transmission[valid]
     )
     assert "transmission_uncertainty" in result.to_table().colnames
     assert "corrected_uncertainty" in result.to_table().colnames
@@ -406,8 +450,5 @@ def test_robust_fit_reports_raw_reduced_chi_square_with_profiled_continuum():
 
     residual = (result.spectrum.flux - result.model_flux) / uncertainty
     effective_parameter_count = len(result.parameter_names) + 1
-    expected = float(
-        np.dot(residual, residual)
-        / (residual.size - effective_parameter_count)
-    )
+    expected = float(np.dot(residual, residual) / (residual.size - effective_parameter_count))
     assert result.reduced_chi_square == pytest.approx(expected)

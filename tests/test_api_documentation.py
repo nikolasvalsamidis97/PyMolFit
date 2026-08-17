@@ -31,9 +31,7 @@ def test_unified_correct_documents_every_explicit_parameter_for_editor_hover() -
     assert docstring is not None
 
     undocumented = [
-        name
-        for name in inspect.signature(correct).parameters
-        if f":param {name}:" not in docstring
+        name for name in inspect.signature(correct).parameters if f":param {name}:" not in docstring
     ]
 
     assert undocumented == []
@@ -86,60 +84,15 @@ def test_correct_file_exposes_canonical_string_choices() -> None:
         "cauchy",
         "arctan",
     }
-    assert (
-        inspect.signature(correct_file)
-        .parameters["solve_continuum_linear"]
-        .default
-        == "auto"
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["lsf_sigma_pixels"]
-        .default
-        == "auto"
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["fit_lsf_sigma"]
-        .default
-        == "auto"
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["lsf_sigma_bounds"]
-        .default
-        is None
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["lsf_lorentz_fwhm_pixels"]
-        .default
-        == "auto"
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["fit_lsf_lorentz_fwhm"]
-        .default
-        == "auto"
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["lsf_lorentz_fwhm_bounds"]
-        .default
-        is None
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["segment_size"]
-        .default
-        == 0.005
-    )
-    assert (
-        inspect.signature(correct_file)
-        .parameters["min_transmission"]
-        .default
-        == 0.01
-    )
+    assert inspect.signature(correct_file).parameters["solve_continuum_linear"].default == "auto"
+    assert inspect.signature(correct_file).parameters["lsf_sigma_pixels"].default == "auto"
+    assert inspect.signature(correct_file).parameters["fit_lsf_sigma"].default == "auto"
+    assert inspect.signature(correct_file).parameters["lsf_sigma_bounds"].default is None
+    assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_pixels"].default == "auto"
+    assert inspect.signature(correct_file).parameters["fit_lsf_lorentz_fwhm"].default == "auto"
+    assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_bounds"].default is None
+    assert inspect.signature(correct_file).parameters["segment_size"].default == 0.005
+    assert inspect.signature(correct_file).parameters["min_transmission"].default == 0.01
 
 
 def test_atmosphere_hover_text_defines_domain_terms() -> None:

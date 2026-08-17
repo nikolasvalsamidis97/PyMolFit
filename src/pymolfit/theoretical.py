@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
 from typing import Literal
 
 import numpy as np
@@ -12,7 +12,6 @@ from scipy.signal import fftconvolve
 from .physics import SPEED_OF_LIGHT_M_PER_S
 from .regions import RegionSelection
 from .spectrum import Spectrum, wavelength_scale_to_micron
-
 
 SPEED_OF_LIGHT_KM_S = SPEED_OF_LIGHT_M_PER_S / 1000.0
 MaskDepth = float | Literal["auto"]
@@ -145,15 +144,13 @@ class TheoreticalSpectrum:
         ):
             raise ValueError("resolving_power must be positive when supplied")
         if self.mask_depth != "auto" and (
-            not np.isfinite(float(self.mask_depth))
-            or not 0.0 < float(self.mask_depth) < 1.0
+            not np.isfinite(float(self.mask_depth)) or not 0.0 < float(self.mask_depth) < 1.0
         ):
             raise ValueError("mask_depth must be 'auto' or lie between 0 and 1")
         if not np.isfinite(self.continuum_window_kms) or self.continuum_window_kms <= 0:
             raise ValueError("continuum_window_kms must be positive")
         if self.mask_padding_kms != "auto" and (
-            not np.isfinite(float(self.mask_padding_kms))
-            or float(self.mask_padding_kms) < 0
+            not np.isfinite(float(self.mask_padding_kms)) or float(self.mask_padding_kms) < 0
         ):
             raise ValueError("mask_padding_kms must be 'auto' or non-negative")
         if not np.isfinite(self.velocity_search_kms) or self.velocity_search_kms < 0:
@@ -237,13 +234,17 @@ class TheoreticalSpectrum:
         if not np.isfinite(frame_correction_factor) or frame_correction_factor <= 0:
             raise ValueError("frame_correction_factor must be positive")
 
-        template = Spectrum(
-            wavelength=self.wavelength,
-            flux=self.flux,
-            wavelength_unit=self.wavelength_unit,
-            wavelength_medium=self.wavelength_medium,
-            meta={"source": str(self.path)},
-        ).to_unit("micron").to_vacuum()
+        template = (
+            Spectrum(
+                wavelength=self.wavelength,
+                flux=self.flux,
+                wavelength_unit=self.wavelength_unit,
+                wavelength_medium=self.wavelength_medium,
+                meta={"source": str(self.path)},
+            )
+            .to_unit("micron")
+            .to_vacuum()
+        )
         radial_factor = _relativistic_doppler_factor(self.radial_velocity_kms)
         shifted_wavelength = template.wavelength * radial_factor / frame_correction_factor
 
@@ -259,9 +260,8 @@ class TheoreticalSpectrum:
             100.0,
         )
         margin_factor = _relativistic_doppler_factor(margin_kms)
-        in_window = (
-            (shifted_wavelength >= target_min / margin_factor)
-            & (shifted_wavelength <= target_max * margin_factor)
+        in_window = (shifted_wavelength >= target_min / margin_factor) & (
+            shifted_wavelength <= target_max * margin_factor
         )
         if np.count_nonzero(in_window) < 10:
             raise ValueError(
@@ -276,9 +276,7 @@ class TheoreticalSpectrum:
             window_kms=self.continuum_window_kms,
         )
         active_resolving_power = (
-            self.resolving_power
-            if self.resolving_power is not None
-            else resolving_power
+            self.resolving_power if self.resolving_power is not None else resolving_power
         )
         log_grid, intrinsic_profile, velocity_step = _broaden_on_velocity_grid(
             shifted_wavelength,
@@ -320,14 +318,8 @@ class TheoreticalSpectrum:
             log_grid,
             alignment_profile,
         )
-        intrinsic_wavelength = (
-            np.exp(log_grid) * _relativistic_doppler_factor(residual_velocity)
-        )
-        stellar_mask = (
-            target_valid
-            & np.isfinite(sampled)
-            & (np.abs(sampled - 1.0) >= threshold)
-        )
+        intrinsic_wavelength = np.exp(log_grid) * _relativistic_doppler_factor(residual_velocity)
+        stellar_mask = target_valid & np.isfinite(sampled) & (np.abs(sampled - 1.0) >= threshold)
         resolved_mask_padding_kms = _resolve_mask_padding_kms(
             self.mask_padding_kms,
             vsini_kms=self.vsini_kms,
@@ -346,9 +338,7 @@ class TheoreticalSpectrum:
         expanded_mask = np.zeros(stellar_mask.shape, dtype=bool)
         for lower, upper in selection.exclude_ranges:
             expanded_mask |= (
-                target_valid
-                & (target.wavelength >= lower)
-                & (target.wavelength <= upper)
+                target_valid & (target.wavelength >= lower) & (target.wavelength <= upper)
             )
         covered = target_valid & np.isfinite(sampled)
         fit_weights = None
@@ -381,16 +371,12 @@ class TheoreticalSpectrum:
                 None
                 if (self.resolving_power is None and resolving_power is None)
                 else float(
-                    self.resolving_power
-                    if self.resolving_power is not None
-                    else resolving_power
+                    self.resolving_power if self.resolving_power is not None else resolving_power
                 )
             ),
             "mask_depth": float(threshold),
             "mask_padding_kms": float(resolved_mask_padding_kms),
-            "mask_padding_mode": (
-                "auto" if self.mask_padding_kms == "auto" else "explicit"
-            ),
+            "mask_padding_mode": ("auto" if self.mask_padding_kms == "auto" else "explicit"),
             "core_pixel_count": int(np.count_nonzero(stellar_mask)),
             "masked_pixel_count": int(np.count_nonzero(expanded_mask)),
             "covered_pixel_count": int(np.count_nonzero(covered)),
@@ -400,14 +386,10 @@ class TheoreticalSpectrum:
                 else 0.0
             ),
             "exclude_region_count": len(selection.exclude_ranges),
-            "confidence_weighted_masking": bool(
-                self.confidence_weighted_masking
-            ),
+            "confidence_weighted_masking": bool(self.confidence_weighted_masking),
             "confidence_weight_floor": float(self.confidence_weight_floor),
             "fit_weight_median": (
-                None
-                if fit_weights is None
-                else float(np.nanmedian(fit_weights[covered]))
+                None if fit_weights is None else float(np.nanmedian(fit_weights[covered]))
             ),
         }
         return StellarMaskResult(
@@ -451,9 +433,7 @@ def _infer_ascii_wavelength_medium(comments: tuple[str, ...]) -> str | None:
     if "air wavelength" in text or "wavelength (air" in text:
         return "air"
     svo_ascii = (
-        "column 1: wavelength" in text
-        and "column 2: flux" in text
-        and "erg/cm2/s/a" in text
+        "column 1: wavelength" in text and "column 2: flux" in text and "erg/cm2/s/a" in text
     )
     svo_air_collections = (
         "bt-cond",
@@ -555,11 +535,7 @@ def _broaden_on_velocity_grid(
     macroturbulence_kms: float = 0.0,
     resolving_power: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    valid = (
-        np.isfinite(wavelength_micron)
-        & np.isfinite(normalized_flux)
-        & (wavelength_micron > 0)
-    )
+    valid = np.isfinite(wavelength_micron) & np.isfinite(normalized_flux) & (wavelength_micron > 0)
     wavelength = np.asarray(wavelength_micron, dtype=float)[valid]
     profile = np.asarray(normalized_flux, dtype=float)[valid]
     template_dv = _median_velocity_spacing(wavelength)
@@ -576,10 +552,9 @@ def _broaden_on_velocity_grid(
         x = velocity / vsini_kms
         inside = np.abs(x) < 1.0
         kernel = np.zeros_like(x)
-        kernel[inside] = (
-            2.0 * (1.0 - limb_darkening) * np.sqrt(1.0 - x[inside] ** 2)
-            + 0.5 * np.pi * limb_darkening * (1.0 - x[inside] ** 2)
-        )
+        kernel[inside] = 2.0 * (1.0 - limb_darkening) * np.sqrt(
+            1.0 - x[inside] ** 2
+        ) + 0.5 * np.pi * limb_darkening * (1.0 - x[inside] ** 2)
         kernel_sum = float(np.sum(kernel))
         if kernel_sum > 0:
             broadened = fftconvolve(broadened, kernel / kernel_sum, mode="same")
@@ -591,9 +566,7 @@ def _broaden_on_velocity_grid(
             resolving_power=resolving_power,
         )
     if macroturbulence_kms > 0:
-        macro_sigma_pixels = (
-            macroturbulence_kms / (2.354820045 * velocity_step)
-        )
+        macro_sigma_pixels = macroturbulence_kms / (2.354820045 * velocity_step)
         if macro_sigma_pixels >= 0.15:
             broadened = gaussian_filter1d(
                 broadened,
@@ -703,9 +676,7 @@ def _fit_residual_velocity(
     observed_depth = np.clip(1.0 - normalized_observed, -0.5, 1.5)
     log_wavelength = np.full(spectrum.wavelength.shape, np.nan)
     positive_wavelength = np.isfinite(spectrum.wavelength) & (spectrum.wavelength > 0)
-    log_wavelength[positive_wavelength] = np.log(
-        spectrum.wavelength[positive_wavelength]
-    )
+    log_wavelength[positive_wavelength] = np.log(spectrum.wavelength[positive_wavelength])
     for index, offset in enumerate(offsets):
         shifted = np.interp(
             log_wavelength - np.log(_relativistic_doppler_factor(offset)),
@@ -715,11 +686,7 @@ def _fit_residual_velocity(
             right=np.nan,
         )
         template_depth = 1.0 - shifted
-        active = (
-            usable
-            & np.isfinite(template_depth)
-            & (np.abs(template_depth) >= 0.5 * threshold)
-        )
+        active = usable & np.isfinite(template_depth) & (np.abs(template_depth) >= 0.5 * threshold)
         if np.count_nonzero(active) < 20:
             continue
         x = template_depth[active]
@@ -762,9 +729,7 @@ def _mask_to_ranges(
     spacing = np.diff(wavelength)
     positive = spacing[spacing > 0]
     typical_spacing = float(np.nanmedian(positive)) if positive.size else 0.0
-    discontinuity = np.concatenate(
-        ([True], spacing > max(10.0 * typical_spacing, 0.0))
-    )
+    discontinuity = np.concatenate(([True], spacing > max(10.0 * typical_spacing, 0.0)))
     starts = selected & np.concatenate(([True], ~selected[:-1] | discontinuity[1:]))
     stops = selected & np.concatenate((~selected[1:] | discontinuity[1:], [True]))
     start_values = wavelength[starts]

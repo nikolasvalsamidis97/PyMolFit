@@ -33,7 +33,9 @@ def test_level_layers_preserve_exponentially_interpolated_lblrtm_amount():
     log_mean_density = (n0 - n1) / np.log(n0 / n1)
     expected_o2_column_cm2 = 0.2 * log_mean_density * 1000.0 / 1.0e4
 
-    np.testing.assert_allclose(layers[0].column_density_cm2("O2"), expected_o2_column_cm2, rtol=1e-12)
+    np.testing.assert_allclose(
+        layers[0].column_density_cm2("O2"), expected_o2_column_cm2, rtol=1e-12
+    )
 
 
 def test_atmosphere_profile_table_roundtrip(tmp_path):
@@ -115,8 +117,7 @@ def test_lowtran6_refractivity_matches_lblrtm_expression():
         )
         * (pressure_hpa * 288.15)
         / (1013.25 * temperature_k)
-        - (43.49 - (wavenumber_cm / 1.7e4) ** 2)
-        * (pressure_hpa * h2o / 1013.25)
+        - (43.49 - (wavenumber_cm / 1.7e4) ** 2) * (pressure_hpa * h2o / 1013.25)
     ) * 1.0e-6
 
     np.testing.assert_allclose(

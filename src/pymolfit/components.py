@@ -5,10 +5,11 @@ from typing import Protocol
 
 import numpy as np
 
-from .atmosphere import AtmosphereProfile, CM_PER_M, PA_PER_ATM
+from .atmosphere import CM_PER_M, PA_PER_ATM, AtmosphereProfile
 from .continuum import (
     HitranCIATable,
     LBLRTMCO2Continuum,
+    LBLRTMH2OContinuum,
     LBLRTMN2FundamentalContinuum,
     LBLRTMN2OvertoneContinuum,
     LBLRTMO2Continuum,
@@ -35,15 +36,15 @@ from .physics import (
     LOSCHMIDT_CM3,
     doppler_sigma_wavenumber,
     lblrtm_dynamic_line_cutoff_cm,
-    lblrtm_layer_wavenumber_spacings_cm,
     lblrtm_f4_coefficients,
+    lblrtm_layer_wavenumber_spacings_cm,
     lblrtm_panel_accumulate_wavenumber,
     lblrtm_panel_interpolate_f4_wavenumber,
     lblrtm_panel_voigt_profile_wavenumber,
+    lblrtm_radiation_term,
     lblrtm_tabulated_voigt_profile_offset,
     lblrtm_temperature_scaling_lower_energy,
     lblrtm_voigt_hwhm,
-    lblrtm_radiation_term,
     line_strength_temperature,
     lorentz_hwhm_wavenumber,
     pressure_shift_wavenumber,
@@ -155,7 +156,7 @@ class HitranLineAbsorption:
 class H2OContinuumAbsorption:
     """MT_CKD H2O continuum absorption component."""
 
-    continuum: MTCKDH2OContinuum
+    continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum
     use_foreign_closure: bool = False
     include_radiation_term: bool = True
 
@@ -194,7 +195,7 @@ class TabulatedContinuumAbsorption:
     """
 
     species_name: str
-    continuum: TabulatedContinuum
+    continuum: TabulatedContinuum | LBLRTMCO2Continuum
     coefficient_kind: str = "density_scaled_cross_section_cm2_per_amagat"
     basis_name: str | None = None
     scale: float = 1.0
@@ -211,12 +212,13 @@ class TabulatedContinuumAbsorption:
             return _empty_basis(wavelength_micron)
 
         wavenumber_grid = wavelength_micron_to_wavenumber_cm(wavelength_micron)
+        continuum = self.continuum
         co2_interpolation_plan = (
             _prepare_cubic_regular_interpolation(
-                self.continuum.wavenumber_cm,
+                continuum.wavenumber_cm,
                 wavenumber_grid,
             )
-            if isinstance(self.continuum, LBLRTMCO2Continuum)
+            if isinstance(continuum, LBLRTMCO2Continuum)
             else None
         )
         tau = np.zeros(wavenumber_grid.shape, dtype=float)
@@ -224,16 +226,16 @@ class TabulatedContinuumAbsorption:
             column = layer.column_density_cm2(self.species_name)
             if column <= 0:
                 continue
-            if co2_interpolation_plan is None:
-                coefficient = self.continuum.coefficient_at(
-                    wavenumber_grid,
-                    layer.temperature_k,
-                )
-            else:
-                coefficient = self.continuum.coefficient_at(
+            if isinstance(continuum, LBLRTMCO2Continuum):
+                coefficient = continuum.coefficient_at(
                     wavenumber_grid,
                     layer.temperature_k,
                     _interpolation_plan=co2_interpolation_plan,
+                )
+            else:
+                coefficient = continuum.coefficient_at(
+                    wavenumber_grid,
+                    layer.temperature_k,
                 )
             if self.coefficient_kind == "cross_section_cm2":
                 tau += coefficient * column
@@ -329,7 +331,9 @@ class N2ContinuumAbsorption:
 
     def __post_init__(self) -> None:
         if self.fundamental is None:
-            object.__setattr__(self, "fundamental", LBLRTMN2FundamentalContinuum.from_package_data())
+            object.__setattr__(
+                self, "fundamental", LBLRTMN2FundamentalContinuum.from_package_data()
+            )
         if self.overtone is None:
             object.__setattr__(self, "overtone", LBLRTMN2OvertoneContinuum.from_package_data())
 
@@ -378,32 +382,44 @@ class N2ContinuumAbsorption:
             n2_column = _air_column_density_cm2(layer) * n2_vmr
             if n2_column <= 0:
                 continue
-            common = {
-                "n2_column_cm2": n2_column,
-                "air_amagat": _air_amagat(layer),
-                "temperature_k": layer.temperature_k,
-                "n2_vmr": n2_vmr,
-                "o2_vmr": o2_vmr,
-                "h2o_vmr": h2o_vmr,
-                "xn2cn": self.xn2cn,
-                "jrad": self.jrad,
-            }
+            air_amagat = _air_amagat(layer)
             if rot_plan is not None:
                 tau += lblrtm_n2_rototranslational_optical_depth(
                     wavenumber_grid,
-                    **common,
+                    n2_column_cm2=n2_column,
+                    air_amagat=air_amagat,
+                    temperature_k=layer.temperature_k,
+                    n2_vmr=n2_vmr,
+                    o2_vmr=o2_vmr,
+                    h2o_vmr=h2o_vmr,
+                    xn2cn=self.xn2cn,
+                    jrad=self.jrad,
                     _interpolation_plan=rot_plan,
                 )
             if fundamental_plan is not None:
                 tau += fundamental.optical_depth_layer(
                     wavenumber_grid,
-                    **common,
+                    n2_column_cm2=n2_column,
+                    air_amagat=air_amagat,
+                    temperature_k=layer.temperature_k,
+                    n2_vmr=n2_vmr,
+                    o2_vmr=o2_vmr,
+                    h2o_vmr=h2o_vmr,
+                    xn2cn=self.xn2cn,
+                    jrad=self.jrad,
                     _interpolation_plan=fundamental_plan,
                 )
             if overtone_plan is not None:
                 tau += overtone.optical_depth_layer(
                     wavenumber_grid,
-                    **common,
+                    n2_column_cm2=n2_column,
+                    air_amagat=air_amagat,
+                    temperature_k=layer.temperature_k,
+                    n2_vmr=n2_vmr,
+                    o2_vmr=o2_vmr,
+                    h2o_vmr=h2o_vmr,
+                    xn2cn=self.xn2cn,
+                    jrad=self.jrad,
                     _interpolation_plan=overtone_plan,
                 )
         return (self.basis_name,), (self.scale * tau)[None, :]
@@ -464,7 +480,7 @@ class O2ContinuumAbsorption:
 class CO2ContinuumAbsorption:
     """CO2 continuum component loaded from an external coefficient table."""
 
-    continuum: TabulatedContinuum
+    continuum: TabulatedContinuum | LBLRTMCO2Continuum
     coefficient_kind: str = "density_scaled_cross_section_cm2_per_amagat"
     basis_name: str = "CO2"
     scale: float = 1.0
@@ -505,7 +521,11 @@ class PairCIAAbsorption:
         if pair is None:
             return _empty_basis(wavelength_micron)
         name = self.basis_name or f"{pair[0]}-{pair[1]}_CIA"
-        if species is not None and name not in species and not any(part in species for part in pair):
+        if (
+            species is not None
+            and name not in species
+            and not any(part in species for part in pair)
+        ):
             return _empty_basis(wavelength_micron)
 
         wavenumber_grid = wavelength_micron_to_wavenumber_cm(wavelength_micron)
@@ -714,7 +734,9 @@ def _hitran_line_optical_depth_basis_impl(
     """Internal two-pass implementation of the HITRAN/LBLRTM line path."""
 
     if not line_list.has_hitran_parameters:
-        raise ValueError("line_list does not contain the HITRAN fields required for physical modelling")
+        raise ValueError(
+            "line_list does not contain the HITRAN fields required for physical modelling"
+        )
     if chunk_size < 1:
         raise ValueError("chunk_size must be positive")
     line_wing_mode, line_cutoff_cm, subtract_cutoff_profile, line_taper_cm = _line_wing_settings(
@@ -759,8 +781,13 @@ def _hitran_line_optical_depth_basis_impl(
             layer,
             layer.pressure_atm,
             layer.temperature_k,
-            layer.pressure_atm * PA_PER_ATM * layer.path_length_m / (BOLTZMANN_J_PER_K * layer.temperature_k * CM_PER_M**2),
-            np.array([layer.mixing_ratios.get(name, 0.0) for name in all_line_species_names], dtype=float),
+            layer.pressure_atm
+            * PA_PER_ATM
+            * layer.path_length_m
+            / (BOLTZMANN_J_PER_K * layer.temperature_k * CM_PER_M**2),
+            np.array(
+                [layer.mixing_ratios.get(name, 0.0) for name in all_line_species_names], dtype=float
+            ),
         )
         for layer in atmosphere.layers
     )
@@ -835,9 +862,15 @@ def _hitran_line_optical_depth_basis_impl(
         if line_list.isotopologue_abundance_scale is None
         else np.asarray(line_list.isotopologue_abundance_scale, dtype=float)
     )
-    broadener_flags = None if line_list.broadener_flags is None else np.asarray(line_list.broadener_flags, dtype=int)
+    broadener_flags = (
+        None
+        if line_list.broadener_flags is None
+        else np.asarray(line_list.broadener_flags, dtype=int)
+    )
     broadener_widths = (
-        None if line_list.broadener_widths is None else np.asarray(line_list.broadener_widths, dtype=float)
+        None
+        if line_list.broadener_widths is None
+        else np.asarray(line_list.broadener_widths, dtype=float)
     )
     broadener_temperature_exponents = (
         None
@@ -849,12 +882,18 @@ def _hitran_line_optical_depth_basis_impl(
         if line_list.broadener_pressure_shifts is None
         else np.asarray(line_list.broadener_pressure_shifts, dtype=float)
     )
-    line_flags = None if line_list.line_flags is None else np.asarray(line_list.line_flags, dtype=int)
+    line_flags = (
+        None if line_list.line_flags is None else np.asarray(line_list.line_flags, dtype=int)
+    )
     line_coupling_a = (
-        None if line_list.line_coupling_a is None else np.asarray(line_list.line_coupling_a, dtype=float)
+        None
+        if line_list.line_coupling_a is None
+        else np.asarray(line_list.line_coupling_a, dtype=float)
     )
     line_coupling_b = (
-        None if line_list.line_coupling_b is None else np.asarray(line_list.line_coupling_b, dtype=float)
+        None
+        if line_list.line_coupling_b is None
+        else np.asarray(line_list.line_coupling_b, dtype=float)
     )
     if wavenumber.size > 1 and not np.all(wavenumber[:-1] <= wavenumber[1:]):
         processing_order: slice | np.ndarray = np.argsort(wavenumber)
@@ -870,7 +909,7 @@ def _hitran_line_optical_depth_basis_impl(
 
     for start in range(0, wavenumber.size, chunk_size):
         stop = min(start + chunk_size, wavenumber.size)
-        line_selector = (
+        line_selector: slice | np.ndarray = (
             slice(start, stop)
             if isinstance(processing_order, slice)
             else processing_order[start:stop]
@@ -903,19 +942,29 @@ def _hitran_line_optical_depth_basis_impl(
             if isotopologue_abundance_scale is None
             else isotopologue_abundance_scale[line_selector][active]
         )
-        local_broadener_flags = None if broadener_flags is None else broadener_flags[line_selector][active]
-        local_broadener_widths = None if broadener_widths is None else broadener_widths[line_selector][active]
+        local_broadener_flags = (
+            None if broadener_flags is None else broadener_flags[line_selector][active]
+        )
+        local_broadener_widths = (
+            None if broadener_widths is None else broadener_widths[line_selector][active]
+        )
         local_broadener_temperature_exponents = (
             None
             if broadener_temperature_exponents is None
             else broadener_temperature_exponents[line_selector][active]
         )
         local_broadener_pressure_shifts = (
-            None if broadener_pressure_shifts is None else broadener_pressure_shifts[line_selector][active]
+            None
+            if broadener_pressure_shifts is None
+            else broadener_pressure_shifts[line_selector][active]
         )
         local_line_flags = None if line_flags is None else line_flags[line_selector][active]
-        local_line_coupling_a = None if line_coupling_a is None else line_coupling_a[line_selector][active]
-        local_line_coupling_b = None if line_coupling_b is None else line_coupling_b[line_selector][active]
+        local_line_coupling_a = (
+            None if line_coupling_a is None else line_coupling_a[line_selector][active]
+        )
+        local_line_coupling_b = (
+            None if line_coupling_b is None else line_coupling_b[line_selector][active]
+        )
         local_air_width = _lblrtm_self_mixture_corrected_air_width(
             local_air_width,
             local_self_width,
@@ -943,7 +992,9 @@ def _hitran_line_optical_depth_basis_impl(
         )
         q_ref = None
         if partition_table is not None and local_mol_id is not None and local_iso_id is not None:
-            q_ref = partition_table.value(local_mol_id, local_iso_id, line_list.reference_temperature)
+            q_ref = partition_table.value(
+                local_mol_id, local_iso_id, line_list.reference_temperature
+            )
 
         for layer_index, (
             layer,
@@ -974,6 +1025,8 @@ def _hitran_line_optical_depth_basis_impl(
             )
             partition_ratio = None
             if q_ref is not None:
+                if partition_table is None or local_mol_id is None or local_iso_id is None:
+                    raise RuntimeError("partition-table state is unexpectedly incomplete")
                 q_t = partition_table.value(local_mol_id, local_iso_id, temperature_k)
                 partition_ratio = q_ref / q_t
                 approximate = ~np.isfinite(partition_ratio)
@@ -1031,9 +1084,7 @@ def _hitran_line_optical_depth_basis_impl(
                 raw_alfv = lblrtm_voigt_hwhm(gamma, sigma)
                 if layer_wavenumber_spacings_cm is None:
                     raise RuntimeError("LBLRTM layer spacings were not initialized")
-                layer_wavenumber_spacing_cm = float(
-                    layer_wavenumber_spacings_cm[layer_index]
-                )
+                layer_wavenumber_spacing_cm = float(layer_wavenumber_spacings_cm[layer_index])
                 minimum_width = layer_wavenumber_spacing_cm
                 if lblrtm_alfal0 > 0:
                     maximum_width = 4.0 * lblrtm_sample * minimum_width * 0.04 / lblrtm_alfal0
@@ -1052,13 +1103,13 @@ def _hitran_line_optical_depth_basis_impl(
                 lblrtm_hwf3=lblrtm_hwf3,
                 wavenumber_spacing_cm=layer_wavenumber_spacing_cm,
             )
-            max_cutoff_cm = None if dynamic_cutoff_cm is None else float(np.nanmax(dynamic_cutoff_cm))
+            max_cutoff_cm = (
+                None if dynamic_cutoff_cm is None else float(np.nanmax(dynamic_cutoff_cm))
+            )
             line_scale = strength_t * columns * local_abundance_scale * line_strength_multiplier
             if source_alfv is not None:
-                radiation = float(
-                    lblrtm_radiation_term(np.nanmax(wavenumber_grid), temperature_k)
-                )
-                dptmin = LBLRTM_DEFAULT_DPTMIN / max(radiation, np.finfo(float).tiny)
+                radiation = float(lblrtm_radiation_term(np.nanmax(wavenumber_grid), temperature_k))
+                dptmin = LBLRTM_DEFAULT_DPTMIN / max(radiation, float(np.finfo(float).tiny))
                 if f4_screening_pass:
                     if (
                         screening_r4_grid is None
@@ -1108,7 +1159,9 @@ def _hitran_line_optical_depth_basis_impl(
                         (shifted_centers - screening_r4_grid[0]) / r4_spacing
                     ).astype(int)
                     r4_index = np.clip(r4_index, 0, screening_r4_grid.size - 1)
-                    threshold += LBLRTM_DEFAULT_DPTFAC * screening_r4_by_layer[layer_index][r4_index]
+                    threshold += (
+                        LBLRTM_DEFAULT_DPTFAC * screening_r4_by_layer[layer_index][r4_index]
+                    )
                 reject = (line_scale / source_alfv <= threshold) & (profile_coupling == 0)
                 line_scale = np.where(reject, 0.0, line_scale)
             voigt_hwhm = None
@@ -1121,6 +1174,8 @@ def _hitran_line_optical_depth_basis_impl(
                 and sparse_grid_available
                 and line_wing_mode not in {"lblrtm_table", "lblrtm_panel"}
             ):
+                if dynamic_cutoff_cm is None:
+                    raise RuntimeError("finite-wing cutoff state is unexpectedly missing")
                 _accumulate_sparse_voigt_basis(
                     basis,
                     wavenumber_grid=wavenumber_grid,
@@ -1144,9 +1199,8 @@ def _hitran_line_optical_depth_basis_impl(
                 local_grid = wavenumber_grid
             else:
                 local_grid_mask = (
-                    (wavenumber_grid >= np.nanmin(shifted_centers) - max_cutoff_cm)
-                    & (wavenumber_grid <= np.nanmax(shifted_centers) + max_cutoff_cm)
-                )
+                    wavenumber_grid >= np.nanmin(shifted_centers) - max_cutoff_cm
+                ) & (wavenumber_grid <= np.nanmax(shifted_centers) + max_cutoff_cm)
                 if not np.any(local_grid_mask):
                     continue
                 grid_keep = local_grid_mask
@@ -1269,16 +1323,15 @@ def _accumulate_prepared_lblrtm_panel_basis(
 
     r4_spacing = float(completed_r4.grid_cm[1] - completed_r4.grid_cm[0])
     for prepared in completed_r4.prepared_chunks:
-        r4_index = np.floor(
-            (prepared.centers - completed_r4.grid_cm[0]) / r4_spacing
-        ).astype(int)
+        r4_index = np.floor((prepared.centers - completed_r4.grid_cm[0]) / r4_spacing).astype(int)
         r4_index = np.clip(r4_index, 0, completed_r4.grid_cm.size - 1)
-        threshold = prepared.dptmin + LBLRTM_DEFAULT_DPTFAC * completed_r4.total_by_layer[
-            prepared.layer_index
-        ][r4_index]
-        reject = (
-            prepared.line_scale / prepared.effective_hwhm_cm <= threshold
-        ) & (prepared.profile_coupling == 0)
+        threshold = (
+            prepared.dptmin
+            + LBLRTM_DEFAULT_DPTFAC * completed_r4.total_by_layer[prepared.layer_index][r4_index]
+        )
+        reject = (prepared.line_scale / prepared.effective_hwhm_cm <= threshold) & (
+            prepared.profile_coupling == 0
+        )
         line_scale = np.where(reject, 0.0, prepared.line_scale)
 
         if prepared.maximum_cutoff_cm is None:
@@ -1286,12 +1339,8 @@ def _accumulate_prepared_lblrtm_panel_basis(
             local_grid = wavenumber_grid
         else:
             local_grid_mask = (
-                wavenumber_grid
-                >= np.nanmin(prepared.centers) - prepared.maximum_cutoff_cm
-            ) & (
-                wavenumber_grid
-                <= np.nanmax(prepared.centers) + prepared.maximum_cutoff_cm
-            )
+                wavenumber_grid >= np.nanmin(prepared.centers) - prepared.maximum_cutoff_cm
+            ) & (wavenumber_grid <= np.nanmax(prepared.centers) + prepared.maximum_cutoff_cm)
             if not np.any(local_grid_mask):
                 continue
             grid_keep = local_grid_mask
@@ -1394,7 +1443,9 @@ def _lblrtm_broadener_shift_correction(
     if not np.any(active):
         return np.zeros(pressure_shift.shape, dtype=float)
     density_ratio = layer.pressure_atm * (reference_temperature_k / layer.temperature_k)
-    broadener_vmr = np.array([_species_vmr(layer, name) for name in LBLRTM_BROADENER_SPECIES], dtype=float)
+    broadener_vmr = np.array(
+        [_species_vmr(layer, name) for name in LBLRTM_BROADENER_SPECIES], dtype=float
+    )
     rhoslf = density_ratio * broadener_vmr
     shift_delta = (
         np.where(active, broadener_pressure_shifts - pressure_shift[:, None], 0.0)
@@ -1427,9 +1478,9 @@ def _lblrtm_self_mixture_corrected_air_width(
     for molecule_id, terrestrial_vmr in ((7, 0.21), (22, 0.79)):
         keep = mol == molecule_id
         if np.any(keep):
-            air[keep] = (air[keep] - terrestrial_vmr * np.asarray(self_width_cm, dtype=float)[keep]) / (
-                1.0 - terrestrial_vmr
-            )
+            air[keep] = (
+                air[keep] - terrestrial_vmr * np.asarray(self_width_cm, dtype=float)[keep]
+            ) / (1.0 - terrestrial_vmr)
     return np.maximum(air, 0.0)
 
 
@@ -1471,7 +1522,11 @@ def _lblrtm_broadener_lorentz_hwhm(
     layer,
     reference_temperature_k: float,
 ) -> np.ndarray:
-    if broadener_flags is None or broadener_widths is None or broadener_temperature_exponents is None:
+    if (
+        broadener_flags is None
+        or broadener_widths is None
+        or broadener_temperature_exponents is None
+    ):
         return base_gamma
     active = np.asarray(broadener_flags, dtype=int) > 0
     if not np.any(active):
@@ -1479,7 +1534,9 @@ def _lblrtm_broadener_lorentz_hwhm(
 
     density_ratio = layer.pressure_atm * (reference_temperature_k / layer.temperature_k)
     temperature_ratio = layer.temperature_k / reference_temperature_k
-    broadener_vmr = np.array([_species_vmr(layer, name) for name in LBLRTM_BROADENER_SPECIES], dtype=float)
+    broadener_vmr = np.array(
+        [_species_vmr(layer, name) for name in LBLRTM_BROADENER_SPECIES], dtype=float
+    )
     rhoslf = density_ratio * broadener_vmr
 
     tmpalf_air = 1.0 - np.asarray(temperature_exponent, dtype=float)
@@ -1537,7 +1594,11 @@ def _lblrtm_line_coupling_corrections(
 
     reduced_width = flags == 3
     if np.any(reduced_width):
-        correction = 1.0 - interp_a[reduced_width] * pressure_ratio - interp_b[reduced_width] * pressure_ratio2
+        correction = (
+            1.0
+            - interp_a[reduced_width] * pressure_ratio
+            - interp_b[reduced_width] * pressure_ratio2
+        )
         gamma = np.array(gamma, dtype=float, copy=True)
         gamma[reduced_width] = np.maximum(gamma[reduced_width] * correction, 0.0)
 
@@ -1590,7 +1651,8 @@ def _apply_lblrtm_line_coupling_profile(
         return profile
     normalized_offset = np.zeros(profile.shape, dtype=float)
     normalized_offset[valid_width] = (
-        np.asarray(wavenumber_grid, dtype=float)[None, :] - np.asarray(centers, dtype=float)[:, None]
+        np.asarray(wavenumber_grid, dtype=float)[None, :]
+        - np.asarray(centers, dtype=float)[:, None]
     )[valid_width] / width[valid_width, None]
     return profile * (1.0 + coupling[:, None] * normalized_offset)
 
@@ -1626,7 +1688,9 @@ def _apply_line_wing_treatment(
         taper_width = np.minimum(float(line_taper_cm), cutoff_by_line)
         inner = cutoff_by_line - taper_width
         weight = np.ones_like(treated)
-        in_taper = (distance > inner[:, None]) & (distance < cutoff_grid) & (taper_width[:, None] > 0)
+        in_taper = (
+            (distance > inner[:, None]) & (distance < cutoff_grid) & (taper_width[:, None] > 0)
+        )
         weight[distance >= cutoff_grid] = 0.0
         weight[in_taper] = 0.5 * (
             1.0
@@ -1729,7 +1793,8 @@ def _accumulate_sparse_voigt_basis(
         if np.any(in_taper):
             weight = np.ones(profile.shape, dtype=float)
             weight[in_taper] = 0.5 * (
-                1.0 + np.cos(np.pi * (distance_abs[in_taper] - inner[in_taper]) / taper_width[in_taper])
+                1.0
+                + np.cos(np.pi * (distance_abs[in_taper] - inner[in_taper]) / taper_width[in_taper])
             )
             profile = profile * weight
 
@@ -1741,7 +1806,9 @@ def _accumulate_sparse_voigt_basis(
         coupled = (line_coupling != 0) & np.isfinite(line_width) & (line_width > 0)
         if np.any(coupled):
             profile = np.array(profile, dtype=float, copy=True)
-            profile[coupled] *= 1.0 + line_coupling[coupled] * distance[coupled] / line_width[coupled]
+            profile[coupled] *= (
+                1.0 + line_coupling[coupled] * distance[coupled] / line_width[coupled]
+            )
 
     values = profile * line_scale[repeated_rows]
     finite = np.isfinite(values) & (values != 0)
@@ -1750,7 +1817,9 @@ def _accumulate_sparse_voigt_basis(
     np.add.at(basis, (row_index[repeated_rows[finite]], grid_indices[finite]), values[finite])
 
 
-def line_wing_effective_cutoff_cm(line_wing_mode: str = "full", line_cutoff_cm: float | None = None) -> float | None:
+def line_wing_effective_cutoff_cm(
+    line_wing_mode: str = "full", line_cutoff_cm: float | None = None
+) -> float | None:
     """Return the finite wing cutoff implied by a line-wing mode."""
 
     mode = _normalize_line_wing_mode(line_wing_mode)
@@ -1789,10 +1858,7 @@ def _line_wing_settings(
         cutoff = line_wing_effective_cutoff_cm(mode, line_cutoff_cm)
     if mode in {"subtracted_cutoff", "lblrtm_subtracted"}:
         subtract_cutoff_profile = True
-    elif mode in {"lblrtm_table", "lblrtm_panel"}:
-        subtract_cutoff_profile = False
-        line_taper_cm = 0.0
-    elif mode == "hard_cutoff":
+    elif mode in {"lblrtm_table", "lblrtm_panel"} or mode == "hard_cutoff":
         subtract_cutoff_profile = False
         line_taper_cm = 0.0
     elif mode == "tapered_cutoff" and line_taper_cm == 0:
@@ -1815,12 +1881,18 @@ def _line_cutoff_by_line(
     wavenumber_spacing_cm: float | None = None,
 ) -> np.ndarray | None:
     if line_wing_mode not in {"lblrtm_dynamic", "lblrtm_table", "lblrtm_panel"}:
-        return None if line_cutoff_cm is None else np.full(sigma.shape, float(line_cutoff_cm), dtype=float)
+        return (
+            None
+            if line_cutoff_cm is None
+            else np.full(sigma.shape, float(line_cutoff_cm), dtype=float)
+        )
 
     cutoff = lblrtm_dynamic_line_cutoff_cm(
         gamma,
         sigma,
-        _wavenumber_spacing_cm(wavenumber_grid) if wavenumber_spacing_cm is None else wavenumber_spacing_cm,
+        _wavenumber_spacing_cm(wavenumber_grid)
+        if wavenumber_spacing_cm is None
+        else wavenumber_spacing_cm,
         sample=lblrtm_sample,
         alfal0=lblrtm_alfal0,
         hwf3=lblrtm_hwf3,

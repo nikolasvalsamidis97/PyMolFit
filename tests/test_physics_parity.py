@@ -389,7 +389,9 @@ def test_h2o_continuum_scaling_matches_lblrtm_contnm_terms_without_interpolation
         * density_ratio
         * radiation
     )
-    expected_foreign = continuum.foreign_absco_ref[1:4] * (1.0 - h2o_vmr) * density_ratio * radiation
+    expected_foreign = (
+        continuum.foreign_absco_ref[1:4] * (1.0 - h2o_vmr) * density_ratio * radiation
+    )
     np.testing.assert_allclose(self_coeff, expected_self, rtol=1.0e-14)
     np.testing.assert_allclose(foreign_coeff, expected_foreign, rtol=1.0e-14)
 
