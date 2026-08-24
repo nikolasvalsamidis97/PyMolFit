@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from astropy.table import Table
 
 from pymolfit import (
+    Observation,
     RegionSelection,
     Spectrum,
     correct_arrays,
@@ -47,6 +49,35 @@ def test_region_file_round_trip_preserves_coordinates(tmp_path) -> None:
 
     assert loaded == selection
     assert loaded.output_path == path
+
+
+def test_region_file_round_trip_preserves_observatory_frame(tmp_path) -> None:
+    selection = RegionSelection(
+        fit_ranges=((5900.0, 5920.0),),
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+        wavelength_frame="observatory",
+    )
+
+    path = save_region_file(selection, tmp_path / "observer_regions.ecsv")
+    loaded = load_region_file(path)
+
+    assert loaded == selection
+    assert loaded.wavelength_frame == "observatory"
+
+
+def test_legacy_region_file_without_frame_defaults_to_native(tmp_path) -> None:
+    path = save_region_file(
+        RegionSelection(fit_ranges=((2.31, 2.36),)),
+        tmp_path / "legacy_regions.ecsv",
+    )
+    table = Table.read(path, format="ascii.ecsv")
+    del table.meta["wavelength_frame"]
+    table.write(path, format="ascii.ecsv", overwrite=True)
+
+    loaded = load_region_file(path)
+
+    assert loaded.wavelength_frame == "native"
 
 
 def test_selector_reuses_existing_output_file_without_opening_window(
@@ -96,6 +127,61 @@ def test_selector_can_open_existing_output_file_for_editing(tmp_path) -> None:
     assert selector.selection == existing
     assert selector.output_path == path
     assert selector.selection.output_path == path
+    selector.close()
+
+
+def test_selector_rejects_requested_frame_that_conflicts_with_existing_file(
+    tmp_path,
+) -> None:
+    path = save_region_file(
+        RegionSelection(
+            fit_ranges=((5005.0, 5010.0),),
+            wavelength_unit="angstrom",
+            wavelength_frame="observatory",
+        ),
+        tmp_path / "regions.ecsv",
+    )
+
+    with pytest.raises(ValueError, match="wavelength_frame"):
+        select_telluric_regions(
+            wavelength=np.linspace(5000.0, 5100.0, 101),
+            flux=np.ones(101),
+            wavelength_unit="angstrom",
+            output_path=path,
+            wavelength_frame="native",
+            show=False,
+        )
+
+
+def test_selector_can_display_and_save_observatory_frame_coordinates() -> None:
+    velocity_km_s = -7.5
+    factor = (1.0 + 1.55e-8) * (1.0 + velocity_km_s / 299_792.458)
+    native_wavelength = np.linspace(5000.0, 5100.0, 101)
+    spectrum = Spectrum(
+        wavelength=native_wavelength,
+        flux=np.ones(101),
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+        meta={
+            "observation": Observation(
+                wavelength_frame="barycentric",
+                frame_velocity_km_s=velocity_km_s,
+            ).to_header()
+        },
+    )
+
+    selector = select_telluric_regions(
+        spectrum,
+        wavelength_frame="observatory",
+        show_telluric_lines=False,
+        show=False,
+    )
+
+    np.testing.assert_allclose(selector.spectrum.wavelength, native_wavelength / factor)
+    assert selector.spectrum.meta["observatory_frame_correction"] is True
+    assert selector.selection.wavelength_frame == "observatory"
+    assert selector.selection.wavelength_medium == "vacuum"
+    assert "Observatory-frame vacuum" in selector.axis.get_xlabel()
     selector.close()
 
 
@@ -617,6 +703,78 @@ def test_correct_arrays_region_file_matches_explicit_ranges(tmp_path) -> None:
 
     np.testing.assert_allclose(from_file.model_flux, explicit.model_flux)
     np.testing.assert_allclose(from_file.transmission, explicit.transmission)
+
+
+def test_observatory_region_file_matches_equivalent_native_berv_file(tmp_path) -> None:
+    velocity_km_s = -7.5
+    factor = (1.0 + 1.55e-8) * (1.0 + velocity_km_s / 299_792.458)
+    observatory_wavelength = np.linspace(2.31, 2.36, 300)
+    native_wavelength = observatory_wavelength * factor
+    flux = np.ones_like(native_wavelength)
+    observatory_fit = ((2.315, 2.355),)
+    observatory_exclude = ((2.330, 2.332),)
+    native_file = save_region_file(
+        RegionSelection(
+            fit_ranges=tuple(
+                (lower * factor, upper * factor) for lower, upper in observatory_fit
+            ),
+            exclude_ranges=tuple(
+                (lower * factor, upper * factor) for lower, upper in observatory_exclude
+            ),
+            wavelength_medium="vacuum",
+            wavelength_frame="native",
+        ),
+        tmp_path / "native.ecsv",
+    )
+    observatory_file = save_region_file(
+        RegionSelection(
+            fit_ranges=observatory_fit,
+            exclude_ranges=observatory_exclude,
+            wavelength_medium="vacuum",
+            wavelength_frame="observatory",
+        ),
+        tmp_path / "observatory.ecsv",
+    )
+    observation = Observation(
+        wavelength_frame="barycentric",
+        frame_velocity_km_s=velocity_km_s,
+    )
+    options = {
+        "observation": observation,
+        "demo_line_list": True,
+        "physical": False,
+        "continuum_order": 0,
+        "solve_continuum_linear": True,
+        "lsf_sigma_pixels": 0.0,
+        "fit_lsf_sigma": False,
+        "lsf_lorentz_fwhm_pixels": 0.0,
+        "fit_lsf_lorentz_fwhm": False,
+        "lsf_variable_width": False,
+        "high_resolution_grid": False,
+        "fit_wavelength_shift": False,
+        "auto_segment": False,
+    }
+
+    native = correct_arrays(
+        native_wavelength,
+        flux,
+        wavelength_medium="vacuum",
+        region_file=native_file,
+        **options,
+    )
+    observatory = correct_arrays(
+        native_wavelength,
+        flux,
+        wavelength_medium="vacuum",
+        region_file=observatory_file,
+        **options,
+    )
+
+    np.testing.assert_allclose(observatory.model_flux, native.model_flux, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(observatory.transmission, native.transmission, rtol=0.0, atol=0.0)
+    np.testing.assert_array_equal(observatory.fit_mask, native.fit_mask)
+    assert observatory.provenance["region_coordinates"]["wavelength_frame"] == "observatory"
+    assert native.provenance["region_coordinates"]["wavelength_frame"] == "native"
 
 
 def test_region_file_rejects_explicit_ranges(tmp_path) -> None:

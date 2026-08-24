@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Literal
@@ -81,7 +81,7 @@ from .physics import (
     wavelength_micron_to_wavenumber_cm,
 )
 from .plotting import plot_fit
-from .regions import RegionSelection, load_region_file
+from .regions import RegionSelection, RegionWavelengthFrame, load_region_file
 from .spectrum import Spectrum, normalize_wavelength_medium
 from .theoretical import StellarMaskResult, TheoreticalSpectrum
 
@@ -142,6 +142,16 @@ LineWingMode = Literal[
     "lblrtm_panel",
 ]
 LeastSquaresLoss = Literal["linear", "soft_l1", "huber", "cauchy", "arctan"]
+
+
+@dataclass(frozen=True)
+class _ResolvedRegionRanges:
+    """Region intervals plus the coordinates in which they are expressed."""
+
+    fit_ranges: tuple[tuple[float, float], ...] | None
+    exclude_ranges: tuple[tuple[float, float], ...] | None
+    wavelength_medium: str
+    wavelength_frame: RegionWavelengthFrame
 
 
 def correct_arrays(
@@ -278,7 +288,7 @@ def correct_arrays(
         wavelength_medium=wavelength_medium,
         meta=({} if observation is None else {"observation": observation.to_header()}),
     )
-    fit_ranges, exclude_ranges = _resolve_region_file_ranges(
+    resolved_regions = _resolve_region_file_ranges(
         region_file=region_file,
         fit_ranges=fit_ranges,
         exclude_ranges=exclude_ranges,
@@ -377,8 +387,10 @@ def correct_arrays(
         lsf_box_width_bounds=lsf_box_width_bounds,
         fit_lsf_lorentz_fwhm=fit_lsf_lorentz_fwhm,
         lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
-        fit_ranges=fit_ranges,
-        exclude_ranges=exclude_ranges,
+        fit_ranges=resolved_regions.fit_ranges,
+        exclude_ranges=resolved_regions.exclude_ranges,
+        region_wavelength_medium=resolved_regions.wavelength_medium,
+        region_wavelength_frame=resolved_regions.wavelength_frame,
         theoretical_spectrum=theoretical_spectrum,
         stellar_mask_path=stellar_mask_path,
         joint_stellar_model=False,
@@ -620,7 +632,7 @@ def correct_file(
     :param lsf_lorentz_fwhm_bounds: Optional lower and upper Lorentzian FWHM bounds in pixels. ``None`` generates broad non-negative bounds from the Gaussian width; explicit values must be increasing and non-negative.
     :param fit_ranges: Wavelength intervals whose observed telluric features constrain molecular columns, wavelength alignment, LSF, and continuum; supply ``((start, stop), ...)`` in microns and the declared input medium, or ``None`` to let every valid pixel influence those fitted parameters.
     :param exclude_ranges: Wavelength intervals ignored only while estimating fit parameters, normally to protect stellar/circumstellar lines, detector defects, or saturated pixels; values are in microns/input medium and the final atmospheric correction is still evaluated there.
-    :param region_file: Optional PyMolFit ECSV file created by ``select_telluric_regions``. Its native wavelength unit and air/vacuum medium are converted to the input spectrum coordinates. Do not combine it with ``fit_ranges`` or ``exclude_ranges``.
+    :param region_file: Optional PyMolFit ECSV file created by ``select_telluric_regions``. The recorded wavelength unit, air/vacuum medium, and coordinate frame are respected. Files with ``wavelength_frame="observatory"`` can reuse telluric intervals across barycentric or heliocentric exposures; older files without frame metadata remain native and exposure-specific. Do not combine it with ``fit_ranges`` or ``exclude_ranges``.
     :param theoretical_spectrum: Optional ``TheoreticalSpectrum`` used to identify stellar features represented by the supplied model that must not constrain atmospheric parameters. The broadened template creates additional exclusion regions only; it never replaces science flux and correction is still evaluated at those wavelengths.
     :param stellar_mask_path: Optional ECSV path for the automatically generated stellar exclusion regions in the input spectrum's native wavelength coordinates.
     :param loss: Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
@@ -661,7 +673,7 @@ def correct_file(
         image_index=image_index,
         save_header=False,
     )
-    fit_ranges, exclude_ranges = _resolve_region_file_ranges(
+    resolved_regions = _resolve_region_file_ranges(
         region_file=region_file,
         fit_ranges=fit_ranges,
         exclude_ranges=exclude_ranges,
@@ -760,8 +772,10 @@ def correct_file(
         lsf_box_width_bounds=lsf_box_width_bounds,
         fit_lsf_lorentz_fwhm=fit_lsf_lorentz_fwhm,
         lsf_lorentz_fwhm_bounds=lsf_lorentz_fwhm_bounds,
-        fit_ranges=fit_ranges,
-        exclude_ranges=exclude_ranges,
+        fit_ranges=resolved_regions.fit_ranges,
+        exclude_ranges=resolved_regions.exclude_ranges,
+        region_wavelength_medium=resolved_regions.wavelength_medium,
+        region_wavelength_frame=resolved_regions.wavelength_frame,
         theoretical_spectrum=theoretical_spectrum,
         stellar_mask_path=stellar_mask_path,
         joint_stellar_model=False,
@@ -949,8 +963,10 @@ def correct(
     :param observation: Structured observing metadata. It is required for
         arrays and may override incomplete or incorrect file-header values.
     :param region_file: Optional PyMolFit ECSV file containing fit and
-        exclusion regions selected in the input spectrum's wavelength
-        coordinates. Do not combine it with explicit ``fit_ranges`` or
+        exclusion regions. Its wavelength unit, air/vacuum medium, and
+        coordinate frame are applied automatically. Observer-frame files can
+        reuse telluric fit regions across barycentric or heliocentric
+        exposures. Do not combine it with explicit ``fit_ranges`` or
         ``exclude_ranges``.
     :param theoretical_spectrum: Optional broadened stellar template whose
         predicted astrophysical features are excluded from telluric parameter
@@ -1145,7 +1161,7 @@ def correct(
             image_index=image_index,
             save_header=False,
         )
-        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+        resolved_regions = _resolve_region_file_ranges(
             region_file=region_file,
             fit_ranges=fit_ranges,
             exclude_ranges=exclude_ranges,
@@ -1153,8 +1169,10 @@ def correct(
         )
         path_options = {
             **fit_options,
-            "fit_ranges": resolved_fit_ranges,
-            "exclude_ranges": resolved_exclude_ranges,
+            "fit_ranges": resolved_regions.fit_ranges,
+            "exclude_ranges": resolved_regions.exclude_ranges,
+            "region_wavelength_medium": resolved_regions.wavelength_medium,
+            "region_wavelength_frame": resolved_regions.wavelength_frame,
             "pwv_mm": (
                 observation.pwv_mm if pwv_mm is None and observation is not None else pwv_mm
             ),
@@ -1212,7 +1230,7 @@ def correct(
             )
         if observation is not None:
             atmosphere_header = observation.to_header(atmosphere_header)
-        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+        resolved_regions = _resolve_region_file_ranges(
             region_file=region_file,
             fit_ranges=fit_ranges,
             exclude_ranges=exclude_ranges,
@@ -1220,8 +1238,10 @@ def correct(
         )
         spectrum_options = {
             **fit_options,
-            "fit_ranges": resolved_fit_ranges,
-            "exclude_ranges": resolved_exclude_ranges,
+            "fit_ranges": resolved_regions.fit_ranges,
+            "exclude_ranges": resolved_regions.exclude_ranges,
+            "region_wavelength_medium": resolved_regions.wavelength_medium,
+            "region_wavelength_frame": resolved_regions.wavelength_frame,
         }
         result = _correct_spectrum_workflow(
             spectrum,
@@ -1267,7 +1287,7 @@ def correct(
             wavelength_medium=wavelength_medium,
             meta={"observation": observation.to_header()},
         )
-        resolved_fit_ranges, resolved_exclude_ranges = _resolve_region_file_ranges(
+        resolved_regions = _resolve_region_file_ranges(
             region_file=region_file,
             fit_ranges=fit_ranges,
             exclude_ranges=exclude_ranges,
@@ -1275,8 +1295,10 @@ def correct(
         )
         array_options = {
             **fit_options,
-            "fit_ranges": resolved_fit_ranges,
-            "exclude_ranges": resolved_exclude_ranges,
+            "fit_ranges": resolved_regions.fit_ranges,
+            "exclude_ranges": resolved_regions.exclude_ranges,
+            "region_wavelength_medium": resolved_regions.wavelength_medium,
+            "region_wavelength_frame": resolved_regions.wavelength_frame,
             "pwv_mm": observation.pwv_mm if pwv_mm is None else pwv_mm,
         }
         result = _correct_spectrum_workflow(
@@ -1453,6 +1475,8 @@ def _correct_spectrum_workflow(
     lsf_lorentz_fwhm_bounds: tuple[float, float] | None,
     fit_ranges: tuple[tuple[float, float], ...] | None,
     exclude_ranges: tuple[tuple[float, float], ...] | None,
+    region_wavelength_medium: str,
+    region_wavelength_frame: RegionWavelengthFrame,
     theoretical_spectrum: TheoreticalSpectrum | None,
     stellar_mask_path: str | Path | None,
     joint_stellar_model: bool,
@@ -1495,9 +1519,17 @@ def _correct_spectrum_workflow(
         gdas_download_timeout_s=gdas_download_timeout_s,
     )
     input_spectrum = spectrum
-    input_medium = spectrum.wavelength_medium
-    fit_ranges = _ranges_to_observatory_vacuum(fit_ranges, input_medium, atmosphere_header)
-    exclude_ranges = _ranges_to_observatory_vacuum(exclude_ranges, input_medium, atmosphere_header)
+    region_frame_header = atmosphere_header if region_wavelength_frame == "native" else None
+    fit_ranges = _ranges_to_observatory_vacuum(
+        fit_ranges,
+        region_wavelength_medium,
+        region_frame_header,
+    )
+    exclude_ranges = _ranges_to_observatory_vacuum(
+        exclude_ranges,
+        region_wavelength_medium,
+        region_frame_header,
+    )
     spectrum = _spectrum_to_observatory_vacuum(spectrum, atmosphere_header)
     stellar_mask_result: StellarMaskResult | None = None
     stellar_fit_weights: np.ndarray | None = None
@@ -2327,6 +2359,10 @@ def _correct_spectrum_workflow(
         provenance={
             **dict(selected_result.provenance),
             "fit_quality": quality,
+            "region_coordinates": {
+                "wavelength_medium": region_wavelength_medium,
+                "wavelength_frame": region_wavelength_frame,
+            },
             **(
                 {}
                 if stellar_mask_result is None
@@ -4721,6 +4757,8 @@ def _spectrum_to_observatory_vacuum(
     factor first and performs the air-to-vacuum conversion afterwards.
     """
 
+    if bool(spectrum.meta.get("observatory_frame_correction", False)):
+        return spectrum.to_vacuum()
     if header is None:
         return spectrum.to_vacuum()
     frame_velocity = _spectral_frame_velocity_km_s(header)
@@ -4776,12 +4814,14 @@ def _resolve_region_file_ranges(
     fit_ranges: tuple[tuple[float, float], ...] | None,
     exclude_ranges: tuple[tuple[float, float], ...] | None,
     spectrum: Spectrum,
-) -> tuple[
-    tuple[tuple[float, float], ...] | None,
-    tuple[tuple[float, float], ...] | None,
-]:
+) -> _ResolvedRegionRanges:
     if region_file is None:
-        return fit_ranges, exclude_ranges
+        return _ResolvedRegionRanges(
+            fit_ranges=fit_ranges,
+            exclude_ranges=exclude_ranges,
+            wavelength_medium=spectrum.wavelength_medium,
+            wavelength_frame="native",
+        )
     if fit_ranges is not None or exclude_ranges is not None:
         raise ValueError("region_file cannot be combined with fit_ranges or exclude_ranges")
 
@@ -4790,11 +4830,13 @@ def _resolve_region_file_ranges(
         raise ValueError(f"region file {region_file} does not contain any regions")
     converted = selection.converted(
         wavelength_unit="micron",
-        wavelength_medium=spectrum.wavelength_medium,
+        wavelength_medium=selection.wavelength_medium,
     )
-    return (
-        converted.fit_ranges or None,
-        converted.exclude_ranges or None,
+    return _ResolvedRegionRanges(
+        fit_ranges=converted.fit_ranges or None,
+        exclude_ranges=converted.exclude_ranges or None,
+        wavelength_medium=converted.wavelength_medium,
+        wavelength_frame=converted.wavelength_frame,
     )
 
 

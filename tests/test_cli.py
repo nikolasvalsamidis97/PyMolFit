@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from pymolfit import LineList, ModelConfig, transmission_model
+from pymolfit import LineList, ModelConfig, __version__, transmission_model
 from pymolfit.cli import build_parser, main
 
 
@@ -264,7 +264,7 @@ def test_cli_reports_version(capsys):
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert "pymolfit 0.7.3" in capsys.readouterr().out
+    assert f"pymolfit {__version__}" in capsys.readouterr().out
 
 
 def test_cli_refuses_implicit_synthetic_line_data(tmp_path):

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 RegionKind = Literal["fit", "exclude"]
 RegionRanges = tuple[tuple[float, float], ...]
+RegionWavelengthFrame = Literal["native", "observatory"]
 
 REGION_FILE_SCHEMA = "pymolfit.spectral_regions"
 REGION_FILE_VERSION = 1
@@ -59,16 +60,20 @@ _SELECTOR_REGION_LABEL_SPACING_PIXELS = 55.0
 class RegionSelection:
     """Fit and exclusion windows in a declared wavelength coordinate system.
 
-    Regions use the wavelength unit and air/vacuum medium displayed during
-    selection. Overlapping windows of the same type are merged. Use
-    :meth:`converted` when applying a selection to a spectrum with different
-    wavelength coordinates.
+    Regions use the wavelength unit, air/vacuum medium, and velocity frame
+    displayed during selection. ``native`` coordinates match the input
+    spectrum as supplied and are normally exposure-specific. ``observatory``
+    coordinates keep terrestrial absorption fixed and can therefore be reused
+    for barycentric or heliocentric time-series spectra. Overlapping windows
+    of the same type are merged. Use :meth:`converted` when applying a
+    selection to a spectrum with different wavelength units or medium.
     """
 
     fit_ranges: RegionRanges = ()
     exclude_ranges: RegionRanges = ()
     wavelength_unit: str = "micron"
     wavelength_medium: str = "vacuum"
+    wavelength_frame: RegionWavelengthFrame = "native"
     output_path: Path | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
@@ -77,6 +82,11 @@ class RegionSelection:
             self,
             "wavelength_medium",
             normalize_wavelength_medium(self.wavelength_medium),
+        )
+        object.__setattr__(
+            self,
+            "wavelength_frame",
+            _normalize_region_wavelength_frame(self.wavelength_frame),
         )
         object.__setattr__(self, "fit_ranges", _normalize_ranges(self.fit_ranges))
         object.__setattr__(
@@ -128,6 +138,7 @@ class RegionSelection:
             exclude_ranges=convert_ranges(self.exclude_ranges),
             wavelength_unit=wavelength_unit,
             wavelength_medium=target_medium,
+            wavelength_frame=self.wavelength_frame,
             output_path=self.output_path,
         )
 
@@ -141,8 +152,8 @@ def save_region_file(selection: RegionSelection, path: str | Path) -> Path:
     """Save fit and exclusion windows as a portable ECSV table.
 
     The table records each interval's type and endpoints together with the
-    wavelength unit and air/vacuum medium needed to apply it correctly later.
-    Existing files are overwritten.
+    wavelength unit, air/vacuum medium, and velocity frame needed to apply it
+    correctly later. Existing files are overwritten.
     """
 
     destination = Path(path)
@@ -161,6 +172,7 @@ def save_region_file(selection: RegionSelection, path: str | Path) -> Path:
             "schema_version": REGION_FILE_VERSION,
             "wavelength_unit": selection.wavelength_unit,
             "wavelength_medium": selection.wavelength_medium,
+            "wavelength_frame": selection.wavelength_frame,
         }
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +220,7 @@ def load_region_file(path: str | Path) -> RegionSelection:
         exclude_ranges=tuple(exclude_ranges),
         wavelength_unit=str(wavelength_unit),
         wavelength_medium=str(wavelength_medium),
+        wavelength_frame=str(table.meta.get("wavelength_frame", "native")),
         output_path=source,
     )
 
@@ -247,6 +260,7 @@ class InteractiveRegionSelector:
         automatic_region_count: int = DEFAULT_AUTOMATIC_REGION_COUNT,
         automatic_region_half_width_pixels: float = (DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS),
         enable_theoretical_controls: bool = False,
+        wavelength_frame: RegionWavelengthFrame = "native",
         show: bool = True,
     ) -> None:
         try:
@@ -273,7 +287,8 @@ class InteractiveRegionSelector:
         ):
             raise ValueError("automatic_region_half_width_pixels must be positive and finite")
 
-        self.spectrum = spectrum.sorted()
+        self.wavelength_frame = _normalize_region_wavelength_frame(wavelength_frame)
+        self.spectrum = _spectrum_in_region_frame(spectrum, self.wavelength_frame).sorted()
         self.output_path = None if output_path is None else Path(output_path)
         self._plt = plt
         self._poly_collection_type = PolyCollection
@@ -322,6 +337,12 @@ class InteractiveRegionSelector:
         self.stellar_update_button = None
 
         if initial_regions is not None:
+            if initial_regions.wavelength_frame != self.wavelength_frame:
+                raise ValueError(
+                    "initial_regions use wavelength_frame="
+                    f"{initial_regions.wavelength_frame!r}, but the selector uses "
+                    f"{self.wavelength_frame!r}"
+                )
             converted = initial_regions.converted(
                 wavelength_unit=self.spectrum.wavelength_unit,
                 wavelength_medium=self.spectrum.wavelength_medium,
@@ -344,8 +365,9 @@ class InteractiveRegionSelector:
         data_ylim = self.axis.get_ylim()
         if show_telluric_lines:
             self._plot_telluric_markers(max_lines=max_telluric_markers)
+        frame_label = "Observatory-frame " if self.wavelength_frame == "observatory" else ""
         self.axis.set_xlabel(
-            f"{self.spectrum.wavelength_medium.capitalize()} wavelength "
+            f"{frame_label}{self.spectrum.wavelength_medium} wavelength "
             f"[{self.spectrum.wavelength_unit}]"
         )
         self.axis.set_ylabel("Flux")
@@ -480,6 +502,7 @@ class InteractiveRegionSelector:
                 ),
                 wavelength_unit=self.spectrum.wavelength_unit,
                 wavelength_medium=self.spectrum.wavelength_medium,
+                wavelength_frame=self.wavelength_frame,
                 output_path=self.output_path,
             )
         return self._selection_cache
@@ -1303,6 +1326,7 @@ def select_telluric_regions(
     automatic_region_count: int = DEFAULT_AUTOMATIC_REGION_COUNT,
     automatic_region_half_width_pixels: float = (DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS),
     enable_theoretical_controls: bool = False,
+    wavelength_frame: RegionWavelengthFrame | None = None,
     reuse_existing: bool = True,
     show: bool = True,
 ) -> InteractiveRegionSelector | RegionSelection:
@@ -1337,6 +1361,15 @@ def select_telluric_regions(
     and exclusion intervals together in the same ECSV file, which can be
     passed directly to :func:`pymolfit.correct` as ``region_file``.
 
+    Set ``wavelength_frame="observatory"`` when creating a reusable telluric
+    region file for a barycentric or heliocentric time series. PyMolFit then
+    displays the spectrum in observatory-frame vacuum coordinates and records
+    that frame in the ECSV metadata. During correction, the same telluric
+    intervals can be applied to every exposure without manually shifting the
+    file. Static stellar exclusions are not generally reusable in this frame;
+    pass a theoretical spectrum to each correction to construct those masks
+    for the individual exposure.
+
     When ``output_path`` already exists and ``reuse_existing`` is ``True``, the
     saved :class:`RegionSelection` is loaded and returned without opening a new
     selector window. Set ``reuse_existing=False`` to open the interface with
@@ -1365,6 +1398,15 @@ def select_telluric_regions(
                 "existing output_path; set reuse_existing=False to edit it"
             )
         selection = load_region_file(existing_path)
+        if (
+            wavelength_frame is not None
+            and selection.wavelength_frame
+            != _normalize_region_wavelength_frame(wavelength_frame)
+        ):
+            raise ValueError(
+                f"existing region file uses wavelength_frame={selection.wavelength_frame!r}, "
+                f"not {wavelength_frame!r}"
+            )
         selection.converted(
             wavelength_unit=spectrum.wavelength_unit,
             wavelength_medium=spectrum.wavelength_medium,
@@ -1377,6 +1419,11 @@ def select_telluric_regions(
         and initial_regions is None
     ):
         initial_regions = load_region_file(existing_path)
+    resolved_frame = (
+        initial_regions.wavelength_frame
+        if wavelength_frame is None and initial_regions is not None
+        else _normalize_region_wavelength_frame(wavelength_frame or "native")
+    )
     return InteractiveRegionSelector(
         spectrum,
         theoretical_spectrum=theoretical_spectrum,
@@ -1388,6 +1435,7 @@ def select_telluric_regions(
         automatic_region_count=automatic_region_count,
         automatic_region_half_width_pixels=automatic_region_half_width_pixels,
         enable_theoretical_controls=enable_theoretical_controls,
+        wavelength_frame=resolved_frame,
         show=show,
     )
 
@@ -1725,6 +1773,8 @@ def _validate_automatic_region_count(count: int) -> int:
 
 
 def _selector_erf_factor(spectrum: Spectrum) -> float:
+    if bool(spectrum.meta.get("observatory_frame_correction", False)):
+        return 1.0
     header = _selector_header(spectrum)
     if header is None:
         return 1.0
@@ -1752,6 +1802,40 @@ def _selector_header(spectrum: Spectrum) -> Mapping[str, object] | None:
     from .workflow import _load_fits_header_if_available
 
     return _load_fits_header_if_available(str(source), None)
+
+
+def _spectrum_in_region_frame(
+    spectrum: Spectrum,
+    wavelength_frame: RegionWavelengthFrame,
+) -> Spectrum:
+    """Return the spectrum in coordinates used by the selector and its file."""
+
+    if wavelength_frame == "native":
+        return spectrum
+
+    # Imported lazily because workflow imports the region-file API.
+    from .workflow import _spectrum_to_observatory_vacuum
+
+    return _spectrum_to_observatory_vacuum(spectrum, _selector_header(spectrum))
+
+
+def _normalize_region_wavelength_frame(value: str) -> RegionWavelengthFrame:
+    key = str(value).strip().lower().replace("-", "_")
+    aliases: dict[str, RegionWavelengthFrame] = {
+        "native": "native",
+        "input": "native",
+        "observatory": "observatory",
+        "observer": "observatory",
+        "topocentric": "observatory",
+        "topocent": "observatory",
+        "lab": "observatory",
+    }
+    try:
+        return aliases[key]
+    except KeyError as exc:
+        raise ValueError(
+            "wavelength_frame must be 'native' or 'observatory'"
+        ) from exc
 
 
 def _normalize_ranges(ranges: RegionRanges) -> RegionRanges:

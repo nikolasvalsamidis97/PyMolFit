@@ -108,6 +108,33 @@ result = correct(
 )
 ```
 
+For a barycentric or heliocentric time series, save telluric fit windows in
+observer coordinates so one file can be reused:
+
+```python
+observed = load_spectrum("first_exposure.fits")
+selector = select_telluric_regions(
+    observed,
+    wavelength_frame="observatory",
+    output_path="shared_telluric_regions.ecsv",
+)
+
+result = correct(
+    input_path="another_exposure.fits",
+    region_file="shared_telluric_regions.ecsv",
+    theoretical_spectrum=template,
+)
+```
+
+The selector transforms the wavelength coordinate only, without resampling
+flux, uncertainty, masks, orders, or detector gaps. The ECSV metadata records
+`wavelength_frame: observatory`, and correction therefore does not apply the
+target exposure's BERV or heliocentric velocity to those intervals again.
+Because stellar lines move in the observer frame, reusable files should hold
+telluric fit intervals and only observer-fixed exclusions. Supplying
+`theoretical_spectrum` to each correction generates stellar exclusions for
+that exposure. Files without frame metadata use the legacy `native` behavior.
+
 When a theoretical template is supplied directly to `correct()`, stellar
 features are detected automatically and excluded from atmospheric parameter
 estimation by default:

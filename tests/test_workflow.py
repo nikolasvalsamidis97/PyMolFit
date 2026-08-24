@@ -1560,6 +1560,22 @@ def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():
     np.testing.assert_allclose(converted_ranges, expected_ranges, rtol=0.0, atol=1.0e-15)
 
 
+def test_observatory_frame_preprocessing_is_idempotent():
+    spectrum = Spectrum(
+        wavelength=np.array([0.5889, 0.5890, 0.5891]),
+        flux=np.ones(3),
+        wavelength_medium="air",
+    )
+    header = {"SPECSYS": "BARYCENT", "ESO DRS BERV": -7.5}
+
+    once = _spectrum_to_observatory_vacuum(spectrum, header)
+    twice = _spectrum_to_observatory_vacuum(once, header)
+
+    np.testing.assert_array_equal(twice.wavelength, once.wavelength)
+    np.testing.assert_array_equal(twice.flux, once.flux)
+    assert twice.meta["observatory_erf_factor"] == once.meta["observatory_erf_factor"]
+
+
 def test_workflow_converts_documented_heliocentric_product_to_observatory_frame():
     spectrum = Spectrum(
         wavelength=np.array([0.6860, 0.6870, 0.6880]),

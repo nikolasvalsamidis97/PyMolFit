@@ -137,6 +137,7 @@ from .radiative_transfer import (
 from .regions import (
     InteractiveRegionSelector,
     RegionSelection,
+    RegionWavelengthFrame,
     load_region_file,
     save_region_file,
     select_telluric_regions,
@@ -206,6 +207,7 @@ __all__ = [
     "PyMolFitError",
     "RayleighScatteringAbsorption",
     "RegionSelection",
+    "RegionWavelengthFrame",
     "SampleAverageRebinPlan",
     "ScienceReadinessReport",
     "Spectrum",

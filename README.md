@@ -162,8 +162,8 @@ On later runs, the same `output_path` is detected and loaded automatically, so
 the selector window is skipped. Pass `reuse_existing=False` to reopen the
 saved regions for editing.
 
-The ECSV file records both region types and their wavelength unit and
-air/vacuum medium. Apply it directly without transcribing any endpoints:
+The ECSV file records both region types, wavelength unit, air/vacuum medium,
+and velocity frame. Apply it directly without transcribing any endpoints:
 
 ```python
 from pymolfit import correct
@@ -177,6 +177,41 @@ result = correct(
 
 `region_file` cannot be combined with explicit `fit_ranges` or
 `exclude_ranges`.
+
+### Reuse telluric regions across a time series
+
+Spectra stored on a barycentric or heliocentric wavelength grid move
+terrestrial lines between exposures. Create the shared telluric file in the
+observatory frame instead:
+
+```python
+spectrum = load_spectrum("first_exposure.fits")
+selector = select_telluric_regions(
+    spectrum,
+    wavelength_frame="observatory",
+    output_path="shared_telluric_regions.ecsv",
+)
+```
+
+The selector changes only the wavelength coordinates used for display and
+saved intervals; it does not interpolate or reduce the science arrays. AER
+markers and automatic telluric windows are evaluated in the same observer
+frame. The saved file can then be passed unchanged to every exposure:
+
+```python
+result = correct(
+    input_path="another_exposure.fits",
+    region_file="shared_telluric_regions.ecsv",
+)
+```
+
+Static stellar exclusions are not reusable in this coordinate system because
+stellar features move when barycentric spectra are returned to the observer
+frame. When a theoretical template is available, pass it to each `correct()`
+call so PyMolFit constructs exposure-specific stellar exclusions while reusing
+the shared telluric fit intervals. Region files made by earlier PyMolFit
+versions remain valid and are interpreted as native, exposure-specific
+coordinates.
 
 ## Protect Stellar Features With A Theoretical Spectrum
 

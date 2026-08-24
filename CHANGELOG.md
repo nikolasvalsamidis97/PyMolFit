@@ -3,6 +3,31 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.4 - 2026-08-24
+
+### Added
+
+- Added explicit `native` and `observatory` coordinate metadata to ECSV region
+  files. Older files without the new field remain valid and default to
+  exposure-native coordinates.
+- Added `wavelength_frame="observatory"` to the interactive selector. It moves
+  barycentric or heliocentric wavelength coordinates back to the observer
+  frame without resampling flux, uncertainty, masks, orders, or detector gaps.
+
+### Changed
+
+- Observer-frame region files can now be reused unchanged across time-series
+  spectra. Correction applies each exposure's velocity-frame transform to the
+  spectrum while leaving the shared terrestrial fit intervals fixed.
+- AER markers and automatic telluric windows now follow the selector's declared
+  wavelength frame. Correction provenance records the region-file medium and
+  frame used by the fit.
+
+Regression tests verify exact fitted-model, transmission, and fit-mask
+equivalence between observer-frame intervals and their exposure-specific
+native-frame representation. This release changes fitting pixels only when a
+user explicitly creates or supplies an observer-frame region file.
+
 ## 0.7.3 - 2026-08-24
 
 ### Changed
