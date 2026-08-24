@@ -1761,8 +1761,6 @@ def _correct_spectrum_workflow(
     fixed_component_scales: dict[str, float] = {}
     if n2_continuum:
         fixed_component_scales["N2_continuum"] = 1.0
-    if o2_continuum:
-        fixed_component_scales["O2_continuum"] = 1.0
     if rayleigh:
         fixed_component_scales["Rayleigh"] = 1.0
 

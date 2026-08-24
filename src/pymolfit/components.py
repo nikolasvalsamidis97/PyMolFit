@@ -430,7 +430,7 @@ class O2ContinuumAbsorption:
     """LBLRTM ground-based O2 continuum component."""
 
     continuum: LBLRTMO2Continuum | None = None
-    basis_name: str = "O2_continuum"
+    basis_name: str = "O2"
     xo2cn: float = 1.0
     jrad: int = 1
     scale: float = 1.0
@@ -612,8 +612,6 @@ def combine_optical_depth_components(
     wavelength_micron = np.asarray(wavelength_micron, dtype=float)
     species_index: dict[str, int] = {}
     basis_rows: list[np.ndarray] = []
-    requested = None if species is None else set(species)
-
     for component in components:
         names, local_basis = component.optical_depth_basis(
             wavelength_micron,
@@ -625,8 +623,6 @@ def combine_optical_depth_components(
             raise ValueError("component optical-depth basis has an invalid shape")
 
         for name, row in zip(names, local_basis, strict=True):
-            if requested is not None and name not in requested:
-                continue
             if name not in species_index:
                 species_index[name] = len(basis_rows)
                 basis_rows.append(np.zeros(wavelength_micron.size, dtype=float))

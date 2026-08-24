@@ -285,8 +285,8 @@ def test_workflow_accepts_source_backed_o2_continuum():
     )
 
     assert result.success
-    assert "O2_continuum" in result.species_scales
-    assert result.species_scales["O2_continuum"] == 1.0
+    assert "O2" in result.species_scales
+    assert np.nanmin(result.transmission) < 1.0
 
 
 def test_workflow_rejects_double_counted_o2_continuum_and_cia(tmp_path):

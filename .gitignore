@@ -14,7 +14,10 @@ dist/
 venv/
 *.log
 
-# Local experiments and downloaded/generated validation products are not part
-# of the distributable project. A future publication campaign should live in a
-# dedicated, reproducible validation tree with an explicit data manifest.
+# Local exploratory analyses are not part of the distributable project. The
+# reproducible publication campaign is versioned separately below.
 local_tests/
+
+# Keep the paper-validation layout in Git while excluding generated results.
+paper_validation/**/results/*
+!paper_validation/**/results/.gitkeep

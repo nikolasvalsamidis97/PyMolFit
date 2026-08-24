@@ -10,6 +10,7 @@ from pymolfit import (
     N2RototranslationalContinuumAbsorption,
     O2ContinuumAbsorption,
     PhysicalModelConfig,
+    combine_optical_depth_components,
     correct_arrays,
     physical_transmission_model,
 )
@@ -434,5 +435,26 @@ def test_o2_continuum_component_adds_optical_and_near_ir_absorption():
     )
     names, basis = O2ContinuumAbsorption().optical_depth_basis(wavelength, atmosphere)
 
-    assert names == ("O2_continuum",)
+    assert names == ("O2",)
+    assert np.nanmax(basis) > 0.0
+
+
+def test_o2_continuum_component_is_retained_for_parent_species_selection():
+    wavenumber = np.linspace(12_980.0, 13_200.0, 100)
+    wavelength = 1.0e4 / wavenumber
+    atmosphere = AtmosphereProfile.single_layer(
+        pressure_atm=0.8,
+        temperature_k=280.0,
+        path_length_m=10_000.0,
+        mixing_ratios={"H2O": 0.01, "O2": 0.21},
+    )
+
+    names, basis = combine_optical_depth_components(
+        wavelength,
+        atmosphere,
+        (O2ContinuumAbsorption(),),
+        species=("O2",),
+    )
+
+    assert names == ("O2",)
     assert np.nanmax(basis) > 0.0

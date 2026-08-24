@@ -46,6 +46,11 @@ _SPECIES_COLORS = {
 DEFAULT_TELLURIC_MARKER_LIMIT = 10_000
 DEFAULT_AUTOMATIC_REGION_COUNT = 100
 DEFAULT_AUTOMATIC_REGION_HALF_WIDTH_PIXELS = 12.0
+_SELECTOR_MIN_DISPLAY_POINTS = 512
+_SELECTOR_POINTS_PER_SCREEN_PIXEL = 2.0
+_SELECTOR_HIDE_MARKERS_VIEW_FRACTION = 0.8
+_SELECTOR_ALL_MARKERS_VIEW_FRACTION = 0.02
+_SELECTOR_MARKERS_PER_SCREEN_PIXEL = 1.5
 
 
 @dataclass(frozen=True)
@@ -213,7 +218,11 @@ class InteractiveRegionSelector:
     rectangle's wavelength limits are stored, so its vertical size does not
     affect the fit. Drawing remains enabled until the checkbox is cleared. In
     ``Delete`` mode, rectangles remove intersecting regions. AER catalogue
-    ticks identify candidate telluric transitions by default. ``Automatic``
+    ticks identify candidate telluric transitions by default. The displayed
+    spectrum is reduced with an extrema-preserving renderer when zoomed out and
+    progressively returns to the original sampling while zooming in. Catalogue
+    ticks are hidden in the full-spectrum view and progressively revealed at
+    narrower wavelength intervals. ``Automatic``
     proposes editable fit windows around the requested number of transitions
     with the strongest expected atmospheric absorption. By default, each
     proposal extends 12 sampled detector pixels to either side of the line so
@@ -276,7 +285,21 @@ class InteractiveRegionSelector:
         self._patches: list[object] = []
         self._region_labels: list[object] = []
         self._telluric_marker_count = 0
+        self._visible_telluric_marker_count = 0
         self._telluric_marker_error: str | None = None
+        self._show_telluric_lines = bool(show_telluric_lines)
+        self._telluric_wavelength = np.array([], dtype=float)
+        self._telluric_species = np.array([], dtype=str)
+        self._telluric_strength = np.array([], dtype=float)
+        self._all_telluric_wavelength = np.array([], dtype=float)
+        self._all_telluric_species = np.array([], dtype=str)
+        self._all_telluric_strength = np.array([], dtype=float)
+        self._telluric_overview_count = 0
+        self._telluric_marker_artists: list[object] = []
+        self._spectrum_sections: tuple[tuple[np.ndarray, np.ndarray], ...] = ()
+        self._spectrum_artist: object | None = None
+        self._spectrum_data_bounds = (np.nan, np.nan)
+        self._view_callback_id: int | None = None
         self._automatic_max_lines = int(max_telluric_markers)
         self._automatic_region_half_width_pixels = float(automatic_region_half_width_pixels)
         self._theoretical_spectrum = theoretical_spectrum
@@ -430,6 +453,11 @@ class InteractiveRegionSelector:
                 remember=False,
             )
         self._redraw_regions()
+        self._view_callback_id = self.axis.callbacks.connect(
+            "xlim_changed",
+            self._on_view_changed,
+        )
+        self._update_view_artists()
         if show:
             plt.show()
 
@@ -776,6 +804,9 @@ class InteractiveRegionSelector:
     def close(self) -> None:
         """Close the selector figure."""
 
+        if self._view_callback_id is not None:
+            self.axis.callbacks.disconnect(self._view_callback_id)
+            self._view_callback_id = None
         self._plt.close(self.figure)
 
     def _plot_spectrum(self) -> None:
@@ -796,20 +827,34 @@ class InteractiveRegionSelector:
                 sections = tuple(np.split(indices, breaks))
             else:
                 sections = (indices,)
-        for section in sections:
-            if section.size:
-                self.axis.plot(
-                    wavelength[section],
-                    flux[section],
-                    color="#222222",
-                    linewidth=0.75,
-                )
+        self._spectrum_sections = tuple(
+            (
+                np.asarray(wavelength[section], dtype=float),
+                np.asarray(flux[section], dtype=float),
+            )
+            for section in sections
+            if section.size
+        )
+        finite_wavelength = wavelength[indices]
+        self._spectrum_data_bounds = (
+            float(np.nanmin(finite_wavelength)),
+            float(np.nanmax(finite_wavelength)),
+        )
+        (self._spectrum_artist,) = self.axis.plot(
+            [],
+            [],
+            color="#222222",
+            linewidth=0.75,
+        )
+        self._update_spectrum_artist(self._spectrum_data_bounds)
+        self.axis.relim()
+        self.axis.autoscale_view()
 
     def _plot_telluric_markers(self, *, max_lines: int) -> None:
         try:
-            wavelength, species = _aer_markers_for_spectrum(
+            wavelength, species, strength = _aer_catalog_for_spectrum(
                 self.spectrum,
-                max_lines=max_lines,
+                max_lines=None,
             )
         except Exception as exc:
             self._telluric_marker_error = str(exc)
@@ -820,10 +865,134 @@ class InteractiveRegionSelector:
             )
             return
 
+        self._all_telluric_wavelength = wavelength
+        self._all_telluric_species = species
+        self._all_telluric_strength = strength
         self._telluric_marker_count = int(wavelength.size)
+        if wavelength.size > max_lines:
+            score = _expected_aer_absorption_score(strength, species)
+            finite_score = np.nan_to_num(score, nan=-np.inf)
+            selected = np.argpartition(finite_score, -max_lines)[-max_lines:]
+            wavelength = wavelength[selected]
+            species = species[selected]
+            strength = strength[selected]
+        self._telluric_wavelength = wavelength
+        self._telluric_species = species
+        self._telluric_strength = strength
+        self._telluric_overview_count = int(wavelength.size)
+
+    def _on_view_changed(self, _axis: object) -> None:
+        self._update_view_artists()
+
+    def _update_view_artists(self) -> None:
+        x_limits = self.axis.get_xlim()
+        self._update_spectrum_artist(x_limits)
+        self._update_telluric_marker_artists(x_limits)
+        self._refresh_legend()
+        if hasattr(self, "status_text"):
+            self._update_status()
+        self.figure.canvas.draw_idle()
+
+    def _update_spectrum_artist(self, x_limits: tuple[float, float]) -> None:
+        if self._spectrum_artist is None:
+            return
+        lower, upper = sorted((float(x_limits[0]), float(x_limits[1])))
+        visible_sections: list[tuple[np.ndarray, np.ndarray]] = []
+        visible_counts: list[int] = []
+        for wavelength, flux in self._spectrum_sections:
+            if upper < wavelength[0] or lower > wavelength[-1]:
+                continue
+            start = max(0, int(np.searchsorted(wavelength, lower, side="left")) - 1)
+            stop = min(
+                wavelength.size,
+                int(np.searchsorted(wavelength, upper, side="right")) + 1,
+            )
+            if stop <= start:
+                continue
+            visible_sections.append((wavelength[start:stop], flux[start:stop]))
+            visible_counts.append(stop - start)
+
+        if not visible_sections:
+            self._spectrum_artist.set_data([], [])  # type: ignore[attr-defined]
+            return
+
+        point_budget = max(
+            _SELECTOR_MIN_DISPLAY_POINTS,
+            round(float(self.axis.bbox.width) * _SELECTOR_POINTS_PER_SCREEN_PIXEL),
+        )
+        total_visible = sum(visible_counts)
+        display_wavelength: list[np.ndarray] = []
+        display_flux: list[np.ndarray] = []
+        for index, ((wavelength, flux), count) in enumerate(
+            zip(visible_sections, visible_counts, strict=True)
+        ):
+            section_budget = max(4, round(point_budget * count / total_visible))
+            selected = _extrema_preserving_indices(
+                wavelength,
+                flux,
+                max_points=section_budget,
+            )
+            if index:
+                display_wavelength.append(np.array([np.nan]))
+                display_flux.append(np.array([np.nan]))
+            display_wavelength.append(wavelength[selected])
+            display_flux.append(flux[selected])
+        self._spectrum_artist.set_data(  # type: ignore[attr-defined]
+            np.concatenate(display_wavelength),
+            np.concatenate(display_flux),
+        )
+
+    def _update_telluric_marker_artists(self, x_limits: tuple[float, float]) -> None:
+        for artist in self._telluric_marker_artists:
+            artist.remove()  # type: ignore[attr-defined]
+        self._telluric_marker_artists = []
+        self._visible_telluric_marker_count = 0
+        if not self._show_telluric_lines or self._telluric_marker_error is not None:
+            return
+
+        data_lower, data_upper = self._spectrum_data_bounds
+        data_span = data_upper - data_lower
+        lower = max(data_lower, min(float(x_limits[0]), float(x_limits[1])))
+        upper = min(data_upper, max(float(x_limits[0]), float(x_limits[1])))
+        if not np.isfinite(data_span) or data_span <= 0 or upper <= lower:
+            return
+        view_fraction = min(1.0, (upper - lower) / data_span)
+        if view_fraction >= _SELECTOR_HIDE_MARKERS_VIEW_FRACTION:
+            return
+
+        if view_fraction <= _SELECTOR_ALL_MARKERS_VIEW_FRACTION:
+            visible = (self._all_telluric_wavelength >= lower) & (
+                self._all_telluric_wavelength <= upper
+            )
+            wavelength = self._all_telluric_wavelength[visible]
+            species = self._all_telluric_species[visible]
+        else:
+            visible = (self._telluric_wavelength >= lower) & (self._telluric_wavelength <= upper)
+            wavelength = self._telluric_wavelength[visible]
+            species = self._telluric_species[visible]
+            strength = self._telluric_strength[visible]
+            if wavelength.size:
+                progress = np.log(_SELECTOR_HIDE_MARKERS_VIEW_FRACTION / view_fraction) / np.log(
+                    _SELECTOR_HIDE_MARKERS_VIEW_FRACTION / _SELECTOR_ALL_MARKERS_VIEW_FRACTION
+                )
+                progress = float(np.clip(progress, 0.0, 1.0))
+                marker_budget = max(
+                    1,
+                    round(
+                        float(self.axis.bbox.width) * _SELECTOR_MARKERS_PER_SCREEN_PIXEL * progress
+                    ),
+                )
+                if wavelength.size > marker_budget:
+                    score = _expected_aer_absorption_score(strength, species)
+                    finite_score = np.nan_to_num(score, nan=-np.inf)
+                    selected = np.argpartition(finite_score, -marker_budget)[-marker_budget:]
+                    wavelength = wavelength[selected]
+                    species = species[selected]
+
+        self._visible_telluric_marker_count = int(wavelength.size)
         for name in sorted(set(species.tolist())):
             selected = species == name
-            self.axis.vlines(
+            artist = self.axis.vlines(
                 wavelength[selected],
                 0.91,
                 0.99,
@@ -833,6 +1002,7 @@ class InteractiveRegionSelector:
                 linewidth=0.55,
                 label=f"AER {name}",
             )
+            self._telluric_marker_artists.append(artist)
 
     def _bounded_interval(
         self,
@@ -1006,14 +1176,17 @@ class InteractiveRegionSelector:
                         clip_on=True,
                     )
                 )
+        self._refresh_legend()
+        self._update_status()
+        self.figure.canvas.draw_idle()
+
+    def _refresh_legend(self) -> None:
         handles, labels = self.axis.get_legend_handles_labels()
         existing_legend = self.axis.get_legend()
         if existing_legend is not None:
             existing_legend.remove()
         if labels:
             self.axis.legend(handles, labels, loc="best")
-        self._update_status()
-        self.figure.canvas.draw_idle()
 
     def _update_status(self, message: str | None = None) -> None:
         selection = self.selection
@@ -1031,7 +1204,8 @@ class InteractiveRegionSelector:
             )
         )
         if self._telluric_marker_count:
-            lines.append(f"AER markers: {self._telluric_marker_count}")
+            lines.append(f"AER markers shown: {self._visible_telluric_marker_count}")
+            lines.append(f"AER lines in spectrum: {self._telluric_marker_count}")
         elif self._telluric_marker_error is not None:
             lines.append("AER markers unavailable")
         if self._stellar_mask_result is not None:
@@ -1080,10 +1254,13 @@ def select_telluric_regions(
     Supply either a :class:`Spectrum` or wavelength/flux arrays. Zoom or pan,
     choose fit/exclusion mode, enable ``Draw regions``, and drag rectangles;
     their horizontal limits become numbered regions. Drawing remains enabled
-    until its checkbox is cleared. AER telluric-line ticks are displayed by
-    default. Up to 10,000 of the strongest in-range catalogue transitions are
-    shown so weaker O2 and trace-species lines are not hidden by the much more
-    numerous H2O lines. Enter a line count and press ``Automatic`` to propose
+    until its checkbox is cleared. AER telluric-line ticks are enabled by
+    default but hidden in the full-spectrum view. They are progressively
+    revealed as the wavelength view narrows, with every transition in the local
+    catalogue window shown at close zoom. The spectrum itself uses
+    extrema-preserving display reduction when zoomed out and returns to every
+    original sample at close zoom; this never changes fitting data or saved
+    region coordinates. Enter a line count and press ``Automatic`` to propose
     fit windows around that many transitions with the greatest expected
     atmospheric absorption. This ranking combines each AER line intensity with
     a representative atmospheric column for its molecule. Windows in detector
@@ -1156,6 +1333,45 @@ def select_telluric_regions(
         enable_theoretical_controls=enable_theoretical_controls,
         show=show,
     )
+
+
+def _extrema_preserving_indices(
+    wavelength: np.ndarray,
+    flux: np.ndarray,
+    *,
+    max_points: int,
+) -> np.ndarray:
+    """Select ordered per-bin extrema without altering the source arrays."""
+
+    wavelength = np.asarray(wavelength, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    if wavelength.ndim != 1 or flux.shape != wavelength.shape:
+        raise ValueError("wavelength and flux must be matching one-dimensional arrays")
+    if max_points < 2:
+        raise ValueError("max_points must be at least two")
+    if wavelength.size <= max_points:
+        return np.arange(wavelength.size, dtype=int)
+    if max_points == 2:
+        return np.array([0, wavelength.size - 1], dtype=int)
+    if max_points == 3:
+        interior = 1 + int(np.argmax(np.abs(flux[1:-1] - np.nanmedian(flux))))
+        return np.array([0, interior, wavelength.size - 1], dtype=int)
+
+    bin_count = max(1, (max_points - 2) // 2)
+    edges = np.linspace(wavelength[0], wavelength[-1], bin_count + 1)
+    starts = np.searchsorted(wavelength, edges[:-1], side="left")
+    stops = np.searchsorted(wavelength, edges[1:], side="left")
+    stops[-1] = wavelength.size
+    selected = [0]
+    for start, stop in zip(starts, stops, strict=True):
+        if stop <= start:
+            continue
+        local_flux = flux[start:stop]
+        minimum = int(start + np.argmin(local_flux))
+        maximum = int(start + np.argmax(local_flux))
+        selected.extend(sorted((minimum, maximum)))
+    selected.append(wavelength.size - 1)
+    return np.unique(np.asarray(selected, dtype=int))
 
 
 def _parameter_text(value: str | float) -> str:
@@ -1235,20 +1451,46 @@ def _aer_markers_for_spectrum(
 def _aer_catalog_for_spectrum(
     spectrum: Spectrum,
     *,
-    max_lines: int,
+    max_lines: int | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return AER wavelengths, species, and strengths in display coordinates."""
 
-    input_vacuum = spectrum.to_vacuum().to_unit("micron")
-    erf_factor = _selector_erf_factor(spectrum)
-    observatory_wavelength = input_vacuum.wavelength / erf_factor
-    finite = observatory_wavelength[np.isfinite(observatory_wavelength)]
+    finite = spectrum.wavelength[np.isfinite(spectrum.wavelength)]
     if finite.size == 0:
         raise ValueError("the spectrum contains no finite wavelengths")
+    return _aer_catalog_for_display_interval(
+        spectrum,
+        lower=float(np.nanmin(finite)),
+        upper=float(np.nanmax(finite)),
+        max_lines=max_lines,
+    )
+
+
+def _aer_catalog_for_display_interval(
+    spectrum: Spectrum,
+    *,
+    lower: float,
+    upper: float,
+    max_lines: int | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return AER transitions inside one interval of the displayed coordinates."""
+
+    lower, upper = sorted((float(lower), float(upper)))
+    if not np.isfinite(lower) or not np.isfinite(upper) or lower <= 0 or upper <= lower:
+        raise ValueError("marker interval must have finite, positive, distinct bounds")
+    scale = wavelength_scale_to_micron(spectrum.wavelength_unit)
+    input_vacuum_micron = np.asarray([lower, upper], dtype=float) * scale
+    if spectrum.wavelength_medium == "air":
+        input_vacuum_micron = air_to_vacuum_wavelength(
+            input_vacuum_micron,
+            unit="micron",
+        )
+    erf_factor = _selector_erf_factor(spectrum)
+    observatory_wavelength = input_vacuum_micron / erf_factor
 
     artifact = load_aer_line_window(
-        wavelength_min_micron=float(np.nanmin(finite)),
-        wavelength_max_micron=float(np.nanmax(finite)),
+        wavelength_min_micron=float(np.nanmin(observatory_wavelength)),
+        wavelength_max_micron=float(np.nanmax(observatory_wavelength)),
         max_lines=max_lines,
     )
     line_list = artifact.line_list
@@ -1259,8 +1501,6 @@ def _aer_catalog_for_spectrum(
     species = np.asarray(line_list.species, dtype=str)
     strength = np.asarray(line_list.strength, dtype=float)
 
-    lower = float(np.nanmin(spectrum.wavelength))
-    upper = float(np.nanmax(spectrum.wavelength))
     keep = (
         np.isfinite(marker_wavelength) & (marker_wavelength >= lower) & (marker_wavelength <= upper)
     )

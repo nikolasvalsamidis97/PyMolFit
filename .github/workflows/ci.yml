@@ -37,9 +37,9 @@ jobs:
       - name: Install package and test tools
         run: python -m pip install -e ".[dev,plot]"
       - name: Lint
-        run: python -m ruff check src tests tools examples
+        run: python -m ruff check src tests tools examples paper_validation
       - name: Format
-        run: python -m ruff format --check src tests tools examples
+        run: python -m ruff format --check src tests tools examples paper_validation
       - name: Test
         env:
           MPLBACKEND: Agg

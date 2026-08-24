@@ -247,16 +247,73 @@ def test_interactive_selector_edits_output_filename(tmp_path) -> None:
     selector.close()
 
 
-def test_interactive_selector_shows_aer_markers_by_default(monkeypatch) -> None:
+def test_extrema_preserving_display_keeps_narrow_absorption_and_emission() -> None:
+    from pymolfit.regions import _extrema_preserving_indices
+
+    wavelength = np.linspace(5000.0, 5100.0, 20_000)
+    flux = np.ones_like(wavelength)
+    flux[1234] = -4.0
+    flux[15_678] = 7.0
+
+    selected = _extrema_preserving_indices(
+        wavelength,
+        flux,
+        max_points=400,
+    )
+
+    assert selected.size <= 400
+    assert 1234 in selected
+    assert 15_678 in selected
+
+
+def test_interactive_selector_adapts_spectrum_to_viewport() -> None:
+    wavelength = np.linspace(5000.0, 5100.0, 100_001)
+    flux = 1.0 + 0.01 * np.sin(np.linspace(0.0, 30.0 * np.pi, wavelength.size))
+    flux[50_000] = 0.2
+    selector = select_telluric_regions(
+        wavelength=wavelength,
+        flux=flux,
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+        show_telluric_lines=False,
+        show=False,
+    )
+
+    overview_wavelength = np.asarray(selector._spectrum_artist.get_xdata())
+    overview_flux = np.asarray(selector._spectrum_artist.get_ydata())
+    np.testing.assert_array_equal(selector.spectrum.wavelength, wavelength)
+    np.testing.assert_array_equal(selector.spectrum.flux, flux)
+    assert overview_wavelength.size < wavelength.size
+    assert 0.2 in overview_flux
+
+    selector.axis.set_xlim(5049.95, 5050.05)
+    detailed_wavelength = np.asarray(selector._spectrum_artist.get_xdata())
+    expected = wavelength[(wavelength >= 5049.95) & (wavelength <= 5050.05)]
+    assert np.all(np.isin(expected, detailed_wavelength))
+
+    selector.axis.set_xlim(5070.0, 5070.1)
+    panned_wavelength = np.asarray(selector._spectrum_artist.get_xdata())
+    assert not np.array_equal(detailed_wavelength, panned_wavelength)
+    assert np.nanmin(panned_wavelength) < 5070.0
+    assert np.nanmax(panned_wavelength) > 5070.1
+    selector.close()
+
+
+def test_interactive_selector_hides_then_progressively_reveals_aer_markers(
+    monkeypatch,
+) -> None:
     wavelength = np.linspace(5000.0, 5100.0, 101)
-    marker_wavelength = np.array([5010.0, 5020.0, 5080.0])
-    marker_species = np.array(["H2O", "O2", "H2O"])
+    marker_wavelength = np.linspace(5000.0, 5100.0, 1001)
+    marker_species = np.where(np.arange(marker_wavelength.size) % 2, "H2O", "O2")
+    marker_strength = np.linspace(1.0, 2.0, marker_wavelength.size)
+
+    def markers(_spectrum, *, max_lines):
+        assert max_lines is None
+        return marker_wavelength, marker_species, marker_strength
+
     monkeypatch.setattr(
-        "pymolfit.regions._aer_markers_for_spectrum",
-        lambda _spectrum, *, max_lines: (
-            marker_wavelength,
-            marker_species,
-        ),
+        "pymolfit.regions._aer_catalog_for_spectrum",
+        markers,
     )
 
     selector = select_telluric_regions(
@@ -267,23 +324,37 @@ def test_interactive_selector_shows_aer_markers_by_default(monkeypatch) -> None:
         show=False,
     )
 
-    labels = [collection.get_label() for collection in selector.axis.collections]
-    assert selector._telluric_marker_count == 3
-    assert labels == ["AER H2O", "AER O2"]
+    assert selector._telluric_marker_count == 1001
+    assert selector._visible_telluric_marker_count == 0
+    assert selector._telluric_marker_artists == []
+
+    selector.axis.set_xlim(5000.0, 5060.0)
+    medium_count = selector._visible_telluric_marker_count
+    assert 0 < medium_count < 601
+
+    selector.axis.set_xlim(5030.0, 5050.0)
+    narrow_count = selector._visible_telluric_marker_count
+    assert narrow_count > medium_count
+
+    selector.axis.set_xlim(5049.0, 5050.0)
+    expected_count = np.count_nonzero((marker_wavelength >= 5049.0) & (marker_wavelength <= 5050.0))
+    assert selector._visible_telluric_marker_count == expected_count
+    rendered_count = sum(len(artist.get_segments()) for artist in selector._telluric_marker_artists)
+    assert rendered_count == expected_count
     selector.close()
 
 
-def test_interactive_selector_requests_expanded_default_marker_limit(
+def test_interactive_selector_loads_all_markers_for_adaptive_display(
     monkeypatch,
 ) -> None:
-    requested: list[int] = []
+    requested: list[int | None] = []
 
     def markers(_spectrum, *, max_lines):
         requested.append(max_lines)
-        return np.array([5050.0]), np.array(["H2O"])
+        return np.array([5050.0]), np.array(["H2O"]), np.array([1.0])
 
     monkeypatch.setattr(
-        "pymolfit.regions._aer_markers_for_spectrum",
+        "pymolfit.regions._aer_catalog_for_spectrum",
         markers,
     )
     selector = select_telluric_regions(
@@ -294,7 +365,8 @@ def test_interactive_selector_requests_expanded_default_marker_limit(
         show=False,
     )
 
-    assert requested == [10_000]
+    assert requested == [None]
+    assert selector._telluric_overview_count == 1
     selector.close()
 
 
@@ -428,10 +500,11 @@ def test_interactive_selector_markers_preserve_small_flux_limits(
     wavelength = np.linspace(5000.0, 5100.0, 101)
     flux = 2.0e-12 + 0.4e-12 * np.sin(np.linspace(0.0, 2.0 * np.pi, wavelength.size))
     monkeypatch.setattr(
-        "pymolfit.regions._aer_markers_for_spectrum",
+        "pymolfit.regions._aer_catalog_for_spectrum",
         lambda _spectrum, *, max_lines: (
             np.array([5010.0, 5050.0]),
             np.array(["H2O", "O2"]),
+            np.array([1.0, 2.0]),
         ),
     )
 

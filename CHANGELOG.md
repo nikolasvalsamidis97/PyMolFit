@@ -3,6 +3,25 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.2 - 2026-08-24
+
+### Added
+
+- Added adaptive region-selector rendering. Full-spectrum views now use
+  extrema-preserving display reduction, close views recover every original
+  sample, and zooming or panning updates the spectrum automatically without
+  changing the fitting data or saved region coordinates.
+- Added zoom-dependent AER marker visibility. Markers are hidden in the
+  full-spectrum overview, progressively revealed as the view narrows, and all
+  locally visible catalogue transitions are shown at close zoom.
+
+### Fixed
+
+- Retained configured physical continuum components during basis assembly.
+  The O2 continuum now shares the fitted O2 column scale, as in the LBLRTM
+  molecular-column path. This reduces the fixed-parameter O2 A-band
+  telluric-transmission RMS against Molecfit from 0.00591 to 0.000537.
+
 ## 0.7.1 - 2026-08-17
 
 ### Changed
