@@ -51,6 +51,8 @@ _SELECTOR_POINTS_PER_SCREEN_PIXEL = 2.0
 _SELECTOR_HIDE_MARKERS_VIEW_FRACTION = 0.8
 _SELECTOR_ALL_MARKERS_VIEW_FRACTION = 0.02
 _SELECTOR_MARKERS_PER_SCREEN_PIXEL = 1.5
+_SELECTOR_HIDE_REGION_LABELS_VIEW_FRACTION = 0.25
+_SELECTOR_REGION_LABEL_SPACING_PIXELS = 55.0
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,7 @@ class InteractiveRegionSelector:
     ) -> None:
         try:
             import matplotlib.pyplot as plt
+            from matplotlib.collections import PolyCollection
             from matplotlib.widgets import (
                 Button,
                 CheckButtons,
@@ -273,9 +276,11 @@ class InteractiveRegionSelector:
         self.spectrum = spectrum.sorted()
         self.output_path = None if output_path is None else Path(output_path)
         self._plt = plt
+        self._poly_collection_type = PolyCollection
         self._mode: RegionKind | Literal["delete"] = "fit"
         self._records: list[tuple[RegionKind, float, float]] = []
         self._stellar_records: list[tuple[RegionKind, float, float]] = []
+        self._selection_cache: RegionSelection | None = None
         self._history: list[
             tuple[
                 list[tuple[RegionKind, float, float]],
@@ -284,6 +289,7 @@ class InteractiveRegionSelector:
         ] = []
         self._patches: list[object] = []
         self._region_labels: list[object] = []
+        self._visible_region_count = 0
         self._telluric_marker_count = 0
         self._visible_telluric_marker_count = 0
         self._telluric_marker_error: str | None = None
@@ -452,7 +458,6 @@ class InteractiveRegionSelector:
                 theoretical_spectrum,
                 remember=False,
             )
-        self._redraw_regions()
         self._view_callback_id = self.axis.callbacks.connect(
             "xlim_changed",
             self._on_view_changed,
@@ -465,17 +470,19 @@ class InteractiveRegionSelector:
     def selection(self) -> RegionSelection:
         """Return the current normalized selection."""
 
-        return RegionSelection(
-            fit_ranges=tuple(
-                (lower, upper) for kind, lower, upper in self._records if kind == "fit"
-            ),
-            exclude_ranges=tuple(
-                (lower, upper) for kind, lower, upper in self._records if kind == "exclude"
-            ),
-            wavelength_unit=self.spectrum.wavelength_unit,
-            wavelength_medium=self.spectrum.wavelength_medium,
-            output_path=self.output_path,
-        )
+        if self._selection_cache is None or self._selection_cache.output_path != self.output_path:
+            self._selection_cache = RegionSelection(
+                fit_ranges=tuple(
+                    (lower, upper) for kind, lower, upper in self._records if kind == "fit"
+                ),
+                exclude_ranges=tuple(
+                    (lower, upper) for kind, lower, upper in self._records if kind == "exclude"
+                ),
+                wavelength_unit=self.spectrum.wavelength_unit,
+                wavelength_medium=self.spectrum.wavelength_medium,
+                output_path=self.output_path,
+            )
+        return self._selection_cache
 
     @property
     def theoretical_spectrum(self) -> TheoreticalSpectrum | None:
@@ -658,9 +665,10 @@ class InteractiveRegionSelector:
         self._records = [record for record in self._records if record not in old_stellar]
         self._records.extend(new_records)
         self._stellar_records = new_records
+        self._invalidate_selection()
         self._theoretical_spectrum = theoretical_spectrum
         self._stellar_mask_result = result
-        if hasattr(self, "rectangle_selector"):
+        if self._view_callback_id is not None:
             self._redraw_regions()
         return selection.exclude_ranges
 
@@ -703,6 +711,7 @@ class InteractiveRegionSelector:
         lower, upper = self._bounded_interval(lower, upper)
         self._remember()
         self._records.append((kind, lower, upper))
+        self._invalidate_selection()
         self._redraw_regions()
 
     def delete_regions(self, lower: float, upper: float) -> None:
@@ -715,6 +724,7 @@ class InteractiveRegionSelector:
         self._remember()
         self._records = retained
         self._stellar_records = [record for record in self._stellar_records if record in retained]
+        self._invalidate_selection()
         self._redraw_regions()
 
     def mark_visible_region(self, *, kind: RegionKind | None = None) -> None:
@@ -758,6 +768,7 @@ class InteractiveRegionSelector:
             raise ValueError("no covered positive-strength AER transitions were found")
         self._remember()
         self._records.extend(("fit", lower, upper) for lower, upper in ranges)
+        self._invalidate_selection()
         self._redraw_regions()
         final_count = len(self.selection.fit_ranges)
         self._update_status(
@@ -772,6 +783,7 @@ class InteractiveRegionSelector:
         if not self._history:
             return
         self._records, self._stellar_records = self._history.pop()
+        self._invalidate_selection()
         self._redraw_regions()
 
     def clear(self) -> None:
@@ -782,6 +794,7 @@ class InteractiveRegionSelector:
         self._remember()
         self._records = []
         self._stellar_records = []
+        self._invalidate_selection()
         self._redraw_regions()
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -797,6 +810,7 @@ class InteractiveRegionSelector:
                 "output_path to select_telluric_regions"
             )
         self.output_path = destination
+        self._invalidate_selection()
         written = self.selection.write(destination)
         self._update_status(f"Saved {written.name}")
         return written
@@ -888,6 +902,7 @@ class InteractiveRegionSelector:
         x_limits = self.axis.get_xlim()
         self._update_spectrum_artist(x_limits)
         self._update_telluric_marker_artists(x_limits)
+        self._update_region_artists(x_limits)
         self._refresh_legend()
         if hasattr(self, "status_text"):
             self._update_status()
@@ -1027,6 +1042,9 @@ class InteractiveRegionSelector:
     def _remember(self) -> None:
         self._history.append((list(self._records), list(self._stellar_records)))
 
+    def _invalidate_selection(self) -> None:
+        self._selection_cache = None
+
     def _on_rectangle(self, click_event: object, release_event: object) -> None:
         lower = getattr(click_event, "xdata", None)
         upper = getattr(release_event, "xdata", None)
@@ -1064,6 +1082,7 @@ class InteractiveRegionSelector:
             self._update_status(str(exc))
             return
         self.output_path = destination
+        self._invalidate_selection()
         self._update_status(f"Output filename: {destination.name}")
 
     def _set_automatic_region_count(self, value: str) -> None:
@@ -1121,50 +1140,85 @@ class InteractiveRegionSelector:
         except (OSError, ValueError) as exc:
             self._update_status(str(exc))
 
-    def _redraw_regions(self) -> None:
+    def _clear_region_artists(self) -> None:
         for patch in self._patches:
             patch.remove()  # type: ignore[attr-defined]
         self._patches = []
         for label in self._region_labels:
             label.remove()  # type: ignore[attr-defined]
         self._region_labels = []
+
+    def _update_region_artists(self, x_limits: tuple[float, float]) -> None:
+        """Render only viewport regions, batching every type into one artist."""
+
+        self._clear_region_artists()
         selection = self.selection
-        region_number = 0
-        for kind, ranges in (
-            ("fit", selection.fit_ranges),
-            ("exclude", selection.exclude_ranges),
-        ):
-            for lower, upper in ranges:
-                region_number += 1
-                patch = self.axis.axvspan(
-                    lower,
-                    upper,
-                    facecolor=_REGION_COLORS[kind],
-                    edgecolor=_REGION_COLORS[kind],
-                    alpha=0.22,
-                    linewidth=1.0,
-                    label=(
-                        "Fit region"
-                        if kind == "fit"
-                        and not any(
-                            record.get_label() == "Fit region"
-                            for record in self._patches  # type: ignore[attr-defined]
-                        )
-                        else (
-                            "Excluded region"
-                            if kind == "exclude"
-                            and not any(
-                                record.get_label() == "Excluded region"
-                                for record in self._patches  # type: ignore[attr-defined]
-                            )
-                            else "_nolegend_"
-                        )
-                    ),
+        data_lower, data_upper = self._spectrum_data_bounds
+        data_span = data_upper - data_lower
+        lower = max(data_lower, min(float(x_limits[0]), float(x_limits[1])))
+        upper = min(data_upper, max(float(x_limits[0]), float(x_limits[1])))
+        if not np.isfinite(data_span) or data_span <= 0 or upper <= lower:
+            self._visible_region_count = 0
+            return
+
+        numbered_regions = tuple(
+            (index, kind, region_lower, region_upper)
+            for index, (kind, region_lower, region_upper) in enumerate(
+                tuple(("fit", start, stop) for start, stop in selection.fit_ranges)
+                + tuple(("exclude", start, stop) for start, stop in selection.exclude_ranges),
+                start=1,
+            )
+        )
+        visible_regions = tuple(
+            record for record in numbered_regions if record[3] >= lower and record[2] <= upper
+        )
+        self._visible_region_count = len(visible_regions)
+
+        transform = self.axis.get_xaxis_transform()
+        for kind in ("fit", "exclude"):
+            ranges = tuple(
+                (region_lower, region_upper)
+                for _, region_kind, region_lower, region_upper in visible_regions
+                if region_kind == kind
+            )
+            if not ranges:
+                continue
+            vertices = [
+                (
+                    (region_lower, 0.0),
+                    (region_lower, 1.0),
+                    (region_upper, 1.0),
+                    (region_upper, 0.0),
                 )
-                self._patches.append(patch)
+                for region_lower, region_upper in ranges
+            ]
+            collection = self._poly_collection_type(
+                vertices,
+                closed=True,
+                facecolors=_REGION_COLORS[kind],
+                edgecolors=_REGION_COLORS[kind],
+                alpha=0.22,
+                linewidths=1.0,
+                transform=transform,
+                label="Fit region" if kind == "fit" else "Excluded region",
+                zorder=1,
+            )
+            self.axis.add_collection(collection, autolim=False)
+            self._patches.append(collection)
+
+        view_fraction = min(1.0, (upper - lower) / data_span)
+        label_budget = max(
+            1,
+            int(float(self.axis.bbox.width) / _SELECTOR_REGION_LABEL_SPACING_PIXELS),
+        )
+        if (
+            view_fraction <= _SELECTOR_HIDE_REGION_LABELS_VIEW_FRACTION
+            and len(visible_regions) <= label_budget
+        ):
+            for region_number, kind, region_lower, region_upper in visible_regions:
                 self._region_labels.append(
                     self.axis.text(
-                        0.5 * (lower + upper),
+                        0.5 * (region_lower + region_upper),
                         0.98,
                         f"R{region_number}",
                         color=_REGION_COLORS[kind],
@@ -1176,6 +1230,9 @@ class InteractiveRegionSelector:
                         clip_on=True,
                     )
                 )
+
+    def _redraw_regions(self) -> None:
+        self._update_region_artists(self.axis.get_xlim())
         self._refresh_legend()
         self._update_status()
         self.figure.canvas.draw_idle()

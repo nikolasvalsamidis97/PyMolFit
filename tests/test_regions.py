@@ -183,6 +183,7 @@ def test_interactive_selector_marks_and_numbers_visible_regions() -> None:
     selector.mark_visible_region(kind="fit")
     selector.axis.set_xlim(16_020.0, 16_025.0)
     selector.mark_visible_region(kind="exclude")
+    selector.axis.set_xlim(15_999.0, 16_026.0)
 
     assert selector.selection.fit_ranges == ((16_000.0, 16_010.0),)
     assert selector.selection.exclude_ranges == ((16_020.0, 16_025.0),)
@@ -296,6 +297,53 @@ def test_interactive_selector_adapts_spectrum_to_viewport() -> None:
     assert not np.array_equal(detailed_wavelength, panned_wavelength)
     assert np.nanmin(panned_wavelength) < 5070.0
     assert np.nanmax(panned_wavelength) > 5070.1
+    selector.close()
+
+
+def test_interactive_selector_batches_and_filters_region_artists(tmp_path) -> None:
+    wavelength = np.linspace(0.0, 100.0, 10_001)
+    fit_ranges = tuple((float(index), float(index) + 0.1) for index in range(100))
+    exclude_ranges = tuple((float(index) + 0.2, float(index) + 0.3) for index in range(100))
+    initial = RegionSelection(
+        fit_ranges=fit_ranges,
+        exclude_ranges=exclude_ranges,
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+    )
+    destination = tmp_path / "all_regions.ecsv"
+    selector = select_telluric_regions(
+        wavelength=wavelength,
+        flux=np.ones_like(wavelength),
+        wavelength_unit="angstrom",
+        wavelength_medium="vacuum",
+        initial_regions=initial,
+        output_path=destination,
+        show_telluric_lines=False,
+        show=False,
+    )
+
+    assert len(selector.selection.fit_ranges) == 100
+    assert len(selector.selection.exclude_ranges) == 100
+    assert selector._visible_region_count == 200
+    assert len(selector._patches) == 2
+    assert selector._region_labels == []
+
+    cached_selection = selector.selection
+    selector.axis.set_xlim(40.0, 42.0)
+    visible_count = sum(
+        lower <= 42.0 and upper >= 40.0
+        for lower, upper in selector.selection.fit_ranges + selector.selection.exclude_ranges
+    )
+    rendered_count = sum(len(collection.get_paths()) for collection in selector._patches)
+    assert selector.selection is cached_selection
+    assert selector._visible_region_count == visible_count
+    assert rendered_count == visible_count
+    assert len(selector._region_labels) == visible_count
+
+    assert selector.save() == destination
+    saved = load_region_file(destination)
+    assert len(saved.fit_ranges) == 100
+    assert len(saved.exclude_ranges) == 100
     selector.close()
 
 

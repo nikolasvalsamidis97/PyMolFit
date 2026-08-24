@@ -3,6 +3,22 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.3 - 2026-08-24
+
+### Changed
+
+- Batched fit and exclusion overlays by region type and limited rendering to
+  intervals intersecting the current selector viewport. Region labels are
+  hidden in wide views and restored when the view is sufficiently narrow.
+- Cached the normalized in-memory region selection between edits so zooming
+  and panning do not repeatedly merge unchanged intervals.
+- Improved the measured ESPRESSO selector pan/redraw time from 1.64 s to
+  0.32 s per view (5.1 times faster) for a 443,262-sample spectrum with 735
+  theoretical stellar exclusions and 136,722 available AER transitions.
+
+The changes in this release affect interactive rendering only. Full-resolution
+spectra, calculations, region coordinates, and saved ECSV files are unchanged.
+
 ## 0.7.2 - 2026-08-24
 
 ### Added
