@@ -1400,8 +1400,7 @@ def select_telluric_regions(
         selection = load_region_file(existing_path)
         if (
             wavelength_frame is not None
-            and selection.wavelength_frame
-            != _normalize_region_wavelength_frame(wavelength_frame)
+            and selection.wavelength_frame != _normalize_region_wavelength_frame(wavelength_frame)
         ):
             raise ValueError(
                 f"existing region file uses wavelength_frame={selection.wavelength_frame!r}, "
@@ -1833,9 +1832,7 @@ def _normalize_region_wavelength_frame(value: str) -> RegionWavelengthFrame:
     try:
         return aliases[key]
     except KeyError as exc:
-        raise ValueError(
-            "wavelength_frame must be 'native' or 'observatory'"
-        ) from exc
+        raise ValueError("wavelength_frame must be 'native' or 'observatory'") from exc
 
 
 def _normalize_ranges(ranges: RegionRanges) -> RegionRanges:

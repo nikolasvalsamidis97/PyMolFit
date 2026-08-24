@@ -715,9 +715,7 @@ def test_observatory_region_file_matches_equivalent_native_berv_file(tmp_path) -
     observatory_exclude = ((2.330, 2.332),)
     native_file = save_region_file(
         RegionSelection(
-            fit_ranges=tuple(
-                (lower * factor, upper * factor) for lower, upper in observatory_fit
-            ),
+            fit_ranges=tuple((lower * factor, upper * factor) for lower, upper in observatory_fit),
             exclude_ranges=tuple(
                 (lower * factor, upper * factor) for lower, upper in observatory_exclude
             ),
