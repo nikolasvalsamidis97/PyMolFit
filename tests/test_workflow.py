@@ -1546,14 +1546,10 @@ def test_workflow_reads_espresso_qc_berv_for_ut2_barycentric_spectrum():
 
     converted = _spectrum_to_observatory_vacuum(spectrum, header)
 
-    factor = (1.0 + 1.55e-8) * (
-        1.0 + header["ESO QC BERV"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
-    )
+    factor = (1.0 + 1.55e-8) * (1.0 + header["ESO QC BERV"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0))
     np.testing.assert_allclose(converted.wavelength, spectrum.wavelength / factor)
     assert converted.meta["observatory_frame_correction"] is True
-    assert converted.meta["observatory_frame_velocity_km_s"] == pytest.approx(
-        header["ESO QC BERV"]
-    )
+    assert converted.meta["observatory_frame_velocity_km_s"] == pytest.approx(header["ESO QC BERV"])
 
 
 def test_workflow_reconstructs_espresso_ut2_barycentric_velocity():
