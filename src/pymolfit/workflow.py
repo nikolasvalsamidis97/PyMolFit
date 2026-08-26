@@ -4872,12 +4872,7 @@ def _stellar_template_frame_correction_factor(
 
     velocity_km_s = _first_header_float(
         header,
-        (
-            "ESO DRS BERV",
-            "HIERARCH ESO DRS BERV",
-            "BERV",
-            "BARYCORR",
-        ),
+        _BARYCENTRIC_VELOCITY_KEYS,
     )
     if not np.isfinite(velocity_km_s):
         velocity_km_s = _barycentric_velocity_from_header_km_s(header)
@@ -4900,6 +4895,16 @@ def _first_header_float(header: Mapping[str, object], keys: tuple[str, ...]) -> 
     return np.nan
 
 
+_BARYCENTRIC_VELOCITY_KEYS = (
+    "ESO QC BERV",
+    "HIERARCH ESO QC BERV",
+    "ESO DRS BERV",
+    "HIERARCH ESO DRS BERV",
+    "BERV",
+    "BARYCORR",
+)
+
+
 def _spectral_frame_velocity_km_s(
     header: Mapping[str, object],
 ) -> tuple[str, float] | None:
@@ -4907,7 +4912,7 @@ def _spectral_frame_velocity_km_s(
     if specs in {"BARYCENT", "BARYCENTRIC"}:
         velocity = _first_header_float(
             header,
-            ("ESO DRS BERV", "HIERARCH ESO DRS BERV", "BERV", "BARYCORR"),
+            _BARYCENTRIC_VELOCITY_KEYS,
         )
         if not np.isfinite(velocity):
             velocity = _barycentric_velocity_from_header_km_s(header)
@@ -4940,6 +4945,12 @@ def _barycentric_velocity_from_header_km_s(
             "HIERARCH ESO TEL GEOLON",
             "ESO TEL1 GEOLON",
             "HIERARCH ESO TEL1 GEOLON",
+            "ESO TEL2 GEOLON",
+            "HIERARCH ESO TEL2 GEOLON",
+            "ESO TEL3 GEOLON",
+            "HIERARCH ESO TEL3 GEOLON",
+            "ESO TEL4 GEOLON",
+            "HIERARCH ESO TEL4 GEOLON",
             "LONGITUD",
             "OBSGEO-L",
         ),
@@ -4951,6 +4962,12 @@ def _barycentric_velocity_from_header_km_s(
             "HIERARCH ESO TEL GEOLAT",
             "ESO TEL1 GEOLAT",
             "HIERARCH ESO TEL1 GEOLAT",
+            "ESO TEL2 GEOLAT",
+            "HIERARCH ESO TEL2 GEOLAT",
+            "ESO TEL3 GEOLAT",
+            "HIERARCH ESO TEL3 GEOLAT",
+            "ESO TEL4 GEOLAT",
+            "HIERARCH ESO TEL4 GEOLAT",
             "LATITUDE",
             "OBSGEO-B",
         ),
@@ -4962,6 +4979,12 @@ def _barycentric_velocity_from_header_km_s(
             "HIERARCH ESO TEL GEOELEV",
             "ESO TEL1 GEOELEV",
             "HIERARCH ESO TEL1 GEOELEV",
+            "ESO TEL2 GEOELEV",
+            "HIERARCH ESO TEL2 GEOELEV",
+            "ESO TEL3 GEOELEV",
+            "HIERARCH ESO TEL3 GEOELEV",
+            "ESO TEL4 GEOELEV",
+            "HIERARCH ESO TEL4 GEOELEV",
             "ALTITUDE",
             "OBSGEO-H",
         ),

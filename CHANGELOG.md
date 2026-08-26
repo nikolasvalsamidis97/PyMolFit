@@ -3,6 +3,21 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.7.5 - 2026-08-26
+
+### Fixed
+
+- Recognize the ESPRESSO `ESO QC BERV` header card when converting
+  barycentric spectra to the observatory frame.
+- Support VLT UT1 through UT4 geodetic header cards when a missing barycentric
+  correction must be reconstructed from observation metadata.
+- Apply the same corrected frame handling to theoretical stellar masks.
+
+This release corrects a scientific-result defect affecting barycentric
+ESPRESSO products whose headers provide `ESO QC BERV` and numbered telescope
+coordinates. Previously, those spectra could remain on the barycentric grid
+while observatory-frame telluric regions were fitted.
+
 ## 0.7.4 - 2026-08-24
 
 ### Added

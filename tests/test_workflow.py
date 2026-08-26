@@ -1536,6 +1536,44 @@ def test_workflow_reconstructs_combined_spectrum_velocity_at_midpoint():
     assert velocity == pytest.approx(-13.77, abs=0.03)
 
 
+def test_workflow_reads_espresso_qc_berv_for_ut2_barycentric_spectrum():
+    spectrum = Spectrum(
+        wavelength=np.array([0.6860, 0.6870, 0.6880]),
+        flux=np.ones(3),
+        wavelength_medium="vacuum",
+    )
+    header = {"SPECSYS": "BARYCENT", "ESO QC BERV": 9.94675912393911}
+
+    converted = _spectrum_to_observatory_vacuum(spectrum, header)
+
+    factor = (1.0 + 1.55e-8) * (
+        1.0 + header["ESO QC BERV"] / (SPEED_OF_LIGHT_M_PER_S / 1000.0)
+    )
+    np.testing.assert_allclose(converted.wavelength, spectrum.wavelength / factor)
+    assert converted.meta["observatory_frame_correction"] is True
+    assert converted.meta["observatory_frame_velocity_km_s"] == pytest.approx(
+        header["ESO QC BERV"]
+    )
+
+
+def test_workflow_reconstructs_espresso_ut2_barycentric_velocity():
+    header = {
+        "SPECSYS": "BARYCENT",
+        "DATE-OBS": "2023-07-08T03:39:58.096",
+        "MJD-OBS": 60133.15275574,
+        "MJD-END": 60133.1562279622,
+        "RA": 311.292481,
+        "DEC": -31.34435,
+        "ESO TEL2 GEOLON": -70.4048,
+        "ESO TEL2 GEOLAT": -24.6272,
+        "ESO TEL2 GEOELEV": 2648.0,
+    }
+
+    velocity = _barycentric_velocity_from_header_km_s(header)
+
+    assert velocity == pytest.approx(9.96, abs=0.03)
+
+
 def test_workflow_applies_molecfit_air_rv_order_before_vacuum_conversion():
     spectrum = Spectrum(
         wavelength=np.array([0.5889, 0.5890, 0.5891]),
