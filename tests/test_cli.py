@@ -4,8 +4,9 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from pymolfit import LineList, ModelConfig, __version__, transmission_model
+from pymolfit import ModelConfig, __version__, transmission_model
 from pymolfit.cli import build_parser, main
+from tests.helpers import demo_lines
 
 
 def _fixed_decimal(value, width, decimals):
@@ -33,37 +34,37 @@ def _hitran_row():
     return row + " " * (160 - len(row))
 
 
-def test_cli_fit_writes_corrected_and_product(tmp_path):
+def test_cli_fit_writes_full_product(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 300)
     flux = transmission_model(
         wavelength,
-        LineList.demo_near_ir(),
+        demo_lines(),
         ModelConfig(species_scales={"H2O": 1.2}),
     )
     input_path = tmp_path / "input.txt"
-    output_path = tmp_path / "corrected.txt"
-    product_path = tmp_path / "product.ecsv"
+    output_path = tmp_path / "corrected.ecsv"
     np.savetxt(input_path, np.column_stack([wavelength, flux]))
 
+    lines_path = tmp_path / "lines.ecsv"
+    demo_lines().write(lines_path)
     status = main(
         [
             "fit",
             str(input_path),
             str(output_path),
-            "--demo-lines",
+            "--line-list",
+            str(lines_path),
             "--wavelength-medium",
             "vacuum",
             "--continuum-order",
             "0",
-            "--product",
-            str(product_path),
         ]
     )
 
-    corrected = np.loadtxt(output_path)
-    product = Table.read(product_path)
+    product = Table.read(output_path, format="ascii.ecsv")
     assert status == 0
-    assert corrected.shape[0] == wavelength.size
+    assert len(product) == wavelength.size
+    assert "corrected_flux" in product.colnames
     assert "transmission" in product.colnames
 
 
@@ -73,7 +74,6 @@ def test_cli_exposes_native_radiative_transfer_controls():
             "fit",
             "input.txt",
             "output.txt",
-            "--demo-lines",
             "--radiative-transfer-grid",
             "model",
             "--radiative-transfer-step-cm",
@@ -100,7 +100,11 @@ def test_cli_uses_public_correction_defaults():
     args = build_parser().parse_args(["fit", "input.txt", "output.txt"])
 
     assert args.segment_size == 0.005
-    assert args.min_transmission == 0.01
+    assert args.min_transmission == "auto"
+    assert args.continuum_order == "auto"
+    assert args.loss == "soft_l1"
+    assert args.f_scale == "auto"
+    assert args.automatic_fit_regions is True
 
 
 def test_cli_accepts_region_file():
@@ -124,7 +128,6 @@ def test_cli_rejects_region_file_with_explicit_ranges():
                 "fit",
                 "input.txt",
                 "output.txt",
-                "--demo-lines",
                 "--region-file",
                 "regions.ecsv",
                 "--fit-range",
@@ -302,7 +305,7 @@ def test_cli_install_aer_reports_verified_artifact(monkeypatch, tmp_path, capsys
 
 def test_cli_aer_status_is_nonzero_when_catalogue_missing(monkeypatch):
     monkeypatch.setattr("pymolfit.cli.aer_catalog_status", lambda **kwargs: None)
-    assert main(["aer-status", "--no-reuse-molecfit"]) == 1
+    assert main(["aer-status", "--no-reuse-local-aer"]) == 1
 
 
 def test_cli_rejects_two_global_wavelength_fit_modes(tmp_path):
@@ -315,7 +318,6 @@ def test_cli_rejects_two_global_wavelength_fit_modes(tmp_path):
                 "fit",
                 str(input_path),
                 str(tmp_path / "corrected.txt"),
-                "--demo-lines",
                 "--fit-wavelength-shift",
                 "--fit-wavelength-polynomial",
             ]
@@ -418,3 +420,13 @@ def test_cli_hitran_filter_respects_wavelength_unit(tmp_path):
 
     assert status == 0
     assert output_path.exists()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--demo-lines", "--hitran-min-strength", "--hitran-max-lines", "--no-reuse-molecfit-aer"],
+)
+def test_cli_rejects_removed_flags(flag):
+    with pytest.raises(SystemExit) as exc:
+        main(["fit", "input.fits", "output.ecsv", flag])
+    assert exc.value.code == 2

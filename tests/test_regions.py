@@ -7,6 +7,7 @@ import pytest
 from astropy.table import Table
 
 from pymolfit import (
+    InteractiveRegionSelector,
     Observation,
     RegionSelection,
     Spectrum,
@@ -16,6 +17,21 @@ from pymolfit import (
     select_telluric_regions,
 )
 from pymolfit.spectrum import air_to_vacuum_wavelength
+from tests.helpers import demo_lines
+
+
+def _interactive_selector(spectrum=None, **kwargs):
+    """Exercise the editor independently of automatic region generation."""
+
+    if spectrum is None:
+        spectrum = Spectrum(
+            **{
+                key: kwargs.pop(key)
+                for key in ("wavelength", "flux", "wavelength_unit", "wavelength_medium")
+                if key in kwargs
+            }
+        )
+    return InteractiveRegionSelector(spectrum, **kwargs)
 
 
 def test_automatic_region_default_includes_line_wings_and_continuum() -> None:
@@ -96,7 +112,7 @@ def test_selector_reuses_existing_output_file_without_opening_window(
         wavelength_unit="angstrom",
         wavelength_medium="vacuum",
         output_path=tmp_path / "regions",
-        show=False,
+        show_interactive_window=False,
     )
 
     assert isinstance(reused, RegionSelection)
@@ -120,7 +136,7 @@ def test_selector_can_open_existing_output_file_for_editing(tmp_path) -> None:
         output_path=path,
         reuse_existing=False,
         show_telluric_lines=False,
-        show=False,
+        show_interactive_window=False,
     )
 
     assert not isinstance(selector, RegionSelection)
@@ -149,7 +165,7 @@ def test_selector_rejects_requested_frame_that_conflicts_with_existing_file(
             wavelength_unit="angstrom",
             output_path=path,
             wavelength_frame="native",
-            show=False,
+            show_interactive_window=False,
         )
 
 
@@ -170,7 +186,7 @@ def test_selector_can_display_and_save_observatory_frame_coordinates() -> None:
         },
     )
 
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         spectrum,
         wavelength_frame="observatory",
         show_telluric_lines=False,
@@ -217,7 +233,7 @@ def test_interactive_selector_add_delete_undo_and_save(tmp_path) -> None:
         wavelength_medium="air",
     )
     path = tmp_path / "selected.ecsv"
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         spectrum,
         output_path=path,
         show_telluric_lines=False,
@@ -237,7 +253,7 @@ def test_interactive_selector_add_delete_undo_and_save(tmp_path) -> None:
 
 def test_interactive_selector_preserves_spectrum_wavelength_limits() -> None:
     wavelength = np.linspace(15_984.0, 16_198.0, 100)
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -257,7 +273,7 @@ def test_interactive_selector_preserves_spectrum_wavelength_limits() -> None:
 
 def test_interactive_selector_marks_and_numbers_visible_regions() -> None:
     wavelength = np.linspace(15_984.0, 16_198.0, 100)
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -282,7 +298,7 @@ def test_interactive_selector_marks_and_numbers_visible_regions() -> None:
 
 def test_interactive_selector_adds_rectangle_wavelength_interval() -> None:
     wavelength = np.linspace(5000.0, 5100.0, 101)
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -315,7 +331,7 @@ def test_interactive_selector_adds_rectangle_wavelength_interval() -> None:
 
 def test_interactive_selector_edits_output_filename(tmp_path) -> None:
     wavelength = np.linspace(5000.0, 5100.0, 101)
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -357,7 +373,7 @@ def test_interactive_selector_adapts_spectrum_to_viewport() -> None:
     wavelength = np.linspace(5000.0, 5100.0, 100_001)
     flux = 1.0 + 0.01 * np.sin(np.linspace(0.0, 30.0 * np.pi, wavelength.size))
     flux[50_000] = 0.2
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=flux,
         wavelength_unit="angstrom",
@@ -397,7 +413,7 @@ def test_interactive_selector_batches_and_filters_region_artists(tmp_path) -> No
         wavelength_medium="vacuum",
     )
     destination = tmp_path / "all_regions.ecsv"
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -450,7 +466,7 @@ def test_interactive_selector_hides_then_progressively_reveals_aer_markers(
         markers,
     )
 
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=np.ones_like(wavelength),
         wavelength_unit="angstrom",
@@ -491,7 +507,7 @@ def test_interactive_selector_loads_all_markers_for_adaptive_display(
         "pymolfit.regions._aer_catalog_for_spectrum",
         markers,
     )
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=np.linspace(5000.0, 5100.0, 101),
         flux=np.ones(101),
         wavelength_unit="angstrom",
@@ -608,7 +624,7 @@ def test_interactive_selector_adds_automatic_regions_as_one_undoable_edit(
             (5030.0, 5040.0),
         ),
     )
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=np.linspace(5000.0, 5100.0, 101),
         flux=np.ones(101),
         wavelength_unit="angstrom",
@@ -642,7 +658,7 @@ def test_interactive_selector_markers_preserve_small_flux_limits(
         ),
     )
 
-    selector = select_telluric_regions(
+    selector = _interactive_selector(
         wavelength=wavelength,
         flux=flux,
         wavelength_unit="angstrom",
@@ -671,7 +687,7 @@ def test_correct_arrays_region_file_matches_explicit_ranges(tmp_path) -> None:
         tmp_path / "regions.ecsv",
     )
     options = {
-        "demo_line_list": True,
+        "line_list": demo_lines(),
         "physical": False,
         "continuum_order": 0,
         "solve_continuum_linear": True,
@@ -739,7 +755,7 @@ def test_observatory_region_file_matches_equivalent_native_berv_file(tmp_path) -
     )
     options = {
         "observation": observation,
-        "demo_line_list": True,
+        "line_list": demo_lines(),
         "physical": False,
         "continuum_order": 0,
         "solve_continuum_linear": True,

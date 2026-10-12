@@ -284,6 +284,7 @@ def test_workflow_can_fit_continuum_only_from_file_path(tmp_path):
         wavelength,
         flux,
         h2o_continuum=path,
+        aer_catalog=None,
         atmosphere=atmosphere,
         continuum_order=0,
     )
@@ -311,6 +312,7 @@ def test_workflow_can_fit_n2_rototranslational_continuum_only():
         flux,
         n2_continuum=True,
         atmosphere=atmosphere,
+        aer_catalog=None,
         continuum_order=0,
     )
 

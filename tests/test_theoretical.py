@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from pymolfit import (
-    ConfigurationError,
+    AdvancedOptions,
+    InteractiveRegionSelector,
     LineList,
     Observation,
     Spectrum,
@@ -12,7 +13,6 @@ from pymolfit import (
     correct,
     correct_arrays,
     load_region_file,
-    select_telluric_regions,
 )
 from pymolfit.diagnostics import format_fit_summary
 from pymolfit.model import ModelConfig, transmission_model
@@ -140,7 +140,7 @@ def test_selector_opens_with_editable_theoretical_exclusions(tmp_path) -> None:
         wavelength_medium="vacuum",
     )
 
-    selector = select_telluric_regions(
+    selector = InteractiveRegionSelector(
         observed,
         theoretical_spectrum=template,
         enable_theoretical_controls=True,
@@ -177,7 +177,7 @@ def test_selector_updates_stellar_width_and_saves_combined_file(tmp_path) -> Non
         wavelength_medium="vacuum",
     )
     destination = tmp_path / "combined_regions.ecsv"
-    selector = select_telluric_regions(
+    selector = InteractiveRegionSelector(
         observed,
         theoretical_spectrum=template,
         enable_theoretical_controls=True,
@@ -296,6 +296,7 @@ def test_correct_arrays_uses_opt_in_stellar_confidence_weights_without_binary_ex
         transmission,
         line_list=line_list,
         theoretical_spectrum=template,
+        automatic_fit_regions=False,
         continuum_order=0,
         solve_continuum_linear=True,
         lsf_sigma_pixels=0.0,
@@ -317,27 +318,23 @@ def test_correct_arrays_uses_opt_in_stellar_confidence_weights_without_binary_ex
     )
 
 
-def test_joint_stellar_model_is_opt_in_on_unified_correct_only(tmp_path) -> None:
+def test_joint_stellar_model_is_removed() -> None:
     import inspect
 
-    from pymolfit import correct_file
+    from pymolfit import AdvancedOptions, correct_file
+    from pymolfit.fit import fit_telluric_segments, fit_tellurics
 
-    wavelength = np.linspace(0.499, 0.501, 401)
-    spectrum = Spectrum(wavelength, np.ones_like(wavelength))
-
-    assert inspect.signature(correct).parameters["joint_stellar_model"].default is False
-    assert "joint_stellar_model" not in inspect.signature(correct_arrays).parameters
-    assert "joint_stellar_model" not in inspect.signature(correct_file).parameters
-    with pytest.raises(ConfigurationError, match="requires theoretical_spectrum"):
-        correct(
-            spectrum=spectrum,
-            line_list=LineList.empty_hitran(),
-            joint_stellar_model=True,
-            report=False,
-        )
+    for target in (AdvancedOptions, correct, correct_arrays, correct_file):
+        assert "joint_stellar_model" not in inspect.signature(target).parameters
+    assert "stellar_model" not in inspect.signature(fit_tellurics).parameters
+    assert "stellar_models" not in inspect.signature(fit_telluric_segments).parameters
+    with pytest.raises(TypeError, match="joint_stellar_model"):
+        correct("missing.fits", joint_stellar_model=True)
 
 
-def test_unified_correct_runs_joint_stellar_model_for_array_input(tmp_path) -> None:
+def test_unified_correct_preserves_stellar_exclusions_for_array_input(
+    tmp_path, monkeypatch
+) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_995.0, 5_005.0, 2_001)
     stellar_profile = 1.0 - 0.25 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2)
@@ -368,34 +365,39 @@ def test_unified_correct_runs_joint_stellar_model_for_array_input(tmp_path) -> N
         stellar_profile,
     )
 
+    monkeypatch.setattr("pymolfit.workflow._resolve_line_list", lambda *a, **kw: line_list)
     result = correct(
-        wavelength=wavelength,
-        flux=star * atmosphere,
+        Spectrum(
+            wavelength,
+            star * atmosphere,
+            wavelength_medium="vacuum",
+            observation=Observation(wavelength_frame="observatory"),
+        ),
         wavelength_medium="vacuum",
-        observation=Observation(wavelength_frame="observatory"),
-        line_list=line_list,
         theoretical_spectrum=template,
-        joint_stellar_model=True,
-        allow_default_observatory=True,
-        continuum_order=0,
-        solve_continuum_linear=True,
-        lsf_sigma_pixels=0.0,
-        lsf_lorentz_fwhm_pixels=0.0,
-        fit_lsf_sigma=False,
-        fit_lsf_lorentz_fwhm=False,
-        fit_wavelength_shift=False,
-        high_resolution_grid=False,
-        auto_segment=False,
+        advanced=AdvancedOptions(
+            continuum_order=0,
+            solve_continuum_linear=True,
+            lsf_sigma_pixels=0.0,
+            lsf_lorentz_fwhm_pixels=0.0,
+            fit_lsf_sigma=False,
+            fit_lsf_lorentz_fwhm=False,
+            lsf_variable_width=False,
+            wavelength_order=None,
+            segment_size=0.1,
+        ),
         report=False,
     )
 
     assert result.success
-    assert result.stellar_model is not None
-    assert result.provenance["stellar_template"]["joint_forward_model"] is True
-    assert "stellar_model" in result.to_table().colnames
+    assert not hasattr(result, "stellar_model")
+    assert "joint_forward_model" not in result.provenance["stellar_template"]
+    centre = int(np.argmin(np.abs(result.spectrum.wavelength - 0.5)))
+    assert not result.fit_mask[centre]
+    assert "stellar_model" not in result.to_table().colnames
 
 
-def test_unified_correct_runs_joint_stellar_model_for_file_input(tmp_path) -> None:
+def test_unified_correct_preserves_stellar_exclusions_for_file_input(tmp_path, monkeypatch) -> None:
     template_path = tmp_path / "stellar.dat"
     template_wavelength = np.linspace(4_995.0, 5_005.0, 1_001)
     stellar_profile = 1.0 - 0.2 * np.exp(-0.5 * ((template_wavelength - 5_000.0) / 0.08) ** 2)
@@ -420,28 +422,30 @@ def test_unified_correct_runs_joint_stellar_model_for_file_input(tmp_path) -> No
     spectrum_path = tmp_path / "observed.txt"
     np.savetxt(spectrum_path, np.column_stack((wavelength, star * atmosphere)))
 
+    monkeypatch.setattr("pymolfit.workflow._resolve_line_list", lambda *a, **kw: line_list)
     result = correct(
-        input_path=spectrum_path,
+        spectrum_path,
         wavelength_medium="vacuum",
-        line_list=line_list,
         theoretical_spectrum=template,
-        joint_stellar_model=True,
-        allow_default_observatory=True,
-        continuum_order=0,
-        solve_continuum_linear=True,
-        lsf_sigma_pixels=0.0,
-        lsf_lorentz_fwhm_pixels=0.0,
-        fit_lsf_sigma=False,
-        fit_lsf_lorentz_fwhm=False,
-        fit_wavelength_shift=False,
-        high_resolution_grid=False,
-        auto_segment=False,
+        advanced=AdvancedOptions(
+            continuum_order=0,
+            solve_continuum_linear=True,
+            lsf_sigma_pixels=0.0,
+            lsf_lorentz_fwhm_pixels=0.0,
+            fit_lsf_sigma=False,
+            fit_lsf_lorentz_fwhm=False,
+            lsf_variable_width=False,
+            wavelength_order=None,
+            segment_size=0.1,
+        ),
         report=False,
     )
 
     assert result.success
-    assert result.stellar_model is not None
-    assert result.provenance["stellar_template"]["joint_forward_model"] is True
+    assert not hasattr(result, "stellar_model")
+    assert "joint_forward_model" not in result.provenance["stellar_template"]
+    centre = int(np.argmin(np.abs(result.spectrum.wavelength - 0.5)))
+    assert not result.fit_mask[centre]
 
 
 def test_stellar_mask_can_be_exported_in_native_air_angstrom_coordinates(tmp_path) -> None:

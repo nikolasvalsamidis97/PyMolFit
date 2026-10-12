@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from .observation import Observation
+
 WAVELENGTH_TO_MICRON = {
     "micron": 1.0,
     "microns": 1.0,
@@ -78,9 +80,22 @@ def vacuum_to_air_wavelength(wavelength: np.ndarray, *, unit: str = "micron") ->
 class Spectrum:
     """A generic one-dimensional spectrum.
 
-    Wavelength is assumed to be in microns unless another unit is stated in
-    ``wavelength_unit``. The arrays are copied into float NumPy arrays and must
-    all have the same one-dimensional shape.
+    Arrays are copied and must share one one-dimensional shape. Loading and
+    conversion preserve the attached observing conditions. Repair metadata with
+    ``dataclasses.replace(spectrum, observation=updated_observation)``.
+
+    :param wavelength: Sample wavelengths in ``wavelength_unit``.
+    :param flux: Observed flux; no continuum normalisation is required.
+    :param uncertainty: Optional positive one-sigma flux errors, in flux units.
+    :param mask: Optional boolean array; True means usable, False means excluded.
+    :param group_id: Optional per-pixel order/detector labels. Group boundaries
+        are preserved during segmentation and wavelength fitting.
+    :param wavelength_unit: Wavelength unit; defaults to microns.
+    :param wavelength_medium: 'air' or 'vacuum' (default); describes the supplied
+        values without converting them.
+    :param meta: Additional metadata, including loaded FITS header information.
+    :param observation: Observing conditions and reference frame; explicit values
+        take precedence over an observation serialized in ``meta``.
     """
 
     wavelength: np.ndarray
@@ -91,6 +106,7 @@ class Spectrum:
     wavelength_unit: str = "micron"
     wavelength_medium: str = "vacuum"
     meta: Mapping[str, Any] = field(default_factory=dict)
+    observation: Observation | None = None
 
     def __post_init__(self) -> None:
         wavelength = np.array(self.wavelength, dtype=float, copy=True)
@@ -122,7 +138,21 @@ class Spectrum:
         object.__setattr__(
             self, "wavelength_medium", normalize_wavelength_medium(self.wavelength_medium)
         )
-        object.__setattr__(self, "meta", dict(self.meta))
+        meta = dict(self.meta)
+        observation = self.observation
+        if observation is None:
+            if isinstance(meta.get("pymolfit_observation"), Mapping):
+                observation = Observation.from_dict(meta["pymolfit_observation"])
+            elif isinstance(meta.get("observation"), Mapping):
+                observation = Observation(metadata=meta["observation"])
+        if observation is not None:
+            if not isinstance(observation, Observation):
+                raise TypeError("observation must be an Observation object or None")
+            # Keep a serializable copy for segment constructors and saved products.
+            meta["pymolfit_observation"] = observation.to_dict()
+            meta["observation"] = observation.to_header()
+        object.__setattr__(self, "observation", observation)
+        object.__setattr__(self, "meta", meta)
 
     @property
     def valid(self) -> np.ndarray:
@@ -225,6 +255,12 @@ def correct_spectrum(
 
     Very deep fitted absorption can amplify noise severely, so values below
     ``min_transmission`` are masked to NaN in the corrected flux.
+
+    :param spectrum: Observed spectrum; no fitting is done by this helper.
+    :param transmission: Dimensionless fitted transmission at each observed pixel.
+    :param transmission_uncertainty: Optional matching one-sigma transmission errors.
+    :param min_transmission: Division threshold strictly between zero and one.
+    :return: Corrected Spectrum with propagated errors and unsafe pixels masked.
     """
 
     transmission = np.asarray(transmission, dtype=float)

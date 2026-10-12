@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Literal
@@ -15,6 +15,13 @@ from astropy.time import Time
 from scipy.ndimage import percentile_filter
 from scipy.signal import find_peaks, peak_widths
 
+from ._automatic import (
+    automatic_regions,
+    automatic_robust_scale,
+    choose_continuum_order,
+    estimate_missing_uncertainty,
+    mask_uncertain_correction,
+)
 from .aer_data import AERCatalogArtifact, load_aer_line_window
 from .atmosphere import (
     DEFAULT_OBSERVATORY_ALTITUDE_M,
@@ -29,10 +36,9 @@ from .components import (
     CO2ContinuumAbsorption,
     H2OContinuumAbsorption,
     HitranLineAbsorption,
-    N2CIAAbsorption,
     N2ContinuumAbsorption,
-    O2CIAAbsorption,
     O2ContinuumAbsorption,
+    O3ContinuumAbsorption,
     PairCIAAbsorption,
     RayleighScatteringAbsorption,
     line_wing_effective_cutoff_cm,
@@ -45,24 +51,24 @@ from .continuum import (
     TabulatedContinuum,
 )
 from .diagnostics import fit_quality_diagnostics, print_fit_summary
-from .errors import ConfigurationError, WavelengthMetadataError
+from .errors import ConfigurationError, SpectrumFormatError, WavelengthMetadataError
 from .fit import (
     DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH,
     FitConfig,
     MultiTelluricFitResult,
-    StellarForwardModel,
     TelluricFitResult,
     _apply_multi_fit_to_segment,
     _fit_metrics,
     _PreparedOpacity,
     _radiative_transfer_point_count,
+    _robust_cost,
     fit_telluric_segments,
     fit_tellurics,
 )
 from .io import (
+    _select_spectrum_hdu,
     infer_spectrum_format,
     load_spectrum,
-    save_corrected_txt,
     save_fit_product_ecsv,
 )
 from .io import (
@@ -81,7 +87,12 @@ from .physics import (
     wavelength_micron_to_wavenumber_cm,
 )
 from .plotting import plot_fit
-from .regions import RegionSelection, RegionWavelengthFrame, load_region_file
+from .regions import (
+    RegionSelection,
+    RegionWavelengthFrame,
+    _expected_aer_absorption_score,
+    load_region_file,
+)
 from .spectrum import Spectrum, normalize_wavelength_medium
 from .theoretical import StellarMaskResult, TheoreticalSpectrum
 
@@ -144,6 +155,273 @@ LineWingMode = Literal[
 LeastSquaresLoss = Literal["linear", "soft_l1", "huber", "cauchy", "arctan"]
 
 
+@dataclass(frozen=True, kw_only=True)
+class AdvancedOptions:
+    """Adjust the fit without configuring the atmospheric physics.
+
+    Supply only overrides, for example ``AdvancedOptions(wavelength_order=1)``.
+    Default construction preserves the normal automatic correction. Custom
+    physical data and numerical engines belong to the lower-level modelling
+    API, not this object. All wavelength ranges and shifts below use microns.
+
+    :param continuum_order: Polynomial flux-continuum degree; 'auto' starts at 2
+        and tests degrees 1--4 on withheld wavelength blocks.
+    :param segment_size: Target processing span in microns; 0.005 is 50 Angstrom.
+    :param solve_continuum_linear: Solve continuum coefficients within each trial;
+        'auto' normally enables this. False fits them nonlinearly instead.
+    :param automatic_fit_regions: Select telluric fitting windows when none are supplied.
+    :param fit_ranges: Optional fitting intervals, in the input wavelength medium/frame.
+    :param exclude_ranges: Optional exclusions; these take precedence over fit ranges.
+    :param wavelength_order: 'auto' selects a correction; None disables it; 0 fits
+        an offset; 1 and higher fit polynomial corrections of that degree.
+    :param wavelength_scope: 'group' shares each correction within a physical order
+        or detector group; 'global' shares one correction across the spectrum.
+    :param initial_wavelength_shift: Initial model shift in microns; None estimates it.
+    :param wavelength_shift_bounds: Allowed correction bounds in microns; None
+        derives them from detector sampling. Positive shifts move lines redward.
+    :param initial_species_scales: Starting molecular column scales, keyed by species;
+        omitted species start at 1 and remain free to fit when sufficiently strong.
+    :param fixed_species_scales: Positive molecular scales held fixed, not initial guesses.
+    :param scale_bounds: Positive lower/upper bounds shared by fitted molecular scales.
+    :param minimum_species_peak_optical_depth: Below this expected peak optical depth
+        in the fitting pixels, retain a species at its starting scale instead of fitting it.
+    :param fit_lsf_sigma: True fits the Gaussian width; False holds it fixed.
+        'auto' fits an automatic width but holds a supplied numeric width fixed.
+    :param lsf_sigma_pixels: Gaussian standard deviation in detector pixels;
+        a starting guess when fitted, otherwise fixed. 'auto' uses resolving
+        power or narrow observed features. FWHM is about 2.355 times sigma.
+    :param lsf_sigma_bounds: Allowed Gaussian standard deviations in pixels; None is automatic.
+    :param fit_lsf_lorentz_fwhm: True fits Lorentzian wings; False holds them fixed.
+        'auto' tests an automatic width but holds a supplied numeric width fixed.
+    :param lsf_lorentz_fwhm_pixels: Lorentzian FWHM in detector pixels; a starting
+        guess when fitted, otherwise fixed. 'auto' starts at zero for pilot tests.
+    :param lsf_lorentz_fwhm_bounds: Allowed Lorentzian full widths in pixels; None is automatic.
+    :param fit_lsf_box_width: Fit a boxcar contribution to instrumental broadening.
+    :param lsf_box_width_pixels: Starting boxcar full width in pixels; zero disables it
+        unless fitting is enabled.
+    :param lsf_box_width_bounds: Allowed boxcar full widths in pixels.
+    :param lsf_variable_width: False keeps constant pixel widths; True scales
+        widths linearly with wavelength. 'auto' tests a fitted wavelength exponent.
+    :param loss: Residual loss; 'soft_l1' is robust and 'linear' is weighted least squares.
+    :param f_scale: Robust-loss transition in uncertainty-normalised residual units;
+        'auto' starts at 1, then estimates a value between 1 and 2 from residual
+        scatter. Unused for linear loss.
+    :param ftol: Relative objective-improvement convergence tolerance.
+    :param xtol: Parameter-step convergence tolerance.
+    :param gtol: Scaled-gradient convergence tolerance.
+    :param max_nfev: Maximum model evaluations per solver call, not a time limit.
+        None uses the solver budget. Pilot fits and numerical derivatives add work.
+    :param aer_catalog: 'auto' obtains the managed AER catalogue; a path or artifact
+        selects a particular catalogue. None disables automatic catalogue resolution.
+    :param rayleigh: Include Rayleigh extinction, off by default to avoid correcting
+        extinction that may already have been removed from the input spectrum.
+    """
+
+    continuum_order: int | Literal["auto"] = "auto"
+    """Flux-continuum polynomial degree, or automatic selection."""
+    segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON
+    """Target segment width in microns (0.005 = 50 Angstrom)."""
+    solve_continuum_linear: ContinuumSolveMode = "auto"
+    """Solve continuum coefficients inside each nonlinear fitting trial."""
+    automatic_fit_regions: bool = True
+    """Automatically select telluric windows if no regions are supplied."""
+    fit_ranges: tuple[tuple[float, float], ...] | None = None
+    """Fitting intervals in microns, in the input wavelength medium/frame."""
+    exclude_ranges: tuple[tuple[float, float], ...] | None = None
+    """Excluded intervals in microns; overrides overlapping fitting intervals."""
+
+    wavelength_order: int | Literal["auto"] | None = "auto"
+    """Automatic, None (off), 0 (constant), or a positive polynomial degree."""
+    wavelength_scope: Literal["group", "global"] = "group"
+    """One correction per physical order/detector group, or one globally."""
+    initial_wavelength_shift: float | None = None
+    """Initial model shift in microns; positive is redward; None is automatic."""
+    wavelength_shift_bounds: tuple[float, float] | None = None
+    """Allowed wavelength corrections in microns; None derives sampling-based bounds."""
+
+    initial_species_scales: Mapping[str, float] | None = None
+    """Initial molecular column scales, e.g. {'H2O': 1.2}; otherwise unity."""
+    fixed_species_scales: Mapping[str, float] | None = None
+    """Molecular scales held fixed rather than fitted."""
+    scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3)
+    """Positive lower and upper bounds for fitted molecular column scales."""
+    minimum_species_peak_optical_depth: float = DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+    """Minimum expected peak optical depth needed to freely fit a species."""
+
+    fit_lsf_sigma: LSFFitMode = "auto"
+    """True fits; False fixes; auto fits an estimated width but fixes a numeric one."""
+    lsf_sigma_pixels: LSFSigmaInput = "auto"
+    """Gaussian sigma in detector pixels; fixed unless the width is fitted."""
+    lsf_sigma_bounds: tuple[float, float] | None = None
+    """Gaussian standard-deviation bounds in pixels; None is automatic."""
+    fit_lsf_lorentz_fwhm: LSFFitMode = "auto"
+    """True fits; False fixes; auto tests estimated wings but fixes a numeric width."""
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput = "auto"
+    """Starting Lorentzian full width at half maximum in pixels."""
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None
+    """Lorentzian full-width bounds in pixels; None is automatic."""
+    fit_lsf_box_width: bool = False
+    """Fit a boxcar instrumental width in addition to the other components."""
+    lsf_box_width_pixels: float = 0.0
+    """Starting boxcar full width in pixels; zero with fitting off disables it."""
+    lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0)
+    """Allowed boxcar full widths in detector pixels."""
+    lsf_variable_width: LSFVariableWidthMode = "auto"
+    """False: constant pixel widths; True: proportional to wavelength; auto: test exponent."""
+
+    loss: LeastSquaresLoss = "soft_l1"
+    """Robust residual loss; 'linear' gives ordinary weighted least squares."""
+    f_scale: float | Literal["auto"] = "auto"
+    """Robust-loss scale in uncertainty-normalised units; 'auto' uses residuals."""
+    ftol: float = 1.0e-10
+    """Relative objective-improvement stopping tolerance."""
+    xtol: float = 1.0e-10
+    """Parameter-step stopping tolerance."""
+    gtol: float = 1.0e-10
+    """Scaled-gradient stopping tolerance."""
+    max_nfev: int | None = None
+    """Model-evaluation limit per solver call, not a total-workflow limit."""
+
+    aer_catalog: AERCatalogArtifact | str | Path | None = "auto"
+    """Managed catalogue ('auto'), explicit catalogue path, or artifact."""
+    rayleigh: bool = False
+    """Include Rayleigh extinction only when not already corrected upstream."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class _CorrectionDefaults:
+    """Internal physical and numerical defaults for the high-level workflow.
+
+    Kept separate from fit controls so reducing the public interface does not
+    silently enable continua or change the radiative-transfer calculation.
+    """
+
+    # Explicit alternatives to automatic region selection.
+    automatic_fit_regions: bool = True
+    fit_ranges: tuple[tuple[float, float], ...] | None = None
+    exclude_ranges: tuple[tuple[float, float], ...] | None = None
+
+    # Line data and additional absorption contributions.
+    species: tuple[str, ...] | None = None
+    fixed_species_scales: Mapping[str, float] | None = None
+    line_list: LineList | str | Path | None = None
+    hitran_par: str | Path | None = None
+    min_line_strength: float | None = None
+    max_lines: int | None = None
+    aer_catalog: AERCatalogArtifact | str | Path | None = "auto"
+    partition_table: PartitionTable | str | Path | None = None
+    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | str | Path | None = None
+    h2o_continuum_foreign_closure: bool = False
+    co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | str | Path | None = None
+    cia_tables: Mapping[str, HitranCIATable | str | Path] | None = None
+    components: tuple[AbsorptionComponent, ...] | None = None
+    physical: bool | None = None
+    rayleigh: bool = False
+    rayleigh_xrayl: float = 1.0
+    n2_continuum: bool = False
+    n2_continuum_xn2cn: float = 1.0
+    o2_continuum: bool = False
+    o2_continuum_xo2cn: float = 1.0
+    o3_continuum: bool = False
+    o3_continuum_xo3cn: float = 1.0
+    minimum_species_peak_optical_depth: float = DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH
+
+    # Atmospheric construction and explicit metadata overrides.
+    atmosphere: AtmosphereProfile | str | Path | None = None
+    atmosphere_mode: AtmosphereMode = "mipas_gdas"
+    mipas_profile: MIPASProfileName = "equ"
+    gdas_profile: str | Path | None = None
+    gdas_mode: GDASMode = "auto"
+    observatory_latitude_deg: float | None = None
+    observatory_longitude_deg: float | None = None
+    observatory_altitude_m: float | None = None
+    allow_default_observatory: bool = False
+    airmass: float = 1.0
+    pressure_atm: float = 0.75
+    temperature_k: float = 280.0
+    path_length_m: float = 8_000.0
+    pwv_mm: float | None = None
+    relative_humidity_percent: float | None = None
+    mixing_ratios: Mapping[str, float] | None = None
+
+    # Instrumental and wavelength model details.
+    wavelength_scope: Literal["group", "global"] = "group"
+    fit_wavelength_shift: WavelengthFitMode = "auto"
+    fit_lsf_sigma: LSFFitMode = "auto"
+    lsf_sigma_pixels: LSFSigmaInput = "auto"
+    lsf_box_width_pixels: float = 0.0
+    lsf_lorentz_fwhm_pixels: LSFLorentzInput = "auto"
+    lsf_variable_width: LSFVariableWidthMode = "auto"
+    lsf_reference_wavelength_micron: float | None = None
+    lsf_kernel_width_fwhm: float = 3.0
+    lsf_molecfit_voigt: bool = False
+    fit_lsf_box_width: bool = False
+    lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0)
+    fit_lsf_lorentz_fwhm: LSFFitMode = "auto"
+    lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None
+    lsf_sigma_bounds: tuple[float, float] | None = None
+    fit_wavelength_polynomial: bool = False
+    wavelength_polynomial_order: int = 1
+    fit_segment_wavelength_shifts: bool = False
+    fit_segment_wavelength_polynomial: bool = False
+    segment_wavelength_polynomial_order: int = 1
+    initial_wavelength_shift: float | None = None
+    wavelength_shift_bounds: tuple[float, float] | None = None
+
+    # Numerical grids and line-wing calculation.
+    high_resolution_grid: bool = True
+    high_resolution_oversampling: float = 5.0
+    high_resolution_margin_pixels: float = 2.0
+    high_resolution_rebin_mode: HighResolutionRebinMode = "molecfit_overlap"
+    radiative_transfer_grid: RadiativeTransferGrid = "auto"
+    radiative_transfer_step_cm: float | None = None
+    radiative_transfer_max_points: int = 2_000_000
+    auto_segment: bool = True
+    segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON
+    line_cutoff_cm: float | None = None
+    subtract_cutoff_profile: bool = False
+    line_taper_cm: float = 0.0
+    line_wing_mode: LineWingMode = "lblrtm_panel"
+    lblrtm_sample: float = LBLRTM_DEFAULT_SAMPLE
+    lblrtm_alfal0: float = LBLRTM_DEFAULT_ALFAL0
+    lblrtm_avmass_amu: float = LBLRTM_DEFAULT_AVMASS_AMU
+    lblrtm_hwf3: float = LBLRTM_VOIGT_DOMAIN_HWF3
+    line_margin_micron: float = 0.01
+
+    # Optimisation, optional stellar modelling, and exports.
+    continuum_order: int | Literal["auto"] = "auto"
+    solve_continuum_linear: ContinuumSolveMode = "auto"
+    loss: LeastSquaresLoss = "soft_l1"
+    f_scale: float | Literal["auto"] = "auto"
+    ftol: float = 1.0e-10
+    xtol: float = 1.0e-10
+    gtol: float = 1.0e-10
+    max_corrected_relative_uncertainty: float = 0.1
+    initial_species_scales: Mapping[str, float] | None = None
+    scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3)
+    max_nfev: int | None = None
+    stellar_mask_path: str | Path | None = None
+    output_format: str = "ascii.ecsv"
+
+
+@dataclass(frozen=True, kw_only=True)
+class CacheConfig:
+    """Cache and download configuration for :func:`correct`.
+
+    Construct once and reuse across calls with ``cache=CacheConfig(...)``.
+    This is per-call configuration, not mutable process-wide state. ``None``
+    cache directories use the usual PyMolFit user cache.
+    """
+
+    aer_cache_dir: str | Path | None = None
+    aer_source: str | Path | None = None
+    aer_offline: bool = False
+    aer_reuse_molecfit: bool = True
+    aer_timeout_s: float = 120.0
+    gdas_cache_dir: str | Path | None = None
+    gdas_download_timeout_s: float = 15.0
+
+
 @dataclass(frozen=True)
 class _ResolvedRegionRanges:
     """Region intervals plus the coordinates in which they are expressed."""
@@ -168,9 +446,8 @@ def correct_arrays(
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
     hitran_species: tuple[str, ...] | None = None,
-    hitran_min_strength: float | None = None,
-    hitran_max_lines: int | None = None,
-    demo_line_list: bool = False,
+    min_line_strength: float | None = None,
+    max_lines: int | None = None,
     aer_catalog: AERCatalogArtifact | str | Path | None = "auto",
     aer_cache_dir: str | Path | None = None,
     aer_source: str | Path | None = None,
@@ -181,8 +458,6 @@ def correct_arrays(
     h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | str | Path | None = None,
     h2o_continuum_foreign_closure: bool = False,
     co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | str | Path | None = None,
-    o2_cia: HitranCIATable | str | Path | None = None,
-    n2_cia: HitranCIATable | str | Path | None = None,
     cia_tables: Mapping[str, HitranCIATable | str | Path] | None = None,
     components: tuple[AbsorptionComponent, ...] | None = None,
     physical: bool | None = None,
@@ -205,7 +480,7 @@ def correct_arrays(
     pwv_mm: float | None = None,
     relative_humidity_percent: float | None = None,
     mixing_ratios: Mapping[str, float] | None = None,
-    continuum_order: int = 1,
+    continuum_order: int | Literal["auto"] = "auto",
     solve_continuum_linear: ContinuumSolveMode = "auto",
     lsf_sigma_pixels: LSFSigmaInput = "auto",
     lsf_box_width_pixels: float = 0.0,
@@ -237,9 +512,17 @@ def correct_arrays(
     n2_continuum_xn2cn: float = 1.0,
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
+    o3_continuum: bool = False,
+    o3_continuum_xo3cn: float = 1.0,
     line_margin_micron: float = 0.01,
-    min_transmission: float = 0.01,
+    min_transmission: float | Literal["auto"] = "auto",
+    max_corrected_relative_uncertainty: float = 0.1,
     minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
+    fixed_species_scales: Mapping[str, float] | None = None,
+    initial_species_scales: Mapping[str, float] | None = None,
+    scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3),
+    max_nfev: int | None = None,
+    wavelength_scope: Literal["group", "global"] = "group",
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -254,13 +537,14 @@ def correct_arrays(
     lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0),
     fit_lsf_lorentz_fwhm: LSFFitMode = "auto",
     lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None,
+    automatic_fit_regions: bool = True,
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     region_file: str | Path | None = None,
     theoretical_spectrum: TheoreticalSpectrum | None = None,
     stellar_mask_path: str | Path | None = None,
-    loss: LeastSquaresLoss = "linear",
-    f_scale: float = 1.0,
+    loss: LeastSquaresLoss = "soft_l1",
+    f_scale: float | Literal["auto"] = "auto",
     ftol: float = 1.0e-10,
     xtol: float = 1.0e-10,
     gtol: float = 1.0e-10,
@@ -275,6 +559,19 @@ def correct_arrays(
     are kept together during segmentation, fitting, and output stitching.
     Calls without an observation retain the legacy behavior and treat the
     arrays as already being in the observatory frame.
+
+    Prefer correct(Spectrum(...)) for new user scripts. This lower-level entry
+    point retains explicit physical and numerical controls.
+
+    :param wavelength: One-dimensional wavelengths in wavelength_unit.
+    :param flux: Matching observed flux samples.
+    :param uncertainty: Optional matching positive one-sigma flux errors.
+    :param mask: Optional boolean validity array; True means usable.
+    :param group_id: Optional matching physical order/detector labels.
+    :param wavelength_unit: Unit of the supplied wavelengths; default microns.
+    :param wavelength_medium: 'air' or 'vacuum' (default); labels input values.
+    :param observation: Optional observing conditions and reference frame.
+    :return: Full in-memory telluric-fit result.
     """
 
     atmosphere_header = None if observation is None else observation.to_header()
@@ -286,7 +583,7 @@ def correct_arrays(
         group_id=group_id,
         wavelength_unit=wavelength_unit,
         wavelength_medium=wavelength_medium,
-        meta=({} if observation is None else {"observation": observation.to_header()}),
+        observation=observation,
     )
     resolved_regions = _resolve_region_file_ranges(
         region_file=region_file,
@@ -300,9 +597,8 @@ def correct_arrays(
         line_list_path=line_list_path,
         hitran_par=hitran_par,
         hitran_species=hitran_species,
-        hitran_min_strength=hitran_min_strength,
-        hitran_max_lines=hitran_max_lines,
-        demo_line_list=demo_line_list,
+        min_line_strength=min_line_strength,
+        max_lines=max_lines,
         aer_catalog=aer_catalog,
         aer_cache_dir=aer_cache_dir,
         aer_source=aer_source,
@@ -313,8 +609,6 @@ def correct_arrays(
         h2o_continuum=h2o_continuum,
         h2o_continuum_foreign_closure=h2o_continuum_foreign_closure,
         co2_continuum=co2_continuum,
-        o2_cia=o2_cia,
-        n2_cia=n2_cia,
         cia_tables=cia_tables,
         components=components,
         physical=physical,
@@ -370,9 +664,18 @@ def correct_arrays(
         n2_continuum_xn2cn=n2_continuum_xn2cn,
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
+        o3_continuum=o3_continuum,
+        o3_continuum_xo3cn=o3_continuum_xo3cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
+        max_corrected_relative_uncertainty=max_corrected_relative_uncertainty,
+        automatic_fit_regions=automatic_fit_regions and region_file is None,
         minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
+        fixed_species_scales=fixed_species_scales,
+        initial_species_scales=initial_species_scales,
+        scale_bounds=scale_bounds,
+        max_nfev=max_nfev,
+        wavelength_scope=wavelength_scope,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
@@ -393,7 +696,6 @@ def correct_arrays(
         region_wavelength_frame=resolved_regions.wavelength_frame,
         theoretical_spectrum=theoretical_spectrum,
         stellar_mask_path=stellar_mask_path,
-        joint_stellar_model=False,
         loss=loss,
         f_scale=f_scale,
         ftol=ftol,
@@ -411,7 +713,7 @@ def correct_file(
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
-    hdu: int = 1,
+    hdu: int | None = None,
     image_index: int | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: OptionalWavelengthMedium = None,
@@ -420,9 +722,8 @@ def correct_file(
     line_list_path: str | Path | None = None,
     hitran_par: str | Path | None = None,
     hitran_species: tuple[str, ...] | None = None,
-    hitran_min_strength: float | None = None,
-    hitran_max_lines: int | None = None,
-    demo_line_list: bool = False,
+    min_line_strength: float | None = None,
+    max_lines: int | None = None,
     aer_catalog: AERCatalogArtifact | str | Path | None = "auto",
     aer_cache_dir: str | Path | None = None,
     aer_source: str | Path | None = None,
@@ -433,8 +734,6 @@ def correct_file(
     h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | str | Path | None = None,
     h2o_continuum_foreign_closure: bool = False,
     co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | str | Path | None = None,
-    o2_cia: HitranCIATable | str | Path | None = None,
-    n2_cia: HitranCIATable | str | Path | None = None,
     cia_tables: Mapping[str, HitranCIATable | str | Path] | None = None,
     components: tuple[AbsorptionComponent, ...] | None = None,
     physical: bool | None = None,
@@ -457,7 +756,7 @@ def correct_file(
     pwv_mm: float | None = None,
     relative_humidity_percent: float | None = None,
     mixing_ratios: Mapping[str, float] | None = None,
-    continuum_order: int = 1,
+    continuum_order: int | Literal["auto"] = "auto",
     solve_continuum_linear: ContinuumSolveMode = "auto",
     lsf_sigma_pixels: LSFSigmaInput = "auto",
     lsf_box_width_pixels: float = 0.0,
@@ -489,9 +788,17 @@ def correct_file(
     n2_continuum_xn2cn: float = 1.0,
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
+    o3_continuum: bool = False,
+    o3_continuum_xo3cn: float = 1.0,
     line_margin_micron: float = 0.01,
-    min_transmission: float = 0.01,
+    min_transmission: float | Literal["auto"] = "auto",
+    max_corrected_relative_uncertainty: float = 0.1,
     minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
+    fixed_species_scales: Mapping[str, float] | None = None,
+    initial_species_scales: Mapping[str, float] | None = None,
+    scale_bounds: tuple[float, float] = (1.0e-3, 1.0e3),
+    max_nfev: int | None = None,
+    wavelength_scope: Literal["group", "global"] = "group",
     fit_wavelength_shift: WavelengthFitMode = "auto",
     fit_wavelength_polynomial: bool = False,
     wavelength_polynomial_order: int = 1,
@@ -506,19 +813,19 @@ def correct_file(
     lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0),
     fit_lsf_lorentz_fwhm: LSFFitMode = "auto",
     lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None,
+    automatic_fit_regions: bool = True,
     fit_ranges: tuple[tuple[float, float], ...] | None = None,
     exclude_ranges: tuple[tuple[float, float], ...] | None = None,
     region_file: str | Path | None = None,
     theoretical_spectrum: TheoreticalSpectrum | None = None,
     stellar_mask_path: str | Path | None = None,
-    loss: LeastSquaresLoss = "linear",
-    f_scale: float = 1.0,
+    loss: LeastSquaresLoss = "soft_l1",
+    f_scale: float | Literal["auto"] = "auto",
     ftol: float = 1.0e-10,
     xtol: float = 1.0e-10,
     gtol: float = 1.0e-10,
     estimate_uncertainties: bool = False,
-    product_path: str | Path | None = None,
-    product_format: str = "ascii.ecsv",
+    output_format: str = "ascii.ecsv",
     plot_path: str | Path | None = None,
     show_plot: bool = False,
     report: bool = True,
@@ -530,12 +837,12 @@ def correct_file(
     disabled, as described for the individual parameter.
 
     :param input_path: Input reduced 1D spectrum in FITS, text, CSV, or ECSV format.
-    :param output_path: Optional path for the corrected wavelength/flux ASCII spectrum; ``None`` keeps it in memory only.
+    :param output_path: Optional path for the full correction product, including observed and corrected flux, transmission, model, masks, fitted parameters, and provenance; ``None`` keeps it in memory only. Use ``save_corrected_txt(result, path)`` for a compact spectrum export.
     :param input_format: ``None`` infers from the filename; explicit choices are ``txt``, ``dat``, ``csv``, ``ascii``, ``ecsv``, ``fits``, ``fit``, or ``fz``.
     :param wavelength_col: Wavelength column name or zero-based index; ``None`` uses recognized names or the first numeric column.
     :param flux_col: Flux column name or zero-based index; ``None`` uses recognized names or the second numeric column.
-    :param uncertainty_col: Optional uncertainty column name or zero-based index; ``None`` performs an unweighted fit.
-    :param hdu: FITS HDU containing the spectrum; ignored for text input.
+    :param uncertainty_col: Optional uncertainty column name or zero-based index. Missing errors are estimated locally; supplied errors remain unchanged.
+    :param hdu: FITS HDU containing the spectrum; None automatically selects a unique spectral HDU and reports ambiguous choices. Ignored for text input.
     :param image_index: Row to extract from a two-dimensional FITS image; ``None`` requires a one-dimensional image.
     :param wavelength_unit: Unit of input wavelengths, such as ``micron``/``um``, ``nm``, ``angstrom``/``aa``, or ``m``.
     :param wavelength_medium: ``air`` declares standard-air wavelengths; ``vacuum`` or ``vac`` declares vacuum wavelengths. ``None`` accepts only an unambiguous air/vacuum declaration in FITS metadata; otherwise PyMolFit stops before fitting and asks for an explicit value. ``SPECSYS`` alone is not sufficient because it describes the velocity frame, not the wavelength medium.
@@ -543,11 +850,10 @@ def correct_file(
     :param line_list: In-memory PyMolFit ``LineList``; use this instead of ``line_list_path`` or ``hitran_par``.
     :param line_list_path: Astropy-readable PyMolFit line-list table path; ``None`` leaves line-data resolution to another source.
     :param hitran_par: Path to a HITRAN (High-resolution Transmission Molecular Absorption Database) ``.par`` file containing molecular line positions, strengths, pressure broadening, and lower-state energies; ``None`` normally uses the managed AER catalogue.
-    :param hitran_species: Molecule names retained from HITRAN/AER, such as ``H2O``, ``O2``, or ``CO2``; ``None`` keeps every atmospheric species with transitions in the wavelength window.
-    :param hitran_min_strength: Minimum HITRAN reference line intensity to retain, controlling whether weak molecular transitions enter the opacity calculation; ``None`` applies no intensity threshold.
-    :param hitran_max_lines: Maximum number of strongest retained lines; ``None`` keeps all lines passing the other filters.
-    :param demo_line_list: ``True`` uses a tiny synthetic test list; ``False`` uses scientific line data. Never enable this for scientific correction.
-    :param aer_catalog: AER is Atmospheric and Environmental Research's LBLRTM-ready molecular line catalogue derived from HITRAN; ``auto`` discovers/downloads it, a path or artifact selects it explicitly, and ``None`` disables automatic AER data.
+    :param hitran_species: Molecule names retained from HITRAN/AER, such as ``H2O``, ``O2``, or ``CO2``; ``None`` applies no species filter, including when continuum absorption is enabled.
+    :param min_line_strength: Minimum catalogue reference line intensity to retain; ``None`` applies no strength threshold. This limits model opacity, not the number of fitting regions.
+    :param max_lines: Maximum number of strongest retained lines; ``None`` keeps all lines passing the other filters.
+    :param aer_catalog: AER is Atmospheric and Environmental Research's LBLRTM-ready molecular line catalogue derived from HITRAN; ``auto`` discovers/downloads it, a path or artifact selects it explicitly, and ``None`` disables automatic AER data. Continuum-only calculations without explicit line data must set this to ``None``; enabling continuum absorption does not disable molecular lines.
     :param aer_cache_dir: Directory for managed AER catalogues and wavelength-window caches; ``None`` uses PyMolFit's user cache.
     :param aer_source: Override archive URL or local archive path used on an AER cache miss; ``None`` uses the official configured source.
     :param aer_offline: ``True`` forbids AER network access and requires cached data; ``False`` permits download on a cache miss.
@@ -557,8 +863,6 @@ def correct_file(
     :param h2o_continuum: H2O continuum represents broad water absorption not captured by isolated discrete lines; provide an object/coefficient path, use ``lblrtm`` for packaged coefficients, or ``None`` for automatic packaged data when physical H2O lines are present.
     :param h2o_continuum_foreign_closure: ``True`` enables the optional MT_CKD foreign-continuum closure coefficients; ``False`` uses the normal selected continuum.
     :param co2_continuum: CO2 continuum represents broad carbon-dioxide absorption between/under discrete lines; provide an object/coefficient path, use ``lblrtm`` for packaged coefficients, or ``None`` for automatic packaged data when physical CO2 lines are present.
-    :param o2_cia: Collision-induced absorption (CIA) is broadband absorption created during molecular collisions; provide a HITRAN O2 CIA object/file path, or ``None`` to omit this explicit table.
-    :param n2_cia: Collision-induced absorption (CIA) is broadband absorption created during molecular collisions; provide a HITRAN N2 CIA object/file path, or ``None`` to omit this explicit table.
     :param cia_tables: Mapping from additional collision-pair names to HITRAN CIA objects or paths, adding broadband collision opacity beyond O2/N2; ``None`` adds no generic CIA tables.
     :param components: Additional or replacement absorption-component objects; ``None`` builds components from the selected physical data.
     :param physical: ``None`` auto-detects physical HITRAN modelling, ``True`` requires it, and ``False`` disables the layered physical-atmosphere path.
@@ -567,7 +871,7 @@ def correct_file(
     :param atmosphere_mode: Selects how the vertical pressure, temperature, humidity, and gas profile is built: ``mipas_gdas``/``mipas``/``gdas`` merges a MIPAS satellite-derived climatological reference for the full/upper atmosphere with time-and-location-specific GDAS weather in the lower atmosphere, ``standard`` builds a generic layered midlatitude atmosphere, and ``single`` uses one homogeneous layer.
     :param mipas_profile: MIPAS (Michelson Interferometer for Passive Atmospheric Sounding) supplies climatological vertical pressure, temperature, and trace-gas profiles, especially above GDAS coverage; ``equ`` selects equatorial, ``std`` midlatitude standard, ``tro`` tropical, and ``auto`` currently follows Molecfit's equatorial default.
     :param gdas_profile: GDAS (NOAA Global Data Assimilation System) supplies observation-time/location meteorology such as pressure, height, temperature, and humidity for the lower atmosphere; provide an explicit FITS profile or use ``None`` to resolve one according to ``gdas_mode``.
-    :param gdas_mode: Controls the NOAA GDAS weather profile used to replace the lower part of the MIPAS climatology: ``auto`` tries exact cached/downloaded time-local data then falls back to a monthly average, ``online`` requires exact cache/download success, ``cache`` requires exact cached data without network access, and ``average`` always uses a generic monthly profile.
+    :param gdas_mode: Controls the NOAA GDAS weather profile used to replace the lower part of the MIPAS climatology: ``auto`` tries cached/downloaded time-local data then falls back to a packaged two-month average; ``online`` requires time-local data, ``cache`` forbids downloads, and ``average`` always uses the packaged average.
     :param gdas_cache_dir: Directory for GDAS archives and interpolated profiles; ``None`` uses ``PYMOLFIT_GDAS_CACHE`` or the default user cache.
     :param gdas_download_timeout_s: Per-URL timeout in seconds for ESO GDAS downloads.
     :param observatory_latitude_deg: Geodetic observatory latitude in degrees; ``None`` reads FITS metadata when available.
@@ -581,7 +885,7 @@ def correct_file(
     :param pwv_mm: Optional precipitable-water-vapour override in millimetres; ``None`` derives water from GDAS/MIPAS or other atmosphere inputs.
     :param relative_humidity_percent: Optional surface relative-humidity override in percent; ``None`` uses profile or FITS information.
     :param mixing_ratios: Optional mapping of molecule name to volume mixing ratio; supplied entries override builder defaults.
-    :param continuum_order: Polynomial continuum degree per fitted segment: ``0`` constant, ``1`` linear, ``2`` quadratic, and so on.
+    :param continuum_order: ``"auto"`` starts quadratic and validates degrees 1--4 on held-out blocks. An integer fixes the polynomial degree per processing segment (0 constant, 1 linear, 2 quadratic).
     :param solve_continuum_linear: ``"auto"`` profiles continuum coefficients outside the nonlinear optimizer. Ordinary least squares uses the exact weighted linear solution; robust losses use an iteratively reweighted version of the same solve. ``True`` always selects this stable profiled approach, while ``False`` includes continuum coefficients in the nonlinear parameter vector.
     :param lsf_sigma_pixels: The line-spread function (LSF) describes instrumental broadening of intrinsically narrow telluric lines. ``"auto"`` first derives Gaussian sigma in detector pixels from FITS resolving-power metadata and wavelength sampling, or estimates narrow observed-feature widths when metadata is unavailable; a numeric value supplies the initial/fixed sigma directly, and ``0`` disables the Gaussian component unless it is fitted.
     :param lsf_box_width_pixels: A boxcar LSF component approximates finite pixel/slit integration; this is its initial/fixed width in detector pixels, and ``0`` disables it.
@@ -611,12 +915,22 @@ def correct_file(
     :param rayleigh_xrayl: Multiplicative LBLRTM Rayleigh coefficient scale, normally ``1``.
     :param n2_continuum: ``True`` includes LBLRTM N2 pure-rotation, fundamental, and first-overtone continuum branches; ``False`` omits them.
     :param n2_continuum_xn2cn: Multiplicative LBLRTM N2-continuum coefficient scale, normally ``1``.
-    :param o2_continuum: ``True`` includes source-backed ground-based LBLRTM O2 continuum branches; ``False`` omits them.
+    :param o2_continuum: ``True`` includes source-backed LBLRTM infrared, visible, and UV O2 continuum branches; ``False`` omits them.
     :param o2_continuum_xo2cn: Multiplicative LBLRTM O2-continuum coefficient scale, normally ``1``.
+    :param o3_continuum: ``True`` includes packaged LBLRTM Chappuis/Wulf and Hartley-Huggins ozone absorption; ``False`` omits it. Requires O3 in the atmospheric profile and respects the species selection.
+    :param o3_continuum_xo3cn: Multiplicative LBLRTM ozone-continuum coefficient scale, normally ``1``.
     :param line_margin_micron: Extra line-selection margin in microns around each modelled spectral interval.
-    :param min_transmission: Pixels with fitted atmospheric transmission below this fraction are masked in the corrected spectrum because division cannot recover reliable flux from nearly opaque regions; it must be strictly between ``0`` and ``1``.
+    :param min_transmission: ``"auto"`` masks transmission below 0.01 plus corrections exceeding the propagated-noise limit. A number strictly between 0 and 1 applies only that fixed threshold.
     :param minimum_species_peak_optical_depth: A molecule's abundance scale is fitted only when its strongest expected absorption in the selected fit pixels reaches this optical-depth threshold. Weaker species remain in the atmospheric model at their profile abundance instead of acquiring an unconstrained extreme scale; lower the default only when deliberately measuring weak trace-gas lines.
-    :param fit_wavelength_shift: ``"auto"`` uses one constant pixel offset per detected order/detector group for multi-order spectra. For a single physical group it compares no residual correction, a constant detector-pixel offset, and a smooth linear pixel-offset trend on distributed telluric-rich pilot regions, selecting by penalized fit quality. ``True`` preserves the explicit legacy constant-micron fit and ``False`` disables automatic residual alignment. Explicit polynomial or per-segment wavelength options take precedence over ``"auto"``.
+    :param initial_species_scales: Initial molecular column scales keyed by species; omitted species start at unity. These are starting guesses, not fixed values.
+    :param scale_bounds: Positive lower and upper bounds on fitted molecular column scales.
+    :param max_nfev: Maximum model evaluations per solver call; None uses the normal budget. Preliminary fits and numerical derivatives can require additional evaluations.
+    :param wavelength_scope: 'group' permits independent automatic corrections for physical orders/detectors; 'global' keeps automatic wavelength fitting global. Explicit lower-level wavelength flags select their own scope.
+    :param fixed_species_scales: Optional positive, finite molecular column scales
+        held fixed during fitting, for example ``{"CO2": 1.13}``. The species
+        remains in the absorption model; only its scale is removed from the fit.
+        Values are relative to the input atmospheric profile, not abundances.
+    :param fit_wavelength_shift: ``"auto"`` compares no correction, constant, linear, and supported quadratic pixel-offset models on distributed telluric pilots, separately for each physical group. ``True`` forces a constant-micron fit; ``False`` disables automatic alignment. Explicit polynomial or per-segment options take precedence.
     :param fit_wavelength_polynomial: ``True`` fits a global wavelength-correction polynomial; ``False`` disables it. Do not combine it with ``fit_wavelength_shift``.
     :param wavelength_polynomial_order: Degree of the global wavelength-correction polynomial in normalized wavelength coordinates.
     :param fit_segment_wavelength_shifts: ``True`` fits one constant wavelength offset per detected physical order/detector group and shares it across that group's numerical radiative-transfer chunks; it cannot be combined with either global wavelength-fit option.
@@ -630,19 +944,20 @@ def correct_file(
     :param lsf_box_width_bounds: Lower and upper boxcar-width bounds in pixels; values must be increasing and non-negative.
     :param fit_lsf_lorentz_fwhm: ``"auto"`` performs penalized pilot-model selection when ``lsf_lorentz_fwhm_pixels="auto"`` and otherwise keeps an explicit numeric width fixed; ``True`` forces Lorentzian fitting and ``False`` disables automatic fitting.
     :param lsf_lorentz_fwhm_bounds: Optional lower and upper Lorentzian FWHM bounds in pixels. ``None`` generates broad non-negative bounds from the Gaussian width; explicit values must be increasing and non-negative.
-    :param fit_ranges: Wavelength intervals whose observed telluric features constrain molecular columns, wavelength alignment, LSF, and continuum; supply ``((start, stop), ...)`` in microns and the declared input medium, or ``None`` to let every valid pixel influence those fitted parameters.
+    :param fit_ranges: Explicit fitting intervals ``((start, stop), ...)`` in microns and the declared input medium. None permits automatic selection, or all valid non-excluded pixels when automatic selection is disabled.
     :param exclude_ranges: Wavelength intervals ignored only while estimating fit parameters, normally to protect stellar/circumstellar lines, detector defects, or saturated pixels; values are in microns/input medium and the final atmospheric correction is still evaluated there.
     :param region_file: Optional PyMolFit ECSV file created by ``select_telluric_regions``. The recorded wavelength unit, air/vacuum medium, and coordinate frame are respected. Files with ``wavelength_frame="observatory"`` can reuse telluric intervals across barycentric or heliocentric exposures; older files without frame metadata remain native and exposure-specific. Do not combine it with ``fit_ranges`` or ``exclude_ranges``.
     :param theoretical_spectrum: Optional ``TheoreticalSpectrum`` used to identify stellar features represented by the supplied model that must not constrain atmospheric parameters. The broadened template creates additional exclusion regions only; it never replaces science flux and correction is still evaluated at those wavelengths.
     :param stellar_mask_path: Optional ECSV path for the automatically generated stellar exclusion regions in the input spectrum's native wavelength coordinates.
-    :param loss: Controls how residuals influence the fit. ``linear`` is ordinary squared-residual least squares and is the statistically preferred default for a clean, well-masked spectrum with reliable uncertainties. ``soft_l1`` is usually appropriate for a mostly clean spectrum containing a limited number of cosmic rays, bad pixels, or unmasked spectral features because it reduces their influence without ignoring normal residuals. ``huber`` is another moderate robust loss, while ``cauchy`` and ``arctan`` suppress large outliers more strongly. Robust loss cannot repair generally poor calibration, wavelength misalignment, incorrect uncertainties, or an unsuitable atmospheric model.
-    :param f_scale: Residual scale separating normal points from downweighted outliers for robust losses; larger values treat more residuals as normal and smaller values reject deviations more aggressively. It has no effect for ``loss="linear"``.
+    :param loss: ``"soft_l1"`` (default) reduces the influence of outliers. ``"linear"`` uses ordinary squared residuals. Robust loss does not repair incorrect calibration, atmospheric models, or widespread stellar contamination.
+    :param f_scale: ``"auto"`` starts at 1 and optionally refines the robust residual threshold within [1, 2]. A positive number fixes it. Supplied errors are never rescaled; this option has no effect for linear loss.
+    :param automatic_fit_regions: Select distributed telluric windows when no fit ranges or region file are supplied. False uses all valid, non-excluded pixels. Stellar exclusions are unchanged.
+    :param max_corrected_relative_uncertainty: With ``min_transmission="auto"``, mask corrections whose propagated error exceeds this continuum fraction (default 0.1), while allowing at least twice the input error.
     :param ftol: Positive relative cost-change tolerance for optimizer termination.
     :param xtol: Positive relative parameter-step tolerance for optimizer termination.
     :param gtol: Positive gradient-norm tolerance for optimizer termination.
     :param estimate_uncertainties: ``True`` estimates local covariance and propagates transmission uncertainty; ``False`` skips this additional work.
-    :param product_path: Optional path for the full fit-product table containing model, transmission, masks, corrected flux, metadata, and provenance.
-    :param product_format: Astropy table writer format used for ``product_path``, for example ``ascii.ecsv`` or ``fits``.
+    :param output_format: Astropy table writer format used for ``output_path``; defaults to the reloadable ``ascii.ecsv`` product. Other formats, such as ``fits``, are explicit exports.
     :param plot_path: Optional diagnostic-plot output path; ``None`` does not save a plot.
     :param show_plot: ``True`` opens/displays the diagnostic plot; ``False`` only saves it when ``plot_path`` is provided.
     :param report: Print the resolved fit configuration and result summary when ``True``.
@@ -653,6 +968,10 @@ def correct_file(
         input_path,
         input_format,
         hdu=hdu,
+        wavelength_col=wavelength_col,
+        flux_col=flux_col,
+        uncertainty_col=uncertainty_col,
+        image_index=image_index,
     )
     if observation is not None:
         atmosphere_header = observation.to_header(atmosphere_header)
@@ -673,6 +992,10 @@ def correct_file(
         image_index=image_index,
         save_header=False,
     )
+    if observation is not None:
+        spectrum = replace(spectrum, observation=replace(observation, metadata=atmosphere_header))
+    elif atmosphere_header is None and spectrum.observation is not None:
+        atmosphere_header = spectrum.observation.to_header()
     resolved_regions = _resolve_region_file_ranges(
         region_file=region_file,
         fit_ranges=fit_ranges,
@@ -685,9 +1008,8 @@ def correct_file(
         line_list_path=line_list_path,
         hitran_par=hitran_par,
         hitran_species=hitran_species,
-        hitran_min_strength=hitran_min_strength,
-        hitran_max_lines=hitran_max_lines,
-        demo_line_list=demo_line_list,
+        min_line_strength=min_line_strength,
+        max_lines=max_lines,
         aer_catalog=aer_catalog,
         aer_cache_dir=aer_cache_dir,
         aer_source=aer_source,
@@ -698,8 +1020,6 @@ def correct_file(
         h2o_continuum=h2o_continuum,
         h2o_continuum_foreign_closure=h2o_continuum_foreign_closure,
         co2_continuum=co2_continuum,
-        o2_cia=o2_cia,
-        n2_cia=n2_cia,
         cia_tables=cia_tables,
         components=components,
         physical=physical,
@@ -755,9 +1075,18 @@ def correct_file(
         n2_continuum_xn2cn=n2_continuum_xn2cn,
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
+        o3_continuum=o3_continuum,
+        o3_continuum_xo3cn=o3_continuum_xo3cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
+        max_corrected_relative_uncertainty=max_corrected_relative_uncertainty,
+        automatic_fit_regions=automatic_fit_regions and region_file is None,
         minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
+        fixed_species_scales=fixed_species_scales,
+        initial_species_scales=initial_species_scales,
+        scale_bounds=scale_bounds,
+        max_nfev=max_nfev,
+        wavelength_scope=wavelength_scope,
         fit_wavelength_shift=fit_wavelength_shift,
         fit_wavelength_polynomial=fit_wavelength_polynomial,
         wavelength_polynomial_order=wavelength_polynomial_order,
@@ -778,7 +1107,6 @@ def correct_file(
         region_wavelength_frame=resolved_regions.wavelength_frame,
         theoretical_spectrum=theoretical_spectrum,
         stellar_mask_path=stellar_mask_path,
-        joint_stellar_model=False,
         loss=loss,
         f_scale=f_scale,
         ftol=ftol,
@@ -791,8 +1119,7 @@ def correct_file(
         result,
         input_label=input_path,
         output_path=output_path,
-        product_path=product_path,
-        product_format=product_format,
+        output_format=output_format,
         plot_path=plot_path,
         show_plot=show_plot,
         report=report,
@@ -800,323 +1127,97 @@ def correct_file(
 
 
 def correct(
-    input_path: str | Path | None = None,
+    input_path: str | Path | Spectrum | None = None,
     *,
-    spectrum: Spectrum | None = None,
-    wavelength: np.ndarray | None = None,
-    flux: np.ndarray | None = None,
-    uncertainty: np.ndarray | None = None,
-    mask: np.ndarray | None = None,
-    group_id: np.ndarray | None = None,
+    output_path: str | Path | None = None,
+    theoretical_spectrum: TheoreticalSpectrum | None = None,
+    region_file: str | Path | None = None,
+    show_plot: bool = False,
+    wavelength_unit: str = "micron",
+    wavelength_medium: OptionalWavelengthMedium = None,
     input_format: InputSpectrumFormat | None = None,
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
-    hdu: int = 1,
+    hdu: int | None = None,
     image_index: int | None = None,
-    wavelength_unit: str = "micron",
-    wavelength_medium: OptionalWavelengthMedium = None,
-    observation: Observation | None = None,
-    line_list: LineList | None = None,
-    line_list_path: str | Path | None = None,
-    hitran_par: str | Path | None = None,
-    hitran_species: tuple[str, ...] | None = None,
-    hitran_min_strength: float | None = None,
-    hitran_max_lines: int | None = None,
-    demo_line_list: bool = False,
-    aer_catalog: AERCatalogArtifact | str | Path | None = "auto",
-    aer_cache_dir: str | Path | None = None,
-    aer_source: str | Path | None = None,
-    aer_offline: bool = False,
-    aer_reuse_molecfit: bool = True,
-    aer_timeout_s: float = 120.0,
-    partition_table: PartitionTable | str | Path | None = None,
-    h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | str | Path | None = None,
-    h2o_continuum_foreign_closure: bool = False,
-    co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | str | Path | None = None,
-    o2_cia: HitranCIATable | str | Path | None = None,
-    n2_cia: HitranCIATable | str | Path | None = None,
-    cia_tables: Mapping[str, HitranCIATable | str | Path] | None = None,
-    components: tuple[AbsorptionComponent, ...] | None = None,
-    physical: bool | None = None,
-    atmosphere: AtmosphereProfile | None = None,
-    atmosphere_table: str | Path | None = None,
-    atmosphere_mode: AtmosphereMode = "mipas_gdas",
-    mipas_profile: MIPASProfileName = "equ",
-    gdas_profile: str | Path | None = None,
-    gdas_mode: GDASMode = "auto",
-    gdas_cache_dir: str | Path | None = None,
-    gdas_download_timeout_s: float = 15.0,
-    observatory_latitude_deg: float | None = None,
-    observatory_longitude_deg: float | None = None,
-    observatory_altitude_m: float | None = None,
-    allow_default_observatory: bool = False,
-    airmass: float = 1.0,
-    pressure_atm: float = 0.75,
-    temperature_k: float = 280.0,
-    path_length_m: float = 8_000.0,
-    pwv_mm: float | None = None,
-    relative_humidity_percent: float | None = None,
-    mixing_ratios: Mapping[str, float] | None = None,
-    continuum_order: int = 1,
-    solve_continuum_linear: ContinuumSolveMode = "auto",
-    lsf_sigma_pixels: LSFSigmaInput = "auto",
-    lsf_box_width_pixels: float = 0.0,
-    lsf_lorentz_fwhm_pixels: LSFLorentzInput = "auto",
-    lsf_variable_width: LSFVariableWidthMode = "auto",
-    lsf_reference_wavelength_micron: float | None = None,
-    lsf_kernel_width_fwhm: float = 3.0,
-    lsf_molecfit_voigt: bool = False,
-    high_resolution_grid: bool = True,
-    high_resolution_oversampling: float = 5.0,
-    high_resolution_margin_pixels: float = 2.0,
-    high_resolution_rebin_mode: HighResolutionRebinMode = "molecfit_overlap",
-    radiative_transfer_grid: RadiativeTransferGrid = "auto",
-    radiative_transfer_step_cm: float | None = None,
-    radiative_transfer_max_points: int = 2_000_000,
-    auto_segment: bool = True,
-    segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON,
-    line_cutoff_cm: float | None = None,
-    subtract_cutoff_profile: bool = False,
-    line_taper_cm: float = 0.0,
-    line_wing_mode: LineWingMode = "lblrtm_panel",
-    lblrtm_sample: float = LBLRTM_DEFAULT_SAMPLE,
-    lblrtm_alfal0: float = LBLRTM_DEFAULT_ALFAL0,
-    lblrtm_avmass_amu: float = LBLRTM_DEFAULT_AVMASS_AMU,
-    lblrtm_hwf3: float = LBLRTM_VOIGT_DOMAIN_HWF3,
-    rayleigh: bool = False,
-    rayleigh_xrayl: float = 1.0,
-    n2_continuum: bool = False,
-    n2_continuum_xn2cn: float = 1.0,
-    o2_continuum: bool = False,
-    o2_continuum_xo2cn: float = 1.0,
-    line_margin_micron: float = 0.01,
-    min_transmission: float = 0.01,
-    minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
-    fit_wavelength_shift: WavelengthFitMode = "auto",
-    fit_wavelength_polynomial: bool = False,
-    wavelength_polynomial_order: int = 1,
-    fit_segment_wavelength_shifts: bool = False,
-    fit_segment_wavelength_polynomial: bool = False,
-    segment_wavelength_polynomial_order: int = 1,
-    initial_wavelength_shift: float | None = None,
-    wavelength_shift_bounds: tuple[float, float] | None = None,
-    fit_lsf_sigma: LSFFitMode = "auto",
-    lsf_sigma_bounds: tuple[float, float] | None = None,
-    fit_lsf_box_width: bool = False,
-    lsf_box_width_bounds: tuple[float, float] = (0.0, 10.0),
-    fit_lsf_lorentz_fwhm: LSFFitMode = "auto",
-    lsf_lorentz_fwhm_bounds: tuple[float, float] | None = None,
-    fit_ranges: tuple[tuple[float, float], ...] | None = None,
-    exclude_ranges: tuple[tuple[float, float], ...] | None = None,
-    region_file: str | Path | None = None,
-    theoretical_spectrum: TheoreticalSpectrum | None = None,
-    stellar_mask_path: str | Path | None = None,
-    joint_stellar_model: bool = False,
-    loss: LeastSquaresLoss = "linear",
-    f_scale: float = 1.0,
-    ftol: float = 1.0e-10,
-    xtol: float = 1.0e-10,
-    gtol: float = 1.0e-10,
+    min_transmission: float | Literal["auto"] = "auto",
     estimate_uncertainties: bool = False,
-    output_path: str | Path | None = None,
-    product_path: str | Path | None = None,
-    product_format: str = "ascii.ecsv",
-    plot_path: str | Path | None = None,
-    show_plot: bool = False,
+    advanced: AdvancedOptions | None = None,
+    cache: CacheConfig | None = None,
     report: bool = True,
 ) -> TelluricFitResult:
-    """Correct either a spectrum file or wavelength/flux arrays.
+    """Correct a spectrum using common controls and optional expert settings.
 
-    Supply exactly one input route:
+    Supply a file path or a prepared ``Spectrum`` via ``input_path``. To use
+    arrays, construct ``Spectrum(wavelength=..., flux=..., observation=...)``
+    first, including wavelength units and medium. ``Observation`` stores the
+    observing conditions and wavelength reference frame on that object.
 
-    - ``input_path`` for FITS, text, CSV, or ECSV data;
-    - ``spectrum`` for a previously loaded :class:`Spectrum`; or
-    - both ``wavelength`` and ``flux`` plus an ``Observation``.
+    The first five parameters cover a typical correction. Supply only needed
+    fit overrides through ``advanced=AdvancedOptions(...)``.
 
-    Array input must explicitly declare ``wavelength_medium`` and the
-    observation's ``wavelength_frame``. This prevents air/vacuum or
-    barycentric/topocentric assumptions from silently moving the telluric
-    model. Scientific controls are shared with ``correct_file`` and
-    ``correct_arrays`` and are declared explicitly for editor completion and
-    type checking.
-
-    Existing ``correct_file`` and ``correct_arrays`` calls remain supported.
-
-    :param input_path: FITS, text, CSV, or ECSV spectrum path. Do not combine
-        this with ``spectrum``, ``wavelength``, or ``flux``.
-    :param spectrum: Previously loaded ``Spectrum``. Its units, wavelength
-        medium, masks, order labels, and metadata are preserved.
-    :param wavelength: One-dimensional wavelength array. It must be paired
-        with ``flux``, ``observation``, and an explicit ``wavelength_medium``.
-    :param flux: One-dimensional flux array sampled at ``wavelength``.
-    :param uncertainty: Optional one-sigma flux uncertainty array for weighted
-        fitting and propagated corrected-flux uncertainty.
-    :param mask: Optional Boolean array; ``True`` values are valid fit pixels.
-    :param group_id: Optional detector/order label for every array sample.
-        Samples with equal labels are treated as one physical spectral group,
-        preventing overlapping echelle orders from being interleaved.
-    :param wavelength_unit: Unit of the input wavelengths, for example
-        ``"micron"``, ``"nm"``, or ``"angstrom"``.
-    :param wavelength_medium: ``"air"`` or ``"vacuum"``. A file may infer this
-        from unambiguous metadata; arrays must declare it explicitly.
-    :param observation: Structured observing metadata. It is required for
-        arrays and may override incomplete or incorrect file-header values.
-    :param region_file: Optional PyMolFit ECSV file containing fit and
-        exclusion regions. Its wavelength unit, air/vacuum medium, and
-        coordinate frame are applied automatically. Observer-frame files can
-        reuse telluric fit regions across barycentric or heliocentric
-        exposures. Do not combine it with explicit ``fit_ranges`` or
-        ``exclude_ranges``.
-    :param theoretical_spectrum: Optional broadened stellar template whose
-        predicted astrophysical features are excluded from telluric parameter
-        estimation without changing the science flux.
-    :param stellar_mask_path: Optional ECSV output for the generated stellar
-        exclusions in the input spectrum's native wavelength coordinates.
-    :param joint_stellar_model: When ``True``, fit the supplied theoretical
-        spectrum multiplicatively with the atmospheric transmission and
-        continuum. This can separate overlapping stellar and telluric lines.
-        It requires ``theoretical_spectrum`` and is disabled by default. The
-        corrected science flux still divides out only atmospheric transmission.
-    :param output_path: Optional compact text output containing wavelength and
-        corrected flux.
-    :param product_path: Optional full fit-product output containing model,
-        transmission, masks, metadata, and provenance.
-    :param product_format: Astropy writer format for ``product_path``; the
-        default is portable ``"ascii.ecsv"``.
-    :param plot_path: Optional path for a saved diagnostic plot.
+    :param input_path: FITS, text, CSV, or ECSV file path, or a prepared
+        ``Spectrum`` object. Objects retain their units, wavelength medium,
+        uncertainties, masks, order labels, and observing metadata. To repair
+        metadata, prepare a Spectrum with the desired Observation before
+        calling this function.
+    :param output_path: Optional full correction product containing observed
+        and corrected flux, transmission, continuum, model, masks, fitted
+        parameters, uncertainties, diagnostics, and provenance. ECSV is the
+        default format. Use ``save_corrected_txt(result, path)`` for compact
+        export, or ``plot_fit(result, path=..., show=False)`` to save a figure.
+    :param theoretical_spectrum: Optional stellar template used to exclude
+        predicted stellar features from telluric fitting.
+    :param region_file: Optional ECSV fitting/exclusion region file, with
+        wavelength units, medium, and reference frame. Do not combine it with
+        ``advanced.fit_ranges`` or ``advanced.exclude_ranges``.
     :param show_plot: Display the diagnostic plot when ``True``.
+    :param wavelength_unit: Fallback file wavelength unit where metadata do not
+        supply one; e.g. 'micron', 'nm' or 'angstrom'. Objects retain their units.
+    :param wavelength_medium: Declare 'air' or 'vacuum', without converting input
+        values. None infers from file metadata; ambiguous FITS metadata require
+        an explicit choice. Objects retain their declared medium.
+    :param input_format: File format override; None infers from the extension.
+        Supported: fits, fit, fz, txt, dat, csv, ascii and ecsv.
+    :param wavelength_col: Wavelength column name or zero-based index; None detects it.
+    :param flux_col: Flux column name or zero-based index; None detects it.
+    :param uncertainty_col: Standard-deviation column name or zero-based index;
+        None detects it if present. Supplied errors are not rescaled.
+    :param hdu: FITS extension index; None selects a unique spectral extension.
+        Multiple candidates require a choice. This is not an order number.
+    :param image_index: Row to extract from a supported 2D FITS image.
+    :param min_transmission: Explicit transmission floor in (0, 1), or 'auto'
+        for a 0.01 floor plus an uncertainty-based correction mask.
+    :param estimate_uncertainties: Also propagate approximate fitted-parameter
+        uncertainty. Measurement errors are propagated regardless.
+    :param advanced: Optional ``AdvancedOptions`` for fitting regions, molecular
+        column scales, continuum, wavelength alignment, broadening and optimisation.
+        Custom physics is available through correct_file/correct_arrays instead.
+    :param cache: Optional ``CacheConfig`` for catalogue/profile directories,
+        download sources, offline behaviour, and timeouts.
     :param report: Print the resolved fit configuration and result summary.
-    :return: Complete ``TelluricFitResult`` in memory.
+    :return: Complete ``TelluricFitResult`` in memory, not a filename.
     """
 
-    has_path = input_path is not None
-    has_spectrum = spectrum is not None
-    has_wavelength = wavelength is not None
-    has_flux = flux is not None
-    has_array_input = has_wavelength or has_flux
-
-    route_count = int(has_path) + int(has_spectrum) + int(has_array_input)
-    if route_count == 0:
-        raise ConfigurationError("provide input_path, spectrum, or both wavelength and flux arrays")
-    if route_count > 1:
-        raise ConfigurationError(
-            "provide input_path, spectrum, or wavelength/flux arrays, not both "
-            "or multiple input routes"
-        )
-    if has_array_input and not (has_wavelength and has_flux):
-        raise ConfigurationError("array input requires both wavelength and flux")
-
+    expert_options, cache_options = _resolve_correction_options(advanced, cache)
+    output_format = expert_options.pop("output_format")
+    species = expert_options.pop("species")
     fit_options = {
-        "line_list": line_list,
-        "line_list_path": line_list_path,
-        "hitran_par": hitran_par,
-        "hitran_species": hitran_species,
-        "hitran_min_strength": hitran_min_strength,
-        "hitran_max_lines": hitran_max_lines,
-        "demo_line_list": demo_line_list,
-        "aer_catalog": aer_catalog,
-        "aer_cache_dir": aer_cache_dir,
-        "aer_source": aer_source,
-        "aer_offline": aer_offline,
-        "aer_reuse_molecfit": aer_reuse_molecfit,
-        "aer_timeout_s": aer_timeout_s,
-        "partition_table": partition_table,
-        "h2o_continuum": h2o_continuum,
-        "h2o_continuum_foreign_closure": h2o_continuum_foreign_closure,
-        "co2_continuum": co2_continuum,
-        "o2_cia": o2_cia,
-        "n2_cia": n2_cia,
-        "cia_tables": cia_tables,
-        "components": components,
-        "physical": physical,
-        "atmosphere": atmosphere,
-        "atmosphere_table": atmosphere_table,
-        "atmosphere_mode": atmosphere_mode,
-        "mipas_profile": mipas_profile,
-        "gdas_profile": gdas_profile,
-        "gdas_mode": gdas_mode,
-        "gdas_cache_dir": gdas_cache_dir,
-        "gdas_download_timeout_s": gdas_download_timeout_s,
-        "observatory_latitude_deg": observatory_latitude_deg,
-        "observatory_longitude_deg": observatory_longitude_deg,
-        "observatory_altitude_m": observatory_altitude_m,
-        "allow_default_observatory": allow_default_observatory,
-        "airmass": airmass,
-        "pressure_atm": pressure_atm,
-        "temperature_k": temperature_k,
-        "path_length_m": path_length_m,
-        "pwv_mm": pwv_mm,
-        "relative_humidity_percent": relative_humidity_percent,
-        "mixing_ratios": mixing_ratios,
-        "continuum_order": continuum_order,
-        "solve_continuum_linear": solve_continuum_linear,
-        "lsf_sigma_pixels": lsf_sigma_pixels,
-        "lsf_box_width_pixels": lsf_box_width_pixels,
-        "lsf_lorentz_fwhm_pixels": lsf_lorentz_fwhm_pixels,
-        "lsf_variable_width": lsf_variable_width,
-        "lsf_reference_wavelength_micron": lsf_reference_wavelength_micron,
-        "lsf_kernel_width_fwhm": lsf_kernel_width_fwhm,
-        "lsf_molecfit_voigt": lsf_molecfit_voigt,
-        "high_resolution_grid": high_resolution_grid,
-        "high_resolution_oversampling": high_resolution_oversampling,
-        "high_resolution_margin_pixels": high_resolution_margin_pixels,
-        "high_resolution_rebin_mode": high_resolution_rebin_mode,
-        "radiative_transfer_grid": radiative_transfer_grid,
-        "radiative_transfer_step_cm": radiative_transfer_step_cm,
-        "radiative_transfer_max_points": radiative_transfer_max_points,
-        "auto_segment": auto_segment,
-        "segment_size": segment_size,
-        "line_cutoff_cm": line_cutoff_cm,
-        "subtract_cutoff_profile": subtract_cutoff_profile,
-        "line_taper_cm": line_taper_cm,
-        "line_wing_mode": line_wing_mode,
-        "lblrtm_sample": lblrtm_sample,
-        "lblrtm_alfal0": lblrtm_alfal0,
-        "lblrtm_avmass_amu": lblrtm_avmass_amu,
-        "lblrtm_hwf3": lblrtm_hwf3,
-        "rayleigh": rayleigh,
-        "rayleigh_xrayl": rayleigh_xrayl,
-        "n2_continuum": n2_continuum,
-        "n2_continuum_xn2cn": n2_continuum_xn2cn,
-        "o2_continuum": o2_continuum,
-        "o2_continuum_xo2cn": o2_continuum_xo2cn,
-        "line_margin_micron": line_margin_micron,
+        **expert_options,
+        **cache_options,
+        "line_list_path": None,
+        "atmosphere_table": None,
+        "hitran_species": species,
         "min_transmission": min_transmission,
-        "minimum_species_peak_optical_depth": minimum_species_peak_optical_depth,
-        "fit_wavelength_shift": fit_wavelength_shift,
-        "fit_wavelength_polynomial": fit_wavelength_polynomial,
-        "wavelength_polynomial_order": wavelength_polynomial_order,
-        "fit_segment_wavelength_shifts": fit_segment_wavelength_shifts,
-        "fit_segment_wavelength_polynomial": fit_segment_wavelength_polynomial,
-        "segment_wavelength_polynomial_order": segment_wavelength_polynomial_order,
-        "initial_wavelength_shift": initial_wavelength_shift,
-        "wavelength_shift_bounds": wavelength_shift_bounds,
-        "fit_lsf_sigma": fit_lsf_sigma,
-        "lsf_sigma_bounds": lsf_sigma_bounds,
-        "fit_lsf_box_width": fit_lsf_box_width,
-        "lsf_box_width_bounds": lsf_box_width_bounds,
-        "fit_lsf_lorentz_fwhm": fit_lsf_lorentz_fwhm,
-        "lsf_lorentz_fwhm_bounds": lsf_lorentz_fwhm_bounds,
-        "fit_ranges": fit_ranges,
-        "exclude_ranges": exclude_ranges,
         "theoretical_spectrum": theoretical_spectrum,
-        "stellar_mask_path": stellar_mask_path,
-        "loss": loss,
-        "f_scale": f_scale,
-        "ftol": ftol,
-        "xtol": xtol,
-        "gtol": gtol,
         "estimate_uncertainties": estimate_uncertainties,
     }
+    fit_options["automatic_fit_regions"] &= region_file is None
 
-    if has_path and any(value is not None for value in (uncertainty, mask, group_id)):
-        raise ConfigurationError(
-            "uncertainty, mask, and group_id arrays cannot be combined with input_path; "
-            "load the file as arrays or identify its uncertainty column"
-        )
-
-    if has_path and not joint_stellar_model:
+    if input_path is None:
+        raise ConfigurationError("provide input_path as a file path or a Spectrum object")
+    if isinstance(input_path, (str, Path)):
         return correct_file(
             input_path=input_path,
             output_path=output_path,
@@ -1124,229 +1225,145 @@ def correct(
             wavelength_col=wavelength_col,
             flux_col=flux_col,
             uncertainty_col=uncertainty_col,
-            wavelength_unit=wavelength_unit,
-            wavelength_medium=wavelength_medium,
-            observation=observation,
-            region_file=region_file,
-            product_path=product_path,
-            product_format=product_format,
-            plot_path=plot_path,
-            show_plot=show_plot,
-            report=report,
-            **fit_options,
-        )
-
-    if has_path:
-        atmosphere_header = _load_fits_header_if_available(
-            input_path,
-            input_format,
             hdu=hdu,
-        )
-        if observation is not None:
-            atmosphere_header = observation.to_header(atmosphere_header)
-        resolved_medium = _resolve_wavelength_medium(
-            wavelength_medium,
-            atmosphere_header,
-            wavelength_col=wavelength_col,
-        )
-        loaded = load_spectrum(
-            input_path,
-            format=input_format,
-            wavelength_col=wavelength_col,
-            flux_col=flux_col,
-            uncertainty_col=uncertainty_col,
-            hdu=hdu,
-            wavelength_unit=wavelength_unit,
-            wavelength_medium=resolved_medium,
             image_index=image_index,
-            save_header=False,
-        )
-        resolved_regions = _resolve_region_file_ranges(
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=wavelength_medium,
             region_file=region_file,
-            fit_ranges=fit_ranges,
-            exclude_ranges=exclude_ranges,
-            spectrum=loaded,
-        )
-        path_options = {
-            **fit_options,
-            "fit_ranges": resolved_regions.fit_ranges,
-            "exclude_ranges": resolved_regions.exclude_ranges,
-            "region_wavelength_medium": resolved_regions.wavelength_medium,
-            "region_wavelength_frame": resolved_regions.wavelength_frame,
-            "pwv_mm": (
-                observation.pwv_mm if pwv_mm is None and observation is not None else pwv_mm
-            ),
-        }
-        result = _correct_spectrum_workflow(
-            loaded,
-            atmosphere_header=atmosphere_header,
-            joint_stellar_model=True,
-            **path_options,
-        )
-        return _finalize_correction(
-            result,
-            input_label=input_path,
-            output_path=output_path,
-            product_path=product_path,
-            product_format=product_format,
-            plot_path=plot_path,
+            output_format=output_format,
             show_plot=show_plot,
             report=report,
-        )
-
-    if has_spectrum:
-        if any(value is not None for value in (wavelength, flux, uncertainty, mask, group_id)):
-            raise ConfigurationError(
-                "spectrum input cannot be combined with wavelength, flux, "
-                "uncertainty, mask, or group_id arrays"
-            )
-        if any(
-            value is not None
-            for value in (
-                input_format,
-                wavelength_col,
-                flux_col,
-                uncertainty_col,
-                image_index,
-            )
-        ):
-            raise ConfigurationError(
-                "file format, column, HDU-image options apply only to input_path"
-            )
-        if (
-            wavelength_medium is not None
-            and spectrum.wavelength_medium != normalize_wavelength_medium(wavelength_medium)
-        ):
-            raise WavelengthMetadataError(
-                "wavelength_medium conflicts with spectrum.wavelength_medium"
-            )
-        source = spectrum.meta.get("source")
-        atmosphere_header = None
-        if source:
-            atmosphere_header = _load_fits_header_if_available(
-                str(source),
-                None,
-                hdu=hdu,
-            )
-        if observation is not None:
-            atmosphere_header = observation.to_header(atmosphere_header)
-        resolved_regions = _resolve_region_file_ranges(
-            region_file=region_file,
-            fit_ranges=fit_ranges,
-            exclude_ranges=exclude_ranges,
-            spectrum=spectrum,
-        )
-        spectrum_options = {
             **fit_options,
-            "fit_ranges": resolved_regions.fit_ranges,
-            "exclude_ranges": resolved_regions.exclude_ranges,
-            "region_wavelength_medium": resolved_regions.wavelength_medium,
-            "region_wavelength_frame": resolved_regions.wavelength_frame,
-        }
-        result = _correct_spectrum_workflow(
-            spectrum,
-            atmosphere_header=atmosphere_header,
-            joint_stellar_model=joint_stellar_model,
-            **spectrum_options,
         )
-        return _finalize_correction(
-            result,
-            input_label=spectrum.name or source or "<Spectrum>",
-            output_path=output_path,
-            product_path=product_path,
-            product_format=product_format,
-            plot_path=plot_path,
-            show_plot=show_plot,
-            report=report,
-        )
-
-    if observation is None:
-        raise ConfigurationError(
-            "array input requires observation=Observation(...) so observing metadata is explicit"
-        )
-    if observation.wavelength_frame is None:
-        raise ConfigurationError(
-            "array input requires observation.wavelength_frame to be "
-            "'observatory', 'barycentric', or 'heliocentric'"
-        )
-    if wavelength_medium is None:
-        raise WavelengthMetadataError("array input requires wavelength_medium='air' or 'vacuum'")
+    if not isinstance(input_path, Spectrum):
+        raise TypeError("input_path must be a file path or a Spectrum object")
+    spectrum = input_path
     if any(
-        value is not None for value in (input_format, wavelength_col, flux_col, uncertainty_col)
+        value is not None
+        for value in (input_format, wavelength_col, flux_col, uncertainty_col, image_index, hdu)
     ):
-        raise ConfigurationError("input_format and column selectors apply only to input_path")
-
-    if joint_stellar_model:
-        array_spectrum = Spectrum(
-            wavelength=np.asarray(wavelength, dtype=float),
-            flux=np.asarray(flux, dtype=float),
-            uncertainty=uncertainty,
-            mask=mask,
-            group_id=group_id,
-            wavelength_unit=wavelength_unit,
-            wavelength_medium=wavelength_medium,
-            meta={"observation": observation.to_header()},
+        raise ConfigurationError(
+            "file format, column, HDU-image options apply only to file-path input"
         )
-        resolved_regions = _resolve_region_file_ranges(
-            region_file=region_file,
-            fit_ranges=fit_ranges,
-            exclude_ranges=exclude_ranges,
-            spectrum=array_spectrum,
+    if wavelength_medium is not None and spectrum.wavelength_medium != normalize_wavelength_medium(
+        wavelength_medium
+    ):
+        raise WavelengthMetadataError("wavelength_medium conflicts with spectrum.wavelength_medium")
+    observation = spectrum.observation
+    source = spectrum.meta.get("source")
+    atmosphere_header = None if observation is None else observation.to_header()
+    if atmosphere_header is None and source:
+        atmosphere_header = _load_fits_header_if_available(
+            str(source), None, hdu=spectrum.meta.get("hdu")
         )
-        array_options = {
+    if observation is None and atmosphere_header is None:
+        raise ConfigurationError(
+            "Spectrum has no observing metadata; supply Spectrum(..., observation=Observation(...))"
+        )
+    if (
+        not source
+        and observation is not None
+        and observation.wavelength_frame is None
+        and str(atmosphere_header.get("SPECSYS", "")).upper()
+        not in {"TOPOCENT", "BARYCENT", "HELIOCEN"}
+    ):
+        raise WavelengthMetadataError(
+            "Spectrum.observation requires an explicit wavelength_frame "
+            "for arrays without file metadata"
+        )
+    if observation is not None and fit_options["pwv_mm"] is None:
+        fit_options["pwv_mm"] = observation.pwv_mm
+    resolved_regions = _resolve_region_file_ranges(
+        region_file=region_file,
+        fit_ranges=fit_options["fit_ranges"],
+        exclude_ranges=fit_options["exclude_ranges"],
+        spectrum=spectrum,
+    )
+    result = _correct_spectrum_workflow(
+        spectrum,
+        atmosphere_header=atmosphere_header,
+        **{
             **fit_options,
             "fit_ranges": resolved_regions.fit_ranges,
             "exclude_ranges": resolved_regions.exclude_ranges,
             "region_wavelength_medium": resolved_regions.wavelength_medium,
             "region_wavelength_frame": resolved_regions.wavelength_frame,
-            "pwv_mm": observation.pwv_mm if pwv_mm is None else pwv_mm,
-        }
-        result = _correct_spectrum_workflow(
-            array_spectrum,
-            atmosphere_header=observation.to_header(),
-            joint_stellar_model=True,
-            **array_options,
-        )
-    else:
-        result = correct_arrays(
-            wavelength=np.asarray(wavelength, dtype=float),
-            flux=np.asarray(flux, dtype=float),
-            uncertainty=uncertainty,
-            mask=mask,
-            group_id=group_id,
-            wavelength_unit=wavelength_unit,
-            wavelength_medium=wavelength_medium,
-            observation=observation,
-            region_file=region_file,
-            **fit_options,
-        )
+        },
+    )
     return _finalize_correction(
         result,
-        input_label="<wavelength/flux arrays>",
+        input_label=spectrum.name or source or "<Spectrum>",
         output_path=output_path,
-        product_path=product_path,
-        product_format=product_format,
-        plot_path=plot_path,
+        output_format=output_format,
+        plot_path=None,
         show_plot=show_plot,
         report=report,
     )
 
 
-def _inherit_correct_file_parameter_docs() -> None:
-    """Add shared detailed parameter descriptions to the unified API docs."""
+def _resolve_correction_options(advanced, cache):
+    if advanced is not None and not isinstance(advanced, AdvancedOptions):
+        raise TypeError("advanced must be AdvancedOptions(...) or None")
+    if cache is not None and not isinstance(cache, CacheConfig):
+        raise TypeError("cache must be CacheConfig(...) or None")
+    expert = advanced if advanced is not None else AdvancedOptions()
+    internal = _CorrectionDefaults()
+    cache_config = cache if cache is not None else CacheConfig()
+    public_values = {field.name: getattr(expert, field.name) for field in fields(expert)}
+    expert_values = {field.name: getattr(internal, field.name) for field in fields(internal)}
+    cache_values = {field.name: getattr(cache_config, field.name) for field in fields(cache_config)}
+    order = public_values.pop("wavelength_order")
+    if public_values["wavelength_scope"] not in {"group", "global"}:
+        raise ValueError("wavelength_scope must be 'group' or 'global'")
+    expert_values.update(public_values)
+    expert_values.update(_wavelength_fit_options(order, public_values["wavelength_scope"]))
+    return expert_values, cache_values
 
-    target_doc = correct.__doc__ or ""
+
+def _wavelength_fit_options(order, scope):
+    """Translate the single public model choice into mutually exclusive fit flags."""
+    if (
+        order != "auto"
+        and order is not None
+        and (isinstance(order, bool) or not isinstance(order, (int, np.integer)) or order < 0)
+    ):
+        raise ValueError("wavelength_order must be 'auto', None, or a non-negative integer")
+    automatic = order == "auto"
+    explicit = order is not None and not automatic
+    degree = int(order) if explicit else 1
+    return {
+        "fit_wavelength_shift": "auto"
+        if automatic
+        else bool(explicit and scope == "global" and degree == 0),
+        "fit_wavelength_polynomial": bool(explicit and scope == "global" and degree > 0),
+        "wavelength_polynomial_order": degree,
+        "fit_segment_wavelength_shifts": bool(explicit and scope == "group" and degree == 0),
+        "fit_segment_wavelength_polynomial": bool(explicit and scope == "group" and degree > 0),
+        "segment_wavelength_polynomial_order": degree,
+    }
+
+
+def _inherit_correct_file_parameter_docs() -> None:
+    """Keep common and grouped editor help aligned with the expert API."""
+
     source_doc = correct_file.__doc__ or ""
-    inherited = []
-    for line in source_doc.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(":param "):
-            continue
-        parameter = stripped.removeprefix(":param ").split(":", 1)[0]
-        if f":param {parameter}:" not in target_doc:
-            inherited.append(stripped)
-    if inherited:
-        correct.__doc__ = target_doc.rstrip() + "\n\n" + "\n".join(inherited)
+    for target, names in (
+        (correct, correct.__annotations__.keys()),
+        (correct_arrays, correct_arrays.__annotations__.keys()),
+        (AdvancedOptions, {field.name for field in fields(AdvancedOptions)}),
+        (CacheConfig, {field.name for field in fields(CacheConfig)}),
+    ):
+        target_doc = target.__doc__ or ""
+        inherited = []
+        for line in source_doc.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(":param "):
+                continue
+            parameter = stripped.removeprefix(":param ").split(":", 1)[0]
+            if parameter in names and f":param {parameter}:" not in target_doc:
+                inherited.append(stripped)
+        if inherited:
+            target.__doc__ = target_doc.rstrip() + "\n\n" + "\n".join(inherited)
 
 
 _inherit_correct_file_parameter_docs()
@@ -1357,8 +1374,7 @@ def _finalize_correction(
     *,
     input_label: str | Path,
     output_path: str | Path | None,
-    product_path: str | Path | None,
-    product_format: str,
+    output_format: str,
     plot_path: str | Path | None,
     show_plot: bool,
     report: bool,
@@ -1366,12 +1382,10 @@ def _finalize_correction(
     if report:
         print_fit_summary(result, input_path=input_label)
     if output_path is not None:
-        save_corrected_txt(result, output_path)
-    if product_path is not None:
-        if product_format == "ascii.ecsv":
-            save_fit_product_ecsv(result, product_path)
+        if output_format == "ascii.ecsv":
+            save_fit_product_ecsv(result, output_path)
         else:
-            result.write(product_path, format=product_format)
+            result.write(output_path, format=output_format)
     if plot_path is not None:
         plot_fit(result, path=plot_path, show=show_plot)
     elif show_plot:
@@ -1386,9 +1400,8 @@ def _correct_spectrum_workflow(
     line_list_path: str | Path | None,
     hitran_par: str | Path | None,
     hitran_species: tuple[str, ...] | None,
-    hitran_min_strength: float | None,
-    hitran_max_lines: int | None,
-    demo_line_list: bool,
+    min_line_strength: float | None,
+    max_lines: int | None,
     aer_catalog: AERCatalogArtifact | str | Path | None,
     aer_cache_dir: str | Path | None,
     aer_source: str | Path | None,
@@ -1399,8 +1412,6 @@ def _correct_spectrum_workflow(
     h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | str | Path | None,
     h2o_continuum_foreign_closure: bool,
     co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | str | Path | None,
-    o2_cia: HitranCIATable | str | Path | None,
-    n2_cia: HitranCIATable | str | Path | None,
     cia_tables: Mapping[str, HitranCIATable | str | Path] | None,
     components: tuple[AbsorptionComponent, ...] | None,
     physical: bool | None,
@@ -1424,7 +1435,7 @@ def _correct_spectrum_workflow(
     pwv_mm: float | None,
     relative_humidity_percent: float | None,
     mixing_ratios: Mapping[str, float] | None,
-    continuum_order: int,
+    continuum_order: int | Literal["auto"],
     solve_continuum_linear: ContinuumSolveMode,
     lsf_sigma_pixels: LSFSigmaInput,
     lsf_box_width_pixels: float,
@@ -1456,9 +1467,18 @@ def _correct_spectrum_workflow(
     n2_continuum_xn2cn: float,
     o2_continuum: bool,
     o2_continuum_xo2cn: float,
+    o3_continuum: bool,
+    o3_continuum_xo3cn: float,
     line_margin_micron: float,
-    min_transmission: float,
+    min_transmission: float | Literal["auto"],
+    max_corrected_relative_uncertainty: float,
+    automatic_fit_regions: bool,
     minimum_species_peak_optical_depth: float,
+    fixed_species_scales: Mapping[str, float] | None,
+    initial_species_scales: Mapping[str, float] | None,
+    scale_bounds: tuple[float, float],
+    max_nfev: int | None,
+    wavelength_scope: Literal["group", "global"],
     fit_wavelength_shift: WavelengthFitMode,
     fit_wavelength_polynomial: bool,
     wavelength_polynomial_order: int,
@@ -1479,9 +1499,8 @@ def _correct_spectrum_workflow(
     region_wavelength_frame: RegionWavelengthFrame,
     theoretical_spectrum: TheoreticalSpectrum | None,
     stellar_mask_path: str | Path | None,
-    joint_stellar_model: bool,
     loss: str,
-    f_scale: float,
+    f_scale: float | Literal["auto"],
     ftol: float,
     xtol: float,
     gtol: float,
@@ -1491,10 +1510,25 @@ def _correct_spectrum_workflow(
         raise ConfigurationError(
             "stellar_mask_path requires theoretical_spectrum=TheoreticalSpectrum(...)"
         )
-    if joint_stellar_model and theoretical_spectrum is None:
-        raise ConfigurationError(
-            "joint_stellar_model=True requires theoretical_spectrum=TheoreticalSpectrum(...)"
-        )
+    automatic_continuum_order = continuum_order == "auto"
+    if wavelength_scope not in {"group", "global"}:
+        raise ValueError("wavelength_scope must be 'group' or 'global'")
+    if max_nfev is not None and (
+        isinstance(max_nfev, bool) or not isinstance(max_nfev, (int, np.integer)) or max_nfev <= 0
+    ):
+        raise ValueError("max_nfev must be a positive integer or None")
+    automatic_error_scale = f_scale == "auto"
+    automatic_quality_mask = min_transmission == "auto"
+    continuum_order = 2 if automatic_continuum_order else continuum_order
+    f_scale = 1.0 if automatic_error_scale else f_scale
+    min_transmission = 0.01 if automatic_quality_mask else min_transmission
+    if not isinstance(automatic_fit_regions, bool):
+        raise ValueError("automatic_fit_regions must be a boolean")
+    if (
+        not np.isfinite(max_corrected_relative_uncertainty)
+        or max_corrected_relative_uncertainty <= 0
+    ):
+        raise ValueError("max_corrected_relative_uncertainty must be positive and finite")
     _validate_correction_options(
         spectrum,
         continuum_order=continuum_order,
@@ -1533,7 +1567,6 @@ def _correct_spectrum_workflow(
     spectrum = _spectrum_to_observatory_vacuum(spectrum, atmosphere_header)
     stellar_mask_result: StellarMaskResult | None = None
     stellar_fit_weights: np.ndarray | None = None
-    stellar_forward_model: StellarForwardModel | None = None
     if theoretical_spectrum is not None:
         resolution = _estimate_lsf_sigma_from_resolving_power(
             spectrum,
@@ -1548,17 +1581,6 @@ def _correct_spectrum_workflow(
             ),
             resolving_power=resolving_power,
         )
-        if joint_stellar_model:
-            stellar_forward_model = StellarForwardModel(
-                wavelength_micron=np.asarray(
-                    stellar_mask_result.intrinsic_wavelength_micron,
-                    dtype=float,
-                ),
-                normalized_flux=np.asarray(
-                    stellar_mask_result.intrinsic_normalized_flux,
-                    dtype=float,
-                ),
-            )
         if theoretical_spectrum.confidence_weighted_masking:
             stellar_fit_weights = stellar_mask_result.fit_weights
             if stellar_fit_weights is None:
@@ -1592,16 +1614,12 @@ def _correct_spectrum_workflow(
     )
     resolved_h2o_continuum = _resolve_h2o_continuum(h2o_continuum)
     resolved_co2_continuum = _resolve_tabulated_continuum(co2_continuum)
-    resolved_o2_cia = _resolve_cia_table(o2_cia)
-    resolved_n2_cia = _resolve_cia_table(n2_cia)
     resolved_pair_cia_tables = _resolve_pair_cia_tables(cia_tables)
     has_component_options = (
-        any(
-            value is not None
-            for value in (components, resolved_co2_continuum, resolved_o2_cia, resolved_n2_cia)
-        )
+        any(value is not None for value in (components, resolved_co2_continuum))
         or n2_continuum
         or o2_continuum
+        or o3_continuum
     )
     has_component_options = has_component_options or bool(resolved_pair_cia_tables)
     resolved_line_list = _resolve_line_list(
@@ -1610,9 +1628,8 @@ def _correct_spectrum_workflow(
         line_list_path=line_list_path,
         hitran_par=hitran_par,
         hitran_species=hitran_species,
-        hitran_min_strength=hitran_min_strength,
-        hitran_max_lines=hitran_max_lines,
-        demo_line_list=demo_line_list,
+        min_line_strength=min_line_strength,
+        max_lines=max_lines,
         aer_catalog=aer_catalog,
         aer_cache_dir=aer_cache_dir,
         aer_source=aer_source,
@@ -1647,6 +1664,25 @@ def _correct_spectrum_workflow(
         atmosphere_header=atmosphere_header,
         has_telluric_lines=resolved_line_list.wavelength.size > 0,
     )
+    region_resolution = {"source": "explicit" if fit_ranges is not None else "all_valid_pixels"}
+    if automatic_fit_regions and fit_ranges is None:
+        proposed_ranges, region_resolution = automatic_regions(
+            spectrum,
+            resolved_line_list,
+            resolved_lsf_sigma_pixels,
+            exclude_ranges,
+        )
+        if proposed_ranges:
+            fit_ranges = proposed_ranges
+        else:
+            region_resolution["fallback"] = "all_valid_nonexcluded_pixels"
+            warnings.warn(
+                "No usable automatic telluric windows; using all valid, non-excluded pixels.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    region_resolution["fit_ranges_micron"] = fit_ranges
+    spectrum, uncertainty_resolution = estimate_missing_uncertainty(spectrum, fit_ranges)
     (
         resolved_lsf_lorentz_fwhm_pixels,
         resolved_fit_lsf_lorentz_fwhm,
@@ -1714,11 +1750,11 @@ def _correct_spectrum_workflow(
         n2_continuum_xn2cn=n2_continuum_xn2cn,
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
+        o3_continuum=o3_continuum,
+        o3_continuum_xo3cn=o3_continuum_xo3cn,
         h2o_continuum=resolved_h2o_continuum,
         h2o_continuum_foreign_closure=h2o_continuum_foreign_closure,
         co2_continuum=resolved_co2_continuum,
-        o2_cia=resolved_o2_cia,
-        n2_cia=resolved_n2_cia,
         cia_tables=resolved_pair_cia_tables,
     )
     resolved_physical = _resolve_physical(
@@ -1783,11 +1819,11 @@ def _correct_spectrum_workflow(
             n2_continuum_xn2cn=n2_continuum_xn2cn,
             o2_continuum=o2_continuum,
             o2_continuum_xo2cn=o2_continuum_xo2cn,
+            o3_continuum=o3_continuum,
+            o3_continuum_xo3cn=o3_continuum_xo3cn,
             h2o_continuum=resolved_h2o_continuum,
             h2o_continuum_foreign_closure=h2o_continuum_foreign_closure,
             co2_continuum=resolved_co2_continuum,
-            o2_cia=resolved_o2_cia,
-            n2_cia=resolved_n2_cia,
             cia_tables=resolved_pair_cia_tables,
         )
     fixed_component_scales: dict[str, float] = {}
@@ -1856,7 +1892,9 @@ def _correct_spectrum_workflow(
     fit_config = FitConfig(
         airmass=fit_airmass,
         continuum_order=continuum_order,
-        fixed_species_scales=fixed_component_scales or None,
+        fixed_species_scales={**fixed_component_scales, **(fixed_species_scales or {})} or None,
+        initial_species_scales=initial_species_scales,
+        scale_bounds=scale_bounds,
         solve_continuum_linear=use_linear_continuum,
         lsf_sigma_pixels=resolved_lsf_sigma_pixels,
         lsf_box_width_pixels=lsf_box_width_pixels,
@@ -1889,6 +1927,8 @@ def _correct_spectrum_workflow(
         n2_continuum_xn2cn=n2_continuum_xn2cn,
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
+        o3_continuum=o3_continuum,
+        o3_continuum_xo3cn=o3_continuum_xo3cn,
         line_margin_micron=line_margin_micron,
         min_transmission=min_transmission,
         minimum_species_peak_optical_depth=minimum_species_peak_optical_depth,
@@ -1921,9 +1961,13 @@ def _correct_spectrum_workflow(
         xtol=xtol,
         gtol=gtol,
         max_nfev=(
-            AUTO_LINEAR_CONTINUUM_MAX_NFEV
-            if (automatic_continuum_solver and use_linear_continuum and loss == "linear")
-            else None
+            max_nfev
+            if max_nfev is not None
+            else (
+                AUTO_LINEAR_CONTINUUM_MAX_NFEV
+                if (automatic_continuum_solver and use_linear_continuum and loss == "linear")
+                else None
+            )
         ),
         estimate_uncertainties=estimate_uncertainties,
     )
@@ -1944,6 +1988,7 @@ def _correct_spectrum_workflow(
         }
         automatic_physical_group_wavelength = bool(
             auto_select_wavelength_model
+            and wavelength_scope == "group"
             and len(physical_group_ids) > 1
             and all(
                 group.meta.get("segmentation_source") in {"fits_order_detector", "wavelength_gaps"}
@@ -1958,15 +2003,16 @@ def _correct_spectrum_workflow(
             fit_segment_wavelength_shifts=True,
             fit_segment_wavelength_polynomial=False,
             wavelength_shift_unit="pixel",
-            wavelength_shift_bounds=AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS,
+            wavelength_shift_bounds=resolved_wavelength_shift_bounds,
             initial_wavelength_shift=0.0,
         )
         auto_select_wavelength_model = False
 
+    fit_opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
+
     def run_fit(config: FitConfig) -> TelluricFitResult:
         single_fit_options = {
             **({} if stellar_fit_weights is None else {"fit_weights": stellar_fit_weights}),
-            **({} if stellar_forward_model is None else {"stellar_model": stellar_forward_model}),
         }
         per_segment_wavelength_fit = bool(
             config.fit_segment_wavelength_shifts or config.fit_segment_wavelength_polynomial
@@ -1990,13 +2036,13 @@ def _correct_spectrum_workflow(
         segments = physical_group_preview or _split_spectrum(
             spectrum,
             segment_size=segment_size,
-            minimum_points=continuum_order + 2,
+            minimum_points=config.continuum_order + 2,
         )
         if resolved_high_resolution_grid:
             segments = _subdivide_segments_for_grid_limit(
                 segments,
                 config=config,
-                minimum_points=continuum_order + 2,
+                minimum_points=config.continuum_order + 2,
             )
         if len(segments) == 1 and not per_segment_wavelength_fit:
             return fit_tellurics(
@@ -2023,15 +2069,6 @@ def _correct_spectrum_workflow(
                     stellar_fit_weights,
                     segment,
                 )
-                for segment, is_active in zip(segments, active, strict=True)
-                if is_active
-            )
-        )
-        active_stellar_models = (
-            None
-            if stellar_forward_model is None
-            else tuple(
-                stellar_forward_model
                 for segment, is_active in zip(segments, active, strict=True)
                 if is_active
             )
@@ -2063,10 +2100,10 @@ def _correct_spectrum_workflow(
             line_list=resolved_line_list,
             config=config,
             fit_weights=active_fit_weights,
-            stellar_models=active_stellar_models,
             global_wavelength_bounds=full_bounds,
             wavelength_group_ids=active_group_ids,
             wavelength_group_bounds=physical_group_bounds,
+            _opacity_cache=fit_opacity_cache,
         )
         fitted_results = iter(multi_result.segment_results)
         segment_results = tuple(
@@ -2077,7 +2114,6 @@ def _correct_spectrum_workflow(
                 line_list=resolved_line_list,
                 config=config,
                 fit_result=multi_result,
-                stellar_model=(None if stellar_forward_model is None else stellar_forward_model),
                 global_wavelength_bounds=full_bounds,
                 wavelength_group_id=int(segment.meta.get("physical_group_index", segment_index)),
             )
@@ -2234,6 +2270,15 @@ def _correct_spectrum_workflow(
                 "coarse_search": pilot_coarse_search,
             }
 
+    if automatic_physical_group_wavelength:
+        fit_config, wavelength_model_resolution = _select_group_wavelength_models(
+            spectrum,
+            line_list=resolved_line_list,
+            config=fit_config,
+            segment_size=segment_size,
+            resolution=wavelength_model_resolution,
+        )
+
     initial_solver = "linear" if use_linear_continuum else "nonlinear"
     initial_result = run_fit(fit_config)
     attempts = [_continuum_solver_attempt(initial_solver, initial_result)]
@@ -2253,12 +2298,113 @@ def _correct_spectrum_workflow(
             fallback_config = replace(
                 fit_config,
                 solve_continuum_linear=False,
-                max_nfev=None,
+                max_nfev=max_nfev,
             )
             selected_result = run_fit(fallback_config)
+            fit_config = fallback_config
             selected_solver = "nonlinear"
             attempts.append(_continuum_solver_attempt(selected_solver, selected_result))
 
+    continuum_resolution = {
+        "requested": "auto" if automatic_continuum_order else continuum_order,
+        "selected_order": continuum_order,
+    }
+    scale_resolution = {
+        "requested": "auto" if automatic_error_scale else f_scale,
+        "selected_scale": f_scale,
+    }
+    if selected_result.success:
+        trial_order, trial_scale = continuum_order, f_scale
+        if automatic_continuum_order:
+            fitted = selected_result.spectrum
+            chunks = (
+                _split_spectrum(
+                    fitted, segment_size=segment_size, minimum_points=continuum_order + 2
+                )
+                if selected_result.provenance.get("segmentation")
+                else (fitted,)
+            )
+            if resolved_high_resolution_grid:
+                chunks = _subdivide_segments_for_grid_limit(
+                    chunks,
+                    config=fit_config,
+                    minimum_points=continuum_order + 2,
+                )
+            continuum_multiplier = np.divide(
+                selected_result.model_flux,
+                selected_result.continuum,
+                out=np.full(fitted.flux.size, np.nan),
+                where=selected_result.continuum != 0,
+            )
+            validation_sigma = fitted.uncertainty
+            if selected_result.fit_weights is not None:
+                validation_sigma = np.divide(
+                    validation_sigma,
+                    np.sqrt(selected_result.fit_weights),
+                    out=np.full(fitted.flux.size, np.inf),
+                    where=selected_result.fit_weights > 0,
+                )
+            samples = [
+                (
+                    chunk.wavelength,
+                    chunk.flux,
+                    _weights_for_segment(fitted, validation_sigma, chunk),
+                    _weights_for_segment(fitted, continuum_multiplier, chunk),
+                    _weights_for_segment(fitted, selected_result.fit_mask.astype(float), chunk) > 0,
+                )
+                for chunk in chunks
+            ]
+            trial_order, continuum_resolution = choose_continuum_order(
+                samples,
+                loss=loss,
+                f_scale=f_scale,
+                initial_order=continuum_order,
+            )
+        if automatic_error_scale and loss != "linear":
+            trial_scale = automatic_robust_scale(selected_result)
+            # Avoid another full fit for negligible changes in the outlier threshold.
+            if trial_scale < 1.25:
+                trial_scale = 1.0
+        if trial_order != continuum_order or trial_scale != f_scale:
+            trial_config = replace(
+                fit_config,
+                continuum_order=trial_order,
+                f_scale=trial_scale,
+                solve_continuum_linear=selected_solver == "linear",
+                initial_species_scales=dict(selected_result.species_scales),
+                lsf_sigma_pixels=selected_result.lsf_sigma_pixels,
+                initialize_lsf_sigma_grid=False,
+            )
+            try:
+                candidate = run_fit(trial_config)
+                if (
+                    candidate.success
+                    and np.all(np.isfinite(candidate.continuum))
+                    and np.all(candidate.continuum > 0)
+                ):
+                    selected_result, fit_config = candidate, trial_config
+                else:
+                    continuum_resolution["fallback"] = "adaptive_refit_did_not_converge"
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+                continuum_resolution["fallback"] = str(exc)
+            if "fallback" in continuum_resolution:
+                warnings.warn(
+                    "Automatic refinement was not usable; retaining the initial fit.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        continuum_resolution["selected_order"] = fit_config.continuum_order
+        scale_resolution["selected_scale"] = fit_config.f_scale
+
+    quality_mask_resolution = {
+        "source": "fixed_threshold",
+        "minimum_transmission": min_transmission,
+    }
+    if automatic_quality_mask:
+        selected_result, quality_mask_resolution = mask_uncertain_correction(
+            selected_result,
+            relative_limit=max_corrected_relative_uncertainty,
+        )
     selection_reason = None
     if automatic_continuum_solver and selected_solver == "linear" and loss != "linear":
         selection_reason = f"loss={loss!r} uses robust iteratively reweighted continuum profiling"
@@ -2331,7 +2477,9 @@ def _correct_spectrum_workflow(
         for parameter, status in selected_result.parameter_bound_status.items()
         if "wavelength_" in parameter
     }
-    if auto_select_wavelength_model and wavelength_bound_status:
+    if (
+        auto_select_wavelength_model or automatic_physical_group_wavelength
+    ) and wavelength_bound_status:
         warnings.warn(
             "The automatically selected wavelength model reached a coefficient "
             "bound in the full fit; inspect the alignment or provide wider "
@@ -2359,6 +2507,11 @@ def _correct_spectrum_workflow(
         provenance={
             **dict(selected_result.provenance),
             "fit_quality": quality,
+            "automatic_continuum": continuum_resolution,
+            "fit_region_selection": region_resolution,
+            "input_uncertainty": uncertainty_resolution,
+            "robust_scale": scale_resolution,
+            "correction_mask": quality_mask_resolution,
             "region_coordinates": {
                 "wavelength_medium": region_wavelength_medium,
                 "wavelength_frame": region_wavelength_frame,
@@ -2366,10 +2519,7 @@ def _correct_spectrum_workflow(
             **(
                 {}
                 if stellar_mask_result is None
-                else {
-                    "stellar_template": dict(stellar_mask_result.diagnostics)
-                    | {"joint_forward_model": bool(joint_stellar_model)}
-                }
+                else {"stellar_template": dict(stellar_mask_result.diagnostics)}
             ),
         },
     )
@@ -2726,11 +2876,20 @@ def _resolve_lsf_lorentz(
 
 
 def _configured_wavelength_model_name(config: FitConfig) -> str:
+    if config.wavelength_group_polynomial_orders:
+        degrees = set(config.wavelength_group_polynomial_orders.values())
+        if degrees == {-1}:
+            return "none"
+        if degrees == {0}:
+            return "per_segment_constant"
+        return "per_group_selected_polynomial"
     if config.fit_segment_wavelength_polynomial:
         return "per_segment_polynomial"
     if config.fit_segment_wavelength_shifts:
         return "per_segment_constant"
     if config.fit_wavelength_polynomial:
+        if config.wavelength_shift_unit == "pixel" and config.wavelength_polynomial_order == 2:
+            return "quadratic_pixel_trend"
         return (
             "linear_pixel_trend"
             if (config.wavelength_shift_unit == "pixel" and config.wavelength_polynomial_order == 1)
@@ -2771,6 +2930,65 @@ def _wavelength_candidate_improvement(
     )
 
 
+def _select_group_wavelength_models(spectrum, *, line_list, config, segment_size, resolution):
+    wave = spectrum.to_unit("micron").wavelength
+    groups = _split_spectrum(
+        spectrum, segment_size=float(np.ptp(wave)) + 1.0, minimum_points=config.continuum_order + 2
+    )
+    orders, records = {}, []
+    lower, upper = config.wavelength_shift_bounds
+    pilot_config = replace(
+        config,
+        fit_segment_wavelength_shifts=False,
+        fit_segment_wavelength_polynomial=False,
+        wavelength_group_polynomial_orders=None,
+    )
+    for group in groups:
+        group_id = int(group.meta["physical_group_index"])
+        try:
+            selected, details = _select_wavelength_model_from_pilots(
+                group,
+                line_list=line_list,
+                config=pilot_config,
+                segment_size=segment_size,
+                resolution={},
+            )
+            degree = (
+                selected.wavelength_polynomial_order
+                if selected.fit_wavelength_polynomial
+                else (0 if selected.fit_wavelength_shift else -1)
+            )
+            lower = min(lower, selected.wavelength_shift_bounds[0])
+            upper = max(upper, selected.wavelength_shift_bounds[1])
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            degree, details = -1, {"selection_reason": "pilot_fit_error", "error": str(exc)}
+            warnings.warn(
+                f"Wavelength pilot for group {group_id} failed; keeping its input calibration.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        orders[group_id] = degree
+        records.append({"physical_group_index": group_id, "polynomial_order": degree, **details})
+    maximum_order = max(0, max(orders.values(), default=0))
+    selected = replace(
+        config,
+        fit_wavelength_shift=False,
+        fit_wavelength_polynomial=False,
+        fit_segment_wavelength_shifts=maximum_order == 0,
+        fit_segment_wavelength_polynomial=maximum_order > 0,
+        segment_wavelength_polynomial_order=maximum_order,
+        wavelength_group_polynomial_orders=orders,
+        wavelength_shift_bounds=(lower, upper),
+        initial_wavelength_shift=0.0,
+    )
+    return selected, {
+        **resolution,
+        "selection_reason": "per_group_penalized_pilot_evidence",
+        "groups": records,
+        "bounds": [lower, upper],
+    }
+
+
 def _select_wavelength_model_from_pilots(
     spectrum: Spectrum,
     *,
@@ -2798,6 +3016,7 @@ def _select_wavelength_model_from_pilots(
         source_spectrum=spectrum,
         line_list=line_list,
         config=config,
+        maximum_regions=5,
     )
     details: dict[str, object] = {
         **dict(resolution),
@@ -3008,6 +3227,33 @@ def _select_wavelength_model_from_pilots(
                 )
             )
 
+    pilot_centers = [float(np.median(part.wavelength)) for part in pilot_segments]
+    if len(pilot_segments) >= 3 and np.ptp(pilot_centers) >= 0.5 * (
+        global_bounds[1] - global_bounds[0]
+    ):
+        quadratic_config = replace(
+            constant_config,
+            fit_wavelength_shift=False,
+            fit_wavelength_polynomial=True,
+            wavelength_polynomial_order=2,
+            initial_wavelength_shift=float(
+                constant_result.segment_results[0].wavelength_coefficients[0]
+            ),
+        )
+        quadratic_result = fit_telluric_segments(
+            pilot_segments,
+            line_list=line_list,
+            config=quadratic_config,
+            global_wavelength_bounds=global_bounds,
+            _opacity_cache=opacity_cache,
+        )
+        quadratic_metrics = _lsf_pilot_model_metrics(quadratic_result)
+        details["quadratic_pixel_trend_model"] = quadratic_metrics
+        if quadratic_result.success:
+            model_records.append(
+                ("quadratic_pixel_trend", quadratic_config, quadratic_result, quadratic_metrics)
+            )
+
     selected_name, selected_config, selected_result, selected_metrics = model_records[0]
     comparisons: list[dict[str, object]] = []
     for name, candidate_config, candidate_result, candidate_metrics in model_records[1:]:
@@ -3021,7 +3267,8 @@ def _select_wavelength_model_from_pilots(
             if "wavelength_" in parameter
         }
         accepted = bool(
-            bic_improvement >= AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT
+            bic_improvement
+            >= (10.0 if name == "quadratic_pixel_trend" else AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT)
             and improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
             and not bound_status
         )
@@ -3049,8 +3296,8 @@ def _select_wavelength_model_from_pilots(
     selected_config = replace(
         config,
         fit_wavelength_shift=selected_name == "constant_pixel_shift",
-        fit_wavelength_polynomial=selected_name == "linear_pixel_trend",
-        wavelength_polynomial_order=1,
+        fit_wavelength_polynomial=selected_name in {"linear_pixel_trend", "quadratic_pixel_trend"},
+        wavelength_polynomial_order=2 if selected_name == "quadratic_pixel_trend" else 1,
         wavelength_shift_unit="pixel",
         wavelength_shift_bounds=tuple(selected_config.wavelength_shift_bounds),
         initial_wavelength_shift=float(selected_coefficients[0]),
@@ -3476,10 +3723,14 @@ def _select_distributed_lsf_pilot_segments(
     source_spectrum: Spectrum,
     line_list: LineList,
     config: FitConfig,
+    maximum_regions: int = AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS,
 ) -> tuple[tuple[Spectrum, ...], list[dict[str, object]]]:
-    finite_strengths = line_list.strength[
-        np.isfinite(line_list.strength) & (line_list.strength > 0)
-    ]
+    ranking = (
+        _expected_aer_absorption_score(line_list.strength, line_list.species)
+        if line_list.has_hitran_parameters
+        else line_list.strength
+    )
+    finite_strengths = ranking[np.isfinite(ranking) & (ranking > 0)]
     if finite_strengths.size == 0:
         return (), []
     strength_scale = float(np.nanmax(finite_strengths))
@@ -3488,7 +3739,7 @@ def _select_distributed_lsf_pilot_segments(
         if not _segment_has_fit_pixels(segment, config):
             continue
         if _segment_fit_pixel_count(segment, config) < max(
-            AUTO_LSF_LORENTZ_MIN_PILOT_PIXELS,
+            AUTO_LSF_LORENTZ_MIN_PILOT_PIXELS // 2,
             config.continuum_order + 2,
         ):
             continue
@@ -3522,8 +3773,10 @@ def _select_distributed_lsf_pilot_segments(
         line_count = int(np.count_nonzero(line_mask))
         if line_count == 0:
             continue
-        score = float(np.sum(np.sqrt(line_list.strength[line_mask] / strength_scale)))
-        line_weights = np.sqrt(line_list.strength[line_mask] / strength_scale)
+        line_weights = np.sqrt(ranking[line_mask] / strength_scale)
+        if not np.any(line_weights > 0):
+            continue
+        score = float(np.sum(line_weights))
         line_center = float(np.average(line_list.wavelength[line_mask], weights=line_weights))
         scored.append(
             {
@@ -3547,15 +3800,15 @@ def _select_distributed_lsf_pilot_segments(
         edges = np.linspace(
             centers[0],
             centers[-1],
-            AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS + 1,
+            maximum_regions + 1,
         )
         selected_indices = []
-        for bin_index in range(AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS):
+        for bin_index in range(maximum_regions):
             in_bin = np.flatnonzero(
                 (centers >= edges[bin_index])
                 & (
                     (centers <= edges[bin_index + 1])
-                    if bin_index == AUTO_LSF_LORENTZ_MAX_PILOT_REGIONS - 1
+                    if bin_index == maximum_regions - 1
                     else (centers < edges[bin_index + 1])
                 )
             )
@@ -3576,9 +3829,18 @@ def _select_distributed_lsf_pilot_segments(
                 break
     selected_indices = sorted(set(selected_indices))
     selected = [scored[index] for index in selected_indices]
+    source_wave = source_spectrum.to_unit("micron").wavelength
+    physical_sources = _split_spectrum(
+        source_spectrum,
+        segment_size=float(np.ptp(source_wave)) + 1.0,
+        minimum_points=2,
+    )
+    sources_by_group = {int(part.meta["physical_group_index"]): part for part in physical_sources}
     segments = tuple(
         _centered_spectrum_window(
-            source_spectrum,
+            sources_by_group.get(
+                int(item["segment"].meta.get("physical_group_index", 0)), source_spectrum
+            ),
             center=float(item["line_center"]),
             width=float(item["upper"]) - float(item["lower"]),
         )
@@ -3639,6 +3901,10 @@ def _centered_spectrum_window(
 def _lsf_pilot_model_metrics(
     result: MultiTelluricFitResult,
 ) -> dict[str, object]:
+    config_fields = result.provenance.get("fit_config", {}).get("fields", {})
+    loss = config_fields.get("loss", "linear")
+    f_scale = config_fields.get("f_scale", 1.0)
+    region_deviance = []
     region_rss = []
     region_points = []
     region_depth = []
@@ -3662,6 +3928,7 @@ def _lsf_pilot_model_metrics(
         finite = np.isfinite(residual)
         rss = float(np.sum(np.square(residual[finite])))
         region_rss.append(rss)
+        region_deviance.append(2 * _robust_cost(residual[finite], loss=loss, f_scale=f_scale))
         region_points.append(int(np.count_nonzero(finite)))
         absorption = 1.0 - segment_result.transmission[fit_mask]
         finite_absorption = absorption[np.isfinite(absorption)]
@@ -3670,10 +3937,11 @@ def _lsf_pilot_model_metrics(
     weighted_rss = float(np.sum(region_rss))
     point_count = int(np.sum(region_points))
     parameter_count = len(result.parameter_names)
-    mean_square = weighted_rss / max(point_count, 1)
-    bic = point_count * np.log(max(mean_square, np.finfo(float).tiny)) + parameter_count * np.log(
-        max(point_count, 2)
-    )
+    # Errors already supply a noise scale. Do not reward fitting differences
+    # far below that scale by estimating a new variance from near-zero residuals.
+    if config_fields.get("solve_continuum_linear"):
+        parameter_count += sum(part.continuum_coefficients.size for part in result.segment_results)
+    bic = sum(region_deviance) + parameter_count * np.log(max(point_count, 2))
     metrics = {
         "success": bool(result.success),
         "message": str(result.message),
@@ -3682,6 +3950,7 @@ def _lsf_pilot_model_metrics(
         "fit_pixel_count": point_count,
         "parameter_count": parameter_count,
         "bic": float(bic),
+        "score_method": "fixed_noise_deviance_plus_complexity_penalty",
         "region_weighted_rss": region_rss,
         "region_fit_pixel_count": region_points,
         "region_max_absorption": region_depth,
@@ -4336,16 +4605,6 @@ def _stitch_segment_results(
     transmission = np.concatenate([item.transmission for item in segment_results])
     continuum = np.concatenate([item.continuum for item in segment_results])
     model_flux = np.concatenate([item.model_flux for item in segment_results])
-    stellar_model = None
-    if any(item.stellar_model is not None for item in segment_results):
-        stellar_model = np.concatenate(
-            [
-                np.ones(item.spectrum.wavelength.size, dtype=float)
-                if item.stellar_model is None
-                else np.asarray(item.stellar_model, dtype=float)
-                for item in segment_results
-            ]
-        )
     fit_mask = np.concatenate(
         [
             np.zeros(item.spectrum.wavelength.size, dtype=bool)
@@ -4431,7 +4690,6 @@ def _stitch_segment_results(
         covariance_rank=int(result.covariance_rank),
         fit_mask=fit_mask,
         fit_weights=fit_weights,
-        stellar_model=stellar_model,
         parameter_bound_status=dict(result.parameter_bound_status),
         wavelength_group_coefficients={
             key: np.asarray(value, dtype=float)
@@ -4449,9 +4707,8 @@ def _resolve_line_list(
     line_list_path: str | Path | None,
     hitran_par: str | Path | None,
     hitran_species: tuple[str, ...] | None,
-    hitran_min_strength: float | None,
-    hitran_max_lines: int | None,
-    demo_line_list: bool = False,
+    min_line_strength: float | None,
+    max_lines: int | None,
     line_cutoff_cm: float | None,
     line_wing_mode: str,
     lblrtm_sample: float,
@@ -4488,15 +4745,10 @@ def _resolve_line_list(
             wavenumber_min=float(np.nanmin(wavenumber) - margin_cm),
             wavenumber_max=float(np.nanmax(wavenumber) + margin_cm),
             species=hitran_species,
-            min_strength=hitran_min_strength,
-            max_lines=hitran_max_lines,
+            min_strength=min_line_strength,
+            max_lines=max_lines,
         )
-    if demo_line_list:
-        return LineList.demo_near_ir()
-    if allow_empty_hitran and (
-        aer_catalog is None or (aer_catalog == "auto" and hitran_species is None)
-    ):
-        return LineList.empty_hitran()
+    # Continuum absorption supplements lines unless the catalogue is disabled.
     if aer_catalog is not None:
         spectrum_micron = spectrum.to_unit("micron")
         wavenumber = wavelength_micron_to_wavenumber_cm(spectrum_micron.wavelength)
@@ -4513,8 +4765,8 @@ def _resolve_line_list(
             wavenumber_min_cm=max(1.0e-9, float(np.nanmin(wavenumber) - margin_cm)),
             wavenumber_max_cm=float(np.nanmax(wavenumber) + margin_cm),
             species=hitran_species,
-            min_strength=hitran_min_strength,
-            max_lines=hitran_max_lines,
+            min_strength=min_line_strength,
+            max_lines=max_lines,
             catalog=resolved_catalog,
             cache_dir=aer_cache_dir,
             source=aer_source,
@@ -4526,8 +4778,7 @@ def _resolve_line_list(
         return LineList.empty_hitran()
     raise ValueError(
         "no molecular line data supplied; provide line_list, line_list_path, "
-        "hitran_par, or enable the automatic AER catalogue. Use "
-        "demo_line_list=True only for the synthetic demo."
+        "hitran_par, or enable the automatic AER catalogue."
     )
 
 
@@ -4783,6 +5034,15 @@ def _spectrum_to_observatory_vacuum(
             "original_spectral_frame": frame_name,
             "observatory_frame_velocity_km_s": velocity_km_s,
         },
+        observation=(
+            None
+            if spectrum.observation is None
+            else replace(
+                spectrum.observation,
+                wavelength_frame="observatory",
+                frame_velocity_km_s=None,
+            )
+        ),
     )
     return observatory.to_vacuum()
 
@@ -5022,7 +5282,11 @@ def _load_fits_header_if_available(
     input_path: str | Path,
     input_format: str | None,
     *,
-    hdu: int = 1,
+    hdu: int | None = None,
+    wavelength_col: int | str | None = None,
+    flux_col: int | str | None = None,
+    uncertainty_col: int | str | None = None,
+    image_index: int | None = None,
 ) -> Mapping[str, object] | None:
     path = Path(input_path)
     chosen_format = infer_spectrum_format(path, input_format)
@@ -5030,11 +5294,21 @@ def _load_fits_header_if_available(
         return None
     try:
         with fits.open(path) as hdul:
+            selected = _select_spectrum_hdu(
+                hdul,
+                hdu,
+                wavelength_col=wavelength_col,
+                flux_col=flux_col,
+                uncertainty_col=uncertainty_col,
+                image_index=image_index,
+            )
             header = dict(hdul[0].header)
-            if 0 <= int(hdu) < len(hdul) and int(hdu) != 0:
-                for key, value in hdul[int(hdu)].header.items():
+            if selected != 0:
+                for key, value in hdul[selected].header.items():
                     header.setdefault(key, value)
             return header
+    except SpectrumFormatError:
+        raise
     except Exception:
         return None
 
@@ -5144,31 +5418,26 @@ def _build_components(
     n2_continuum_xn2cn: float,
     o2_continuum: bool,
     o2_continuum_xo2cn: float,
+    o3_continuum: bool = False,
+    o3_continuum_xo3cn: float = 1.0,
     h2o_continuum: MTCKDH2OContinuum | LBLRTMH2OContinuum | None,
     h2o_continuum_foreign_closure: bool,
     co2_continuum: TabulatedContinuum | LBLRTMCO2Continuum | None,
-    o2_cia: HitranCIATable | None,
-    n2_cia: HitranCIATable | None,
     cia_tables: Mapping[str, HitranCIATable] | None,
 ) -> tuple[AbsorptionComponent, ...] | None:
     if (
-        all(
-            value is None
-            for value in (extra_components, h2o_continuum, co2_continuum, o2_cia, n2_cia)
-        )
+        all(value is None for value in (extra_components, h2o_continuum, co2_continuum))
         and not rayleigh
         and not n2_continuum
         and not o2_continuum
+        and not o3_continuum
         and not cia_tables
     ):
         return None
 
     if n2_continuum:
         overlapping = []
-        for label, table in (
-            ("n2_cia", n2_cia),
-            *((str(name), table) for name, table in (cia_tables or {}).items()),
-        ):
+        for label, table in (*((str(name), table) for name, table in (cia_tables or {}).items()),):
             if table is not None and _overlaps_lblrtm_n2_continuum(table):
                 overlapping.append(label)
         if overlapping:
@@ -5180,10 +5449,7 @@ def _build_components(
             )
     if o2_continuum:
         overlapping = []
-        for label, table in (
-            ("o2_cia", o2_cia),
-            *((str(name), table) for name, table in (cia_tables or {}).items()),
-        ):
+        for label, table in (*((str(name), table) for name, table in (cia_tables or {}).items()),):
             if table is not None and _overlaps_lblrtm_o2_continuum(table):
                 overlapping.append(label)
         if overlapping:
@@ -5220,10 +5486,6 @@ def _build_components(
         )
     if co2_continuum is not None:
         built.append(CO2ContinuumAbsorption(co2_continuum))
-    if o2_cia is not None:
-        built.append(O2CIAAbsorption(o2_cia))
-    if n2_cia is not None:
-        built.append(N2CIAAbsorption(n2_cia))
     for name, table in (cia_tables or {}).items():
         built.append(PairCIAAbsorption(table, basis_name=str(name)))
     if rayleigh:
@@ -5232,6 +5494,8 @@ def _build_components(
         built.append(N2ContinuumAbsorption(xn2cn=n2_continuum_xn2cn))
     if o2_continuum:
         built.append(O2ContinuumAbsorption(xo2cn=o2_continuum_xo2cn))
+    if o3_continuum:
+        built.append(O3ContinuumAbsorption(xo3cn=o3_continuum_xo3cn))
     if extra_components is not None:
         built.extend(extra_components)
     return tuple(built)

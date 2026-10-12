@@ -9,9 +9,66 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pymolfit import Spectrum, aer_data
+from pymolfit import AtmosphereProfile, Spectrum, aer_data, correct_arrays
 from pymolfit.aer_data import AERDataError, install_aer_catalog, load_aer_line_window
 from pymolfit.workflow import _resolve_line_list
+from tests.helpers import demo_lines
+
+
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_lock_cleanup_permission_error_preserves_body_result(
+    tmp_path, monkeypatch, caplog, body_fails
+):
+    path = tmp_path / "window.lock"
+    lock = aer_data._CacheLock(path, timeout_s=0)
+    original_unlink = Path.unlink
+    original_error = ValueError("catalogue parse failed")
+
+    def denied_unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("NFS credentials expired")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", denied_unlink)
+    if body_fails:
+        with pytest.raises(ValueError) as caught, lock:
+            raise original_error
+        assert caught.value is original_error
+    else:
+        with lock:
+            assert path.exists()
+    assert not lock.acquired
+    assert "Could not remove AER cache lock" in caplog.text
+    assert "network-filesystem credentials" in caplog.text
+    assert path.exists()
+    original_unlink(path)
+
+
+def test_lock_acquisition_permission_error_explains_cache_location(tmp_path, monkeypatch):
+    path = tmp_path / "windows" / "window.lock"
+    original_mkdir = Path.mkdir
+
+    def denied_mkdir(self, *args, **kwargs):
+        if self == path.parent:
+            raise PermissionError("Permission denied")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", denied_mkdir)
+    with (
+        pytest.raises(AERDataError, match="CacheConfig") as caught,
+        aer_data._CacheLock(path, timeout_s=0),
+    ):
+        pytest.fail("inaccessible cache must not be used")
+    assert isinstance(caught.value.__cause__, PermissionError)
+
+
+def test_cache_lock_is_released_normally(tmp_path):
+    path = tmp_path / "windows" / "window.lock"
+    with aer_data._CacheLock(path, timeout_s=0) as lock:
+        assert lock.acquired
+        assert path.exists()
+    assert not lock.acquired
+    assert not path.exists()
 
 
 def _fixed_decimal(value, width, decimals):
@@ -245,8 +302,10 @@ def test_aer_line_windows_are_filtered_provenanced_and_cached(tiny_aer, tmp_path
     assert json.loads(first.manifest_path.read_text())["line_count"] == 2
 
 
-def test_workflow_resolves_automatic_aer_window(monkeypatch):
-    expected = aer_data.LineList.demo_near_ir()
+@pytest.mark.parametrize("species", [None, ("H2O",)])
+@pytest.mark.parametrize("allow_empty", [False, True])
+def test_workflow_resolves_automatic_aer_window(monkeypatch, species, allow_empty):
+    expected = demo_lines()
     captured = {}
 
     class Artifact:
@@ -265,18 +324,91 @@ def test_workflow_resolves_automatic_aer_window(monkeypatch):
         line_list=None,
         line_list_path=None,
         hitran_par=None,
-        hitran_species=("H2O",),
-        hitran_min_strength=None,
-        hitran_max_lines=None,
+        hitran_species=species,
+        min_line_strength=None,
+        max_lines=None,
         line_cutoff_cm=None,
         line_wing_mode="full",
         lblrtm_sample=4.0,
         lblrtm_alfal0=0.04,
         lblrtm_hwf3=64.0,
-        allow_empty_hitran=True,
+        allow_empty_hitran=allow_empty,
     )
 
     assert resolved is expected
-    assert captured["species"] == ("H2O",)
+    assert captured["species"] == species
     assert captured["wavenumber_min_cm"] <= 4319.0 - 25.0
     assert captured["wavenumber_max_cm"] >= 4321.0 + 25.0
+
+
+@pytest.mark.parametrize("allow_empty", [False, True])
+def test_workflow_continuum_only_requires_explicit_catalog_opt_out(monkeypatch, allow_empty):
+    def unexpected_load(**kwargs):
+        raise AssertionError("Explicitly disabled AER catalogue was loaded")
+
+    monkeypatch.setattr("pymolfit.workflow.load_aer_line_window", unexpected_load)
+    spectrum = Spectrum(wavelength=np.linspace(0.58, 0.59, 20), flux=np.ones(20))
+    options = {
+        "line_list": None,
+        "line_list_path": None,
+        "hitran_par": None,
+        "hitran_species": None,
+        "min_line_strength": None,
+        "max_lines": None,
+        "line_cutoff_cm": None,
+        "line_wing_mode": "full",
+        "lblrtm_sample": 4.0,
+        "lblrtm_alfal0": 0.04,
+        "lblrtm_hwf3": 64.0,
+        "aer_catalog": None,
+        "allow_empty_hitran": allow_empty,
+    }
+    if allow_empty:
+        resolved = _resolve_line_list(spectrum, **options)
+        assert resolved.wavelength.size == 0
+        assert resolved.has_hitran_parameters
+    else:
+        with pytest.raises(ValueError, match="no molecular line data supplied"):
+            _resolve_line_list(spectrum, **options)
+
+
+@pytest.mark.parametrize(
+    "continuum",
+    [
+        {"h2o_continuum": "lblrtm"},
+        {"o2_continuum": True},
+        {"h2o_continuum": "lblrtm", "o2_continuum": True},
+    ],
+)
+def test_correction_keeps_all_aer_species_with_continuum(tiny_aer, tmp_path, continuum):
+    archive_path, _, _ = tiny_aer
+    wavelength = 1.0e4 / np.linspace(4319.0, 4321.0, 80)
+    atmosphere = AtmosphereProfile.single_layer(
+        pressure_atm=1.0,
+        temperature_k=296.0,
+        path_length_m=1000.0,
+        mixing_ratios={"H2O": 0.01, "O2": 0.21},
+    )
+    result = correct_arrays(
+        wavelength,
+        np.ones_like(wavelength),
+        atmosphere=atmosphere,
+        aer_source=archive_path,
+        aer_cache_dir=tmp_path / "cache",
+        aer_reuse_molecfit=False,
+        automatic_fit_regions=False,
+        continuum_order=0,
+        auto_segment=False,
+        high_resolution_grid=False,
+        fit_wavelength_shift=False,
+        lsf_sigma_pixels=0,
+        fit_lsf_sigma=False,
+        **continuum,
+    )
+
+    assert result.success
+    assert result.provenance["line_count"] == 3
+    assert (
+        result.provenance["line_data_provenance"]["catalog_version"] == aer_data.AER_CATALOG_VERSION
+    )
+    assert set(result.species_scales) == {"H2O", "O2"}

@@ -15,6 +15,7 @@ from pymolfit.atmosphere import AtmosphereProfile
 from pymolfit.diagnostics import correction_summary, residual_by_window
 from pymolfit.fit import _shift_basis
 from pymolfit.model import optical_depth_basis, transmission_from_basis
+from tests.helpers import demo_lines
 
 
 def test_optimizer_tolerances_match_molecfit_defaults():
@@ -34,13 +35,13 @@ def test_fitting_lsf_wavelength_exponent_requires_variable_width():
     ):
         fit_tellurics(
             Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength)),
-            line_list=LineList.demo_near_ir(),
+            line_list=demo_lines(),
             config=FitConfig(fit_lsf_wavelength_exponent=True),
         )
 
 
 def _shifted_demo_line_list(shift_micron):
-    base = LineList.demo_near_ir()
+    base = demo_lines()
     return LineList(
         wavelength=base.wavelength + shift_micron,
         strength=base.strength,
@@ -78,7 +79,7 @@ def test_fit_recovers_wavelength_shift():
 
     result = fit_tellurics(
         Spectrum(wavelength=wavelength, flux=flux),
-        line_list=LineList.demo_near_ir(),
+        line_list=demo_lines(),
         config=FitConfig(
             continuum_order=0,
             fit_wavelength_shift=True,
@@ -748,7 +749,7 @@ def test_fit_telluric_segments_can_fit_shared_wavelength_polynomial():
 
 def test_global_and_segment_wavelength_polynomials_are_mutually_exclusive():
     wavelength = np.linspace(2.31, 2.36, 300)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
 
     with pytest.raises(ValueError, match="cannot be combined"):
         fit_telluric_segments(
@@ -763,7 +764,7 @@ def test_global_and_segment_wavelength_polynomials_are_mutually_exclusive():
 
 def test_fit_ranges_limit_model_fit():
     wavelength = np.linspace(2.31, 2.36, 700)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig(species_scales={"H2O": 1.5}))
 
     result = fit_tellurics(
@@ -782,7 +783,7 @@ def test_fit_ranges_limit_model_fit():
 
 def test_diagnostics_helpers_return_summary():
     wavelength = np.linspace(2.31, 2.36, 500)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig(species_scales={"H2O": 1.5}))
     result = fit_tellurics(
         Spectrum(wavelength=wavelength, flux=flux),

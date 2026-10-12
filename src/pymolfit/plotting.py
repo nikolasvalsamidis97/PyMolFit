@@ -22,13 +22,13 @@ def plot_fit(
     second panel shows atmospheric transmission. Every valid sample is drawn
     at full resolution. Separate echelle orders and other genuine wavelength
     discontinuities remain disconnected instead of being joined by artificial
-    lines. Pass the ``product_path`` ECSV written by :func:`pymolfit.correct`
+    lines. Pass the ``output_path`` ECSV written by :func:`pymolfit.correct`
     to recreate the same diagnostic plot without rerunning the correction.
-    Compact files written through ``output_path`` do not contain the observed
+    Compact files written through ``save_corrected_txt()`` do not contain the observed
     flux or transmission and therefore cannot be used here.
 
     :param result: Live ``TelluricFitResult`` or path to a full PyMolFit
-        product ECSV created with ``product_path``.
+        product ECSV created with ``output_path``.
     :param path: Optional image destination for the generated figure.
     :param show: Display the figure when ``True``. In Jupyter, PyMolFit leaves
         display to the active notebook backend so an interactive canvas is not
@@ -145,14 +145,14 @@ def _legacy_product_plot_data(
     except Exception as exc:
         raise ProductFormatError(
             f"{product_path} is not a readable PyMolFit product ECSV; save "
-            "the correction with product_path=..., not output_path=..."
+            "the correction with output_path=... (the default ECSV format)"
         ) from exc
     required = {"wavelength", "flux", "corrected_flux", "transmission"}
     missing = sorted(required.difference(table.colnames))
     if missing:
         raise ProductFormatError(
             f"{product_path} is not a full PyMolFit product ECSV; missing "
-            f"columns: {', '.join(missing)}; use product_path=... when saving"
+            f"columns: {', '.join(missing)}; use output_path=... when saving"
         )
     wavelength_column = table["wavelength"]
     wavelength_unit = getattr(wavelength_column, "unit", None)

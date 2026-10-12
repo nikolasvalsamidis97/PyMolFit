@@ -23,6 +23,7 @@ from .components import (
     N2RototranslationalContinuumAbsorption,
     O2CIAAbsorption,
     O2ContinuumAbsorption,
+    O3ContinuumAbsorption,
     PairCIAAbsorption,
     RayleighScatteringAbsorption,
     TabulatedContinuumAbsorption,
@@ -37,6 +38,7 @@ from .continuum import (
     LBLRTMN2FundamentalContinuum,
     LBLRTMN2OvertoneContinuum,
     LBLRTMO2Continuum,
+    LBLRTMO3Continuum,
     MTCKDH2OContinuum,
     TabulatedContinuum,
     cubic_interpolate_regular,
@@ -158,7 +160,7 @@ from .validation import (
     compare_spectra,
     cross_validate_telluric_segments,
 )
-from .workflow import correct, correct_arrays, correct_file
+from .workflow import AdvancedOptions, CacheConfig, correct, correct_arrays, correct_file
 
 __all__ = [
     "AER_CATALOG_VERSION",
@@ -167,10 +169,12 @@ __all__ = [
     "AERDataError",
     "AERLineArtifact",
     "AbsorptionComponent",
+    "AdvancedOptions",
     "AtmosphereLayer",
     "AtmosphereProfile",
     "CIABlock",
     "CO2ContinuumAbsorption",
+    "CacheConfig",
     "ConfigurationError",
     "ExternalDataError",
     "FitConfig",
@@ -187,6 +191,7 @@ __all__ = [
     "LBLRTMN2FundamentalContinuum",
     "LBLRTMN2OvertoneContinuum",
     "LBLRTMO2Continuum",
+    "LBLRTMO3Continuum",
     "LineList",
     "MTCKDH2OContinuum",
     "ModelConfig",
@@ -198,6 +203,7 @@ __all__ = [
     "N2RototranslationalContinuumAbsorption",
     "O2CIAAbsorption",
     "O2ContinuumAbsorption",
+    "O3ContinuumAbsorption",
     "Observation",
     "PairCIAAbsorption",
     "PartitionTable",

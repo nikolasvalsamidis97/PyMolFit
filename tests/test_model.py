@@ -19,13 +19,14 @@ from pymolfit import (
     transmission_model,
 )
 from pymolfit.model import convolve_lsf
+from tests.helpers import demo_lines
 
 
 def test_transmission_model_shape_and_bounds():
     wavelength = np.linspace(2.31, 2.36, 500)
     transmission = transmission_model(
         wavelength,
-        LineList.demo_near_ir(),
+        demo_lines(),
         ModelConfig(airmass=1.2, species_scales={"H2O": 1.5}),
     )
 
@@ -37,7 +38,7 @@ def test_transmission_model_shape_and_bounds():
 
 def test_optical_depth_basis_has_species_rows():
     wavelength = np.linspace(2.31, 2.36, 100)
-    species, basis = optical_depth_basis(wavelength, LineList.demo_near_ir())
+    species, basis = optical_depth_basis(wavelength, demo_lines())
 
     assert set(species) == {"CH4", "CO2", "H2O"}
     assert basis.shape == (3, wavelength.size)
@@ -395,7 +396,7 @@ def test_high_resolution_transmission_accepts_center_rebin_mode():
 
 def test_transmission_model_high_resolution_mode_runs():
     wavelength = np.linspace(2.31, 2.36, 120)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
 
     transmission = transmission_model(
         wavelength,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, Literal
 
@@ -31,16 +31,35 @@ _FRAME_ALIASES: dict[str, WavelengthFrame] = {
 class Observation:
     """Metadata describing when, where, and how a spectrum was observed.
 
-    Use this object with wavelength/flux arrays, which do not carry a FITS
-    header. ``wavelength_frame`` describes the velocity frame already applied
+    Attach this object to ``Spectrum(observation=...)`` when preparing
+    wavelength/flux arrays, which do not carry a FITS header. Loaded files
+    retain their original observing keywords in ``metadata`` rather than
+    guessing missing values. ``wavelength_frame`` describes the velocity frame already applied
     to the supplied wavelength array. Barycentric arrays need either
     ``frame_velocity_km_s`` or sufficient time, site, and target coordinates
     for PyMolFit to reconstruct that correction. Heliocentric arrays require
     an explicit ``frame_velocity_km_s``.
 
-    Weather values are optional. When supplied, they refine the lower
-    atmosphere used by the MIPAS/GDAS builder. ``metadata`` can carry
-    additional FITS-like keywords needed by a specialized instrument.
+    Weather values are optional and adjust the lowest atmospheric layers.
+
+    :param time: UTC observation time as ISO text, datetime or Astropy Time.
+    :param latitude_deg: Observatory latitude in degrees, north positive.
+    :param longitude_deg: Observatory longitude in degrees, east positive.
+    :param altitude_m: Observatory altitude above sea level, in metres.
+    :param airmass: Positive line-of-sight airmass.
+    :param resolving_power: Instrumental resolving power R = wavelength / FWHM.
+    :param wavelength_frame: Frame already applied to the wavelength array:
+        'observatory', 'barycentric' or 'heliocentric'; None uses metadata.
+    :param frame_velocity_km_s: Signed correction already applied to convert
+        observatory wavelengths to the declared frame, in km/s; not stellar RV.
+    :param target_ra_deg: Target right ascension in degrees, for frame conversion.
+    :param target_dec_deg: Target declination in degrees, for frame conversion.
+    :param pressure_hpa: Local surface pressure in hPa.
+    :param temperature_c: Local surface temperature in Celsius.
+    :param relative_humidity_percent: Local relative humidity from 0 to 100 percent.
+    :param pwv_mm: Optional precipitable water vapour column in millimetres.
+    :param instrument: Optional instrument name.
+    :param metadata: Original FITS-like keywords; explicit fields override them.
     """
 
     time: Time | datetime | str | None = None
@@ -206,3 +225,18 @@ class Observation:
             header["HELIOVEL"] = float(self.frame_velocity_km_s)
 
         return header
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return serializable fields, preserving explicit values and raw metadata."""
+
+        values = {item.name: getattr(self, item.name) for item in fields(self)}
+        if self.time is not None:
+            values["time"] = Time(self.time, scale="utc").utc.isot
+        values["metadata"] = dict(self.metadata)
+        return values
+
+    @classmethod
+    def from_dict(cls, values: Mapping[str, Any]) -> Observation:
+        """Restore the fields written by :meth:`to_dict`, with normal validation."""
+
+        return cls(**dict(values))

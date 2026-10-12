@@ -12,6 +12,7 @@ from astropy.table import Table
 
 from .aer_data import load_aer_line_window
 from .atmosphere import AtmosphereProfile
+from .io import load_spectrum
 from .physics import SPEED_OF_LIGHT_M_PER_S
 from .spectrum import (
     Spectrum,
@@ -147,6 +148,14 @@ class RegionSelection:
 
         return save_region_file(self, path)
 
+    def save(self, path: str | Path | None = None) -> Path:
+        """Save to ``path``, or overwrite the file this selection came from."""
+
+        destination = self.output_path if path is None else path
+        if destination is None:
+            raise ValueError("no region output path was provided; call save(path)")
+        return self.write(destination)
+
 
 def save_region_file(selection: RegionSelection, path: str | Path) -> Path:
     """Save fit and exclusion windows as a portable ECSV table.
@@ -245,6 +254,8 @@ class InteractiveRegionSelector:
     The side panel lists regions held in memory,
     provides an editable output filename, and includes ``Undo``, ``Clear``,
     and ``Save All`` controls.
+    With ``create_window=False``, selection, editing, and saving are available
+    without importing Matplotlib or creating a figure.
     """
 
     def __init__(
@@ -262,25 +273,11 @@ class InteractiveRegionSelector:
         enable_theoretical_controls: bool = False,
         wavelength_frame: RegionWavelengthFrame = "native",
         show: bool = True,
+        create_window: bool = True,
     ) -> None:
-        try:
-            import matplotlib.pyplot as plt
-            from matplotlib.collections import PolyCollection
-            from matplotlib.widgets import (
-                Button,
-                CheckButtons,
-                RadioButtons,
-                RectangleSelector,
-                TextBox,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                "interactive region selection requires Matplotlib; install 'pymolfit[interactive]'"
-            ) from exc
         if max_telluric_markers <= 0:
             raise ValueError("max_telluric_markers must be positive")
-        if automatic_region_count <= 0:
-            raise ValueError("automatic_region_count must be positive")
+        self._automatic_region_count = _validate_automatic_region_count(automatic_region_count)
         if (
             not np.isfinite(automatic_region_half_width_pixels)
             or automatic_region_half_width_pixels <= 0
@@ -290,8 +287,10 @@ class InteractiveRegionSelector:
         self.wavelength_frame = _normalize_region_wavelength_frame(wavelength_frame)
         self.spectrum = _spectrum_in_region_frame(spectrum, self.wavelength_frame).sorted()
         self.output_path = None if output_path is None else Path(output_path)
-        self._plt = plt
-        self._poly_collection_type = PolyCollection
+        self.figure = None
+        self.axis = None
+        self.auto_count_box = None
+        self.save_name_box = None
         self._mode: RegionKind | Literal["delete"] = "fit"
         self._records: list[tuple[RegionKind, float, float]] = []
         self._stellar_records: list[tuple[RegionKind, float, float]] = []
@@ -352,6 +351,27 @@ class InteractiveRegionSelector:
                 ("exclude", lower, upper) for lower, upper in converted.exclude_ranges
             )
 
+        if not create_window:
+            if theoretical_spectrum is not None:
+                self._replace_stellar_exclusions(theoretical_spectrum, remember=False)
+            return
+
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.collections import PolyCollection
+            from matplotlib.widgets import (
+                Button,
+                CheckButtons,
+                RadioButtons,
+                RectangleSelector,
+                TextBox,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "interactive region selection requires Matplotlib; install 'pymolfit[interactive]'"
+            ) from exc
+        self._plt = plt
+        self._poly_collection_type = PolyCollection
         has_stellar_controls = theoretical_spectrum is not None and enable_theoretical_controls
         self.figure, self.axis = plt.subplots(figsize=(17, 8) if has_stellar_controls else (13, 6))
         self.figure.subplots_adjust(
@@ -760,6 +780,8 @@ class InteractiveRegionSelector:
         selected_kind = self._mode if kind is None else kind
         if selected_kind not in _REGION_COLORS:
             raise ValueError("choose Fit or Exclude before marking the view")
+        if self.axis is None:
+            raise ValueError("marking the view requires show_interactive_window=True")
         lower, upper = self.axis.get_xlim()
         self.add_region(lower, upper, kind=selected_kind)
 
@@ -776,11 +798,12 @@ class InteractiveRegionSelector:
         saved in exactly the same way as manually drawn regions.
         """
 
-        resolved_count = (
-            self._parse_automatic_region_count(self.auto_count_box.text)
-            if count is None
-            else _validate_automatic_region_count(count)
-        )
+        if count is not None:
+            resolved_count = _validate_automatic_region_count(count)
+        elif self.auto_count_box is not None:
+            resolved_count = self._parse_automatic_region_count(self.auto_count_box.text)
+        else:
+            resolved_count = self._automatic_region_count
         ranges = _automatic_fit_regions(
             self.spectrum,
             count=resolved_count,
@@ -823,10 +846,10 @@ class InteractiveRegionSelector:
     def save(self, path: str | Path | None = None) -> Path:
         """Save the current selection to ECSV."""
 
-        if path is None:
+        if path is None and self.save_name_box is not None:
             destination = self._output_path_from_filename(self.save_name_box.text)
         else:
-            destination = Path(path)
+            destination = self.output_path if path is None else Path(path)
         if destination is None:
             raise ValueError(
                 "no region output path was provided; call save(path) or pass "
@@ -841,6 +864,8 @@ class InteractiveRegionSelector:
     def close(self) -> None:
         """Close the selector figure."""
 
+        if self.figure is None:
+            return
         if self._view_callback_id is not None:
             self.axis.callbacks.disconnect(self._view_callback_id)
             self._view_callback_id = None
@@ -1255,6 +1280,8 @@ class InteractiveRegionSelector:
                 )
 
     def _redraw_regions(self) -> None:
+        if self.figure is None:
+            return
         self._update_region_artists(self.axis.get_xlim())
         self._refresh_legend()
         self._update_status()
@@ -1269,6 +1296,8 @@ class InteractiveRegionSelector:
             self.axis.legend(handles, labels, loc="best")
 
     def _update_status(self, message: str | None = None) -> None:
+        if self.figure is None:
+            return
         selection = self.selection
         display_regions = tuple(
             ("fit", lower, upper) for lower, upper in selection.fit_ranges
@@ -1311,13 +1340,19 @@ class InteractiveRegionSelector:
 
 
 def select_telluric_regions(
-    spectrum: Spectrum | None = None,
+    spectrum: Spectrum | str | Path | None = None,
     *,
     theoretical_spectrum: TheoreticalSpectrum | None = None,
     wavelength: np.ndarray | None = None,
     flux: np.ndarray | None = None,
+    input_format: str | None = None,
+    wavelength_col: int | str | None = None,
+    flux_col: int | str | None = None,
+    uncertainty_col: int | str | None = None,
+    hdu: int | None = None,
+    image_index: int | None = None,
     wavelength_unit: str = "micron",
-    wavelength_medium: str = "vacuum",
+    wavelength_medium: str | None = None,
     output_path: str | Path | None = None,
     initial_regions: RegionSelection | None = None,
     title: str | None = None,
@@ -1328,59 +1363,75 @@ def select_telluric_regions(
     enable_theoretical_controls: bool = False,
     wavelength_frame: RegionWavelengthFrame | None = None,
     reuse_existing: bool = True,
-    show: bool = True,
+    show_interactive_window: bool = False,
 ) -> InteractiveRegionSelector | RegionSelection:
-    """Open an interactive spectrum window for selecting fit regions.
+    """Generate telluric windows and optional stellar exclusions; do not correct flux.
 
-    Supply either a :class:`Spectrum` or wavelength/flux arrays. Zoom or pan,
-    choose fit/exclusion mode, enable ``Draw regions``, and drag rectangles;
-    their horizontal limits become numbered regions. Drawing remains enabled
-    until its checkbox is cleared. AER telluric-line ticks are enabled by
-    default but hidden in the full-spectrum view. They are progressively
-    revealed as the wavelength view narrows, with every transition in the local
-    catalogue window shown at close zoom. The spectrum itself uses
-    extrema-preserving display reduction when zoomed out and returns to every
-    original sample at close zoom; this never changes fitting data or saved
-    region coordinates. Enter a line count and press ``Automatic`` to propose
-    fit windows around that many transitions with the greatest expected
-    atmospheric absorption. This ranking combines each AER line intensity with
-    a representative atmospheric column for its molecule. Windows in detector
-    gaps are skipped and overlapping windows are merged. The proposals remain
-    fully editable. Edit the filename field if needed, then press ``Save All``
-    to write every region together as ECSV. In Jupyter, enable
-    ``%matplotlib widget`` and install ``pymolfit[interactive]``. The returned
-    selector exposes ``selection`` and ``save()`` for notebook and scripted use.
+    By default, return a headless selector. Enable the editor explicitly, then
+    call ``selector.save(path)`` or use Save All. Nothing is saved automatically.
+    Windows are ranked by catalogue strength times a reference molecular column;
+    gaps are skipped and overlapping windows merge. The requested line count
+    can therefore exceed the number of saved intervals.
 
-    Pass ``theoretical_spectrum=TheoreticalSpectrum(...)`` to generate stellar
-    exclusion regions before the window opens. Set
-    ``enable_theoretical_controls=True`` to expose the template's radial
-    velocity, projected rotation, resolution, mask depth, mask padding, limb
-    darkening, continuum window, and residual-alignment controls. Edit values
-    and press ``Update mask`` to replace the automatic stellar exclusions
-    without changing selected telluric fit regions. ``Save All`` writes fit
-    and exclusion intervals together in the same ECSV file, which can be
-    passed directly to :func:`pymolfit.correct` as ``region_file``.
+    :param spectrum: File path or Spectrum. Paths are loaded with load_spectrum.
+    :param theoretical_spectrum: Optional template for stellar exclusions.
+    :param wavelength: Alternative wavelength array; supply with flux, not spectrum.
+    :param flux: Observed flux array matching wavelength.
+    :param input_format: File-format override; None detects it.
+    :param wavelength_col: Wavelength column name or zero-based index.
+    :param flux_col: Flux column name or zero-based index.
+    :param uncertainty_col: Flux standard-deviation column name or zero-based index.
+    :param hdu: FITS extension index; None selects a unique spectral extension.
+    :param image_index: Row of a supported 2D FITS image.
+    :param wavelength_unit: Array unit or fallback file unit; default microns.
+    :param wavelength_medium: 'air' or 'vacuum'; None infers file metadata
+        or assumes vacuum for direct arrays. Spectrum objects retain their medium.
+    :param output_path: Suggested save destination and, if present, existing regions
+        to load. Omitting an existing path allows a fresh automatic selection.
+    :param initial_regions: Explicit RegionSelection instead of automatic proposals;
+        incompatible with automatic reuse of an existing output file.
+    :param title: Optional editor-window title.
+    :param show_telluric_lines: Show AER wavelength markers when zoom permits.
+    :param max_telluric_markers: Marker limit for intermediate zoom; close views
+        show the local catalogue. Does not limit modelled or selected lines.
+    :param automatic_region_count: Number of highest-ranked transitions to propose;
+        default 100. Not a count of merged windows.
+    :param automatic_region_half_width_pixels: Window half-width in detector
+        pixels, default 12; independent of any subsequent fitted LSF.
+    :param enable_theoretical_controls: Show template/broadening/masking controls.
+    :param wavelength_frame: Optional region-coordinate frame. 'observatory'
+        displays observatory-frame vacuum wavelengths for telluric-region reuse.
+        Stellar exclusions generally need regenerating for each exposure.
+    :param reuse_existing: Reuse saved output regions instead of new proposals.
+        False still starts from that file, but returns an editable selector.
+    :param show_interactive_window: Open the editor; default False. In notebooks,
+        use an interactive Matplotlib backend such as 'widget'.
+    :return: InteractiveRegionSelector, or RegionSelection for headless saved-file
+        reuse. Both provide save(). The editor also exposes selection.
+    :raises ValueError: Automatic selection finds no usable lines, or inputs conflict.
 
-    Set ``wavelength_frame="observatory"`` when creating a reusable telluric
-    region file for a barycentric or heliocentric time series. PyMolFit then
-    displays the spectrum in observatory-frame vacuum coordinates and records
-    that frame in the ECSV metadata. During correction, the same telluric
-    intervals can be applied to every exposure without manually shifting the
-    file. Static stellar exclusions are not generally reusable in this frame;
-    pass a theoretical spectrum to each correction to construct those masks
-    for the individual exposure.
-
-    When ``output_path`` already exists and ``reuse_existing`` is ``True``, the
-    saved :class:`RegionSelection` is loaded and returned without opening a new
-    selector window. Set ``reuse_existing=False`` to open the interface with
-    the saved regions loaded for editing. Explicit ``initial_regions`` cannot
-    be combined with automatic reuse because one source would otherwise be
-    silently ignored.
+    In the editor, choose Fit/Exclude, enable Draw regions, and drag. Disable
+    drawing before panning. Automatic adds windows; clear old regions to replace
+    them. Update mask regenerates stellar exclusions without changing fit windows.
+    See docs/user_guide/04_interactive_selector.ipynb for a complete example.
     """
 
     has_arrays = wavelength is not None or flux is not None
     if spectrum is not None and has_arrays:
         raise ValueError("provide either spectrum or wavelength/flux arrays, not both")
+    if isinstance(spectrum, (str, Path)):
+        spectrum = load_spectrum(
+            spectrum,
+            format=input_format,
+            wavelength_col=wavelength_col,
+            flux_col=flux_col,
+            uncertainty_col=uncertainty_col,
+            hdu=hdu,
+            wavelength_unit=wavelength_unit,
+            wavelength_medium=wavelength_medium,
+            image_index=image_index,
+            save_header=False,
+        )
     if spectrum is None:
         if wavelength is None or flux is None:
             raise ValueError("provide spectrum or both wavelength and flux arrays")
@@ -1388,8 +1439,10 @@ def select_telluric_regions(
             wavelength=np.asarray(wavelength, dtype=float),
             flux=np.asarray(flux, dtype=float),
             wavelength_unit=wavelength_unit,
-            wavelength_medium=wavelength_medium,
+            wavelength_medium="vacuum" if wavelength_medium is None else wavelength_medium,
         )
+    elif not isinstance(spectrum, Spectrum):
+        raise TypeError("spectrum must be a file path or Spectrum object")
     existing_path = _resolved_region_output_path(output_path)
     if reuse_existing and existing_path is not None and existing_path.is_file():
         if initial_regions is not None:
@@ -1410,7 +1463,9 @@ def select_telluric_regions(
             wavelength_unit=spectrum.wavelength_unit,
             wavelength_medium=spectrum.wavelength_medium,
         )
-        return selection
+        if not show_interactive_window:
+            return selection
+        initial_regions = selection
     if (
         not reuse_existing
         and existing_path is not None
@@ -1423,10 +1478,29 @@ def select_telluric_regions(
         if wavelength_frame is None and initial_regions is not None
         else _normalize_region_wavelength_frame(wavelength_frame or "native")
     )
+    if initial_regions is None:
+        count = _validate_automatic_region_count(automatic_region_count)
+        if max_telluric_markers <= 0:
+            raise ValueError("max_telluric_markers must be positive")
+        framed_spectrum = _spectrum_in_region_frame(spectrum, resolved_frame).sorted()
+        ranges = _automatic_fit_regions(
+            framed_spectrum,
+            count=count,
+            max_lines=max(max_telluric_markers, count),
+            half_width_pixels=automatic_region_half_width_pixels,
+        )
+        if not ranges:
+            raise ValueError("no covered positive-strength AER transitions were found")
+        initial_regions = RegionSelection(
+            fit_ranges=ranges,
+            wavelength_unit=framed_spectrum.wavelength_unit,
+            wavelength_medium=framed_spectrum.wavelength_medium,
+            wavelength_frame=resolved_frame,
+        )
     return InteractiveRegionSelector(
         spectrum,
         theoretical_spectrum=theoretical_spectrum,
-        output_path=output_path,
+        output_path=existing_path,
         initial_regions=initial_regions,
         title=title,
         show_telluric_lines=show_telluric_lines,
@@ -1435,7 +1509,8 @@ def select_telluric_regions(
         automatic_region_half_width_pixels=automatic_region_half_width_pixels,
         enable_theoretical_controls=enable_theoretical_controls,
         wavelength_frame=resolved_frame,
-        show=show,
+        show=show_interactive_window,
+        create_window=show_interactive_window,
     )
 
 
@@ -1497,20 +1572,11 @@ def _prepare_stellar_mask_for_selector(
     # frame/resolution handling mathematically identical.
     from .workflow import (
         _estimate_lsf_sigma_from_resolving_power,
-        _load_fits_header_if_available,
         _spectrum_to_observatory_vacuum,
         _stellar_template_frame_correction_factor,
     )
 
-    source = spectrum.meta.get("source")
-    header = None
-    if source:
-        hdu_value = spectrum.meta.get("hdu", 1)
-        try:
-            hdu = int(hdu_value)
-        except (TypeError, ValueError):
-            hdu = 1
-        header = _load_fits_header_if_available(str(source), None, hdu=hdu)
+    header = _selector_header(spectrum)
     observatory_spectrum = _spectrum_to_observatory_vacuum(spectrum, header)
     resolution = _estimate_lsf_sigma_from_resolving_power(
         observatory_spectrum,
@@ -1789,6 +1855,8 @@ def _selector_erf_factor(spectrum: Spectrum) -> float:
 
 
 def _selector_header(spectrum: Spectrum) -> Mapping[str, object] | None:
+    if spectrum.observation is not None:
+        return spectrum.observation.to_header()
     observation = spectrum.meta.get("observation")
     if isinstance(observation, Mapping):
         return observation
@@ -1800,7 +1868,12 @@ def _selector_header(spectrum: Spectrum) -> Mapping[str, object] | None:
     # Imported lazily because workflow imports the region-file API.
     from .workflow import _load_fits_header_if_available
 
-    return _load_fits_header_if_available(str(source), None)
+    try:
+        value = spectrum.meta.get("hdu")
+        hdu = None if value is None else int(value)
+    except (TypeError, ValueError):
+        hdu = None
+    return _load_fits_header_if_available(str(source), None, hdu=hdu)
 
 
 def _spectrum_in_region_frame(

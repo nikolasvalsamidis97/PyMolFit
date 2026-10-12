@@ -301,6 +301,35 @@ def test_fits_quality_and_physical_group_columns_are_preserved(tmp_path):
     assert loaded.meta["physical_group_columns"] == ("ORDER", "DETEC")
 
 
+@pytest.mark.parametrize("column", ["MASK", "QUAL", "valid", "ORDER", "DETEC"])
+def test_fits_metadata_column_is_not_used_as_uncertainty(tmp_path, column):
+    path = tmp_path / "no_errors.fits"
+    values = [True, True, True, True] if column == "valid" else [0, 0, 0, 0]
+    Table(
+        {
+            "WAVE": [2.31, 2.32, 2.33, 2.34],
+            "FLUX": [1.0, 0.9, 1.0, 1.1],
+            column: values,
+        }
+    ).write(path)
+    loaded = load_spectrum(path, wavelength_medium="vacuum", save_header=False)
+    assert loaded.uncertainty is None
+    assert np.all(loaded.valid)
+
+
+def test_unnamed_third_column_still_supplies_uncertainty(tmp_path):
+    path = tmp_path / "arrays.fits"
+    Table(
+        {
+            "WAVE": [2.31, 2.32, 2.33],
+            "FLUX": [1.0, 0.9, 1.0],
+            "col3": [0.01, 0.02, 0.03],
+        }
+    ).write(path)
+    loaded = load_spectrum(path, wavelength_medium="vacuum", save_header=False)
+    np.testing.assert_allclose(loaded.uncertainty, [0.01, 0.02, 0.03])
+
+
 def test_fits_table_single_row_vector_columns_are_loaded(tmp_path):
     path = tmp_path / "harps_like.fits"
     wave = np.array([5000.0, 5000.1, 5000.2], dtype=float)

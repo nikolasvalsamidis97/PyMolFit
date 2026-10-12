@@ -3,6 +3,83 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.8.0 - 2026-10-12
+
+### Breaking API Changes
+
+- `correct(input_path=...)` accepts a file path or a prepared `Spectrum`.
+  Array data and observing metadata belong in
+  `Spectrum(..., observation=Observation(...))`. Removed `spectrum=`,
+  direct array/observation arguments, and deprecated flat expert keywords.
+- Fit controls belong in `AdvancedOptions`, passed as `advanced=`.
+  Cache/download settings belong in `CacheConfig`, passed as `cache=`.
+  The expanded `correct_file()` and `correct_arrays()` APIs remain available
+  for custom atmospheric, spectroscopic, and radiative-transfer inputs.
+- `output_path` now saves the full correction product, with ECSV as the
+  default. Removed `product_path` and `product_format`; use `output_path`
+  and lower-level `output_format` instead. Compact spectrum export remains
+  available through `save_corrected_txt()`.
+- Consolidated wavelength controls into `wavelength_order` and
+  `wavelength_scope` in `AdvancedOptions`. Exposed initial molecular scales,
+  scale bounds, and solver evaluation limits.
+- Renamed lower-level catalogue filters to `min_line_strength` and
+  `max_lines`; consolidated external O2/N2 CIA inputs into `cia_tables`.
+  Removed the old CLI flag aliases.
+- Removed joint stellar-flux fitting. Theoretical-template exclusions and
+  confidence weighting remain supported.
+- Removed synthetic demo-line entry points from correction APIs, `LineList`,
+  and the CLI. Synthetic lines now live only in the test suite.
+- Removed the selector's `show=` alias. Use
+  `show_interactive_window=True` to open its editor.
+
+### Added
+
+- Source-backed ozone Chappuis/Wulf and Hartley-Huggins absorption through
+  lower-level `o3_continuum=True` / CLI `--o3-continuum`. Includes
+  layer-temperature dependence, shared O3 line/continuum column scaling,
+  packaged coefficients, and regression values from independently compiled
+  LBLRTM 12.11 routines.
+- Herzberg and far-UV oxygen absorption in the lower-level
+  `o2_continuum=True` option. Enabled O2-continuum calculations above
+  36000 cm-1 change; existing visible and infrared calculations are unchanged.
+  New continua are bounded at zero where interpolation gives negative opacity.
+- Reorganized documentation into parameter descriptions, short notebook
+  guides, troubleshooting, figure examples, and detailed numerical methods.
+
+### Changed
+
+- High-level correction and CLI default to robust fitting and automatic
+  continuum selection starting with a quadratic. These defaults can change
+  scientific results relative to 0.7.5; explicit values override selection.
+- Without supplied regions, correction selects distributed telluric windows;
+  stellar exclusions remain opt-in. Wavelength-model selection considers
+  supported quadratic corrections and different degrees per physical group.
+- Missing flux errors receive guarded local estimates. The robust threshold
+  and corrected-pixel uncertainty mask can be selected automatically.
+  Supplied errors and numerical overrides are retained; policies record provenance.
+- Pilot comparisons account for supplied noise rather than interpreting tiny
+  numerical residual improvements as strong model evidence.
+- FITS input defaults to `hdu=None`, selecting a unique supported spectrum.
+  Ambiguous files report candidate HDUs; explicit HDU/image-row selection is
+  respected. Correction, region selection, and metadata inference agree.
+- `select_telluric_regions()` accepts file paths, generates automatic regions
+  immediately, and opens no figure by default. New and reused selections
+  support `save(path)`.
+- PyPI publication now requires the complete CI matrix, package checks, and
+  matching release-tag, citation, and changelog versions. It publishes the
+  same distributions built by those checks.
+
+### Fixed
+
+- Preserve the full-segment continuum coordinate when fitting selected pixels.
+- Keep overlapping physical orders separate when extracting instrumental pilots.
+- Do not interpret known FITS quality-mask or order/detector columns as flux
+  uncertainties when an uncertainty column is absent.
+- Preserve the original exception if AER cache-lock cleanup loses filesystem
+  access. Acquisition errors explain permissions, network credentials, and
+  local-cache alternatives; cleanup failures remain visible as warnings.
+- Report binary stellar exclusions separately from confidence-weighted masks.
+
 ## 0.7.5 - 2026-08-26
 
 ### Fixed

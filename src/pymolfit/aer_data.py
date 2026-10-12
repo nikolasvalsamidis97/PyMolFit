@@ -325,7 +325,6 @@ def load_aer_line_window(
         return cached
 
     lock_path = paths[0].with_suffix(".lock")
-    paths[0].parent.mkdir(parents=True, exist_ok=True)
     with _CacheLock(lock_path, timeout_s=max(float(timeout_s), 30.0)):
         cached = _load_cached_window(paths, request, resolved_catalog)
         if cached is not None:
@@ -892,6 +891,18 @@ class _CacheLock:
         self.acquired = False
 
     def __enter__(self):
+        try:
+            return self._acquire()
+        except OSError as exc:
+            if self.acquired:
+                self.__exit__(type(exc), exc, exc.__traceback__)
+            raise AERDataError(
+                f"Cannot acquire AER cache lock {self.path}: {exc}. "
+                "Check cache-directory permissions and network-filesystem credentials, "
+                "or select a writable local cache with CacheConfig(aer_cache_dir=...)."
+            ) from exc
+
+    def _acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout_s
         while True:
@@ -912,13 +923,25 @@ class _CacheLock:
                     ) from None
                 time.sleep(0.1)
                 continue
+            self.acquired = True
             with os.fdopen(descriptor, "w", encoding="ascii") as handle:
                 handle.write(f"pid={os.getpid()}\n")
-            self.acquired = True
             return self
 
     def __exit__(self, _exc_type, _exc_value, _traceback):
         if self.acquired:
-            with suppress(FileNotFoundError):
+            try:
                 self.path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                LOGGER.warning(
+                    "Could not remove AER cache lock %s: %s. Check permissions and "
+                    "network-filesystem credentials, or use a writable local cache. "
+                    "Remove the leftover lock only after confirming no process owns it.",
+                    self.path,
+                    exc,
+                )
+            finally:
+                self.acquired = False
         return False

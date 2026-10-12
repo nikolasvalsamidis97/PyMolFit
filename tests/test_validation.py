@@ -4,7 +4,6 @@ import numpy as np
 
 from pymolfit import (
     FitConfig,
-    LineList,
     ModelConfig,
     ScienceReadinessReport,
     Spectrum,
@@ -13,6 +12,7 @@ from pymolfit import (
     cross_validate_telluric_segments,
     transmission_model,
 )
+from tests.helpers import demo_lines
 
 
 def test_compare_spectra_interpolates_overlap():
@@ -74,7 +74,7 @@ def test_science_readiness_report_manual_check_is_incomplete():
 
 def test_blocked_cross_validation_predicts_pixels_excluded_from_each_fold(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 420)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     transmission = transmission_model(
         wavelength,
         line_list,
@@ -125,7 +125,7 @@ def test_blocked_cross_validation_predicts_pixels_excluded_from_each_fold(tmp_pa
 def test_blocked_cross_validation_rejects_invalid_split():
     wavelength = np.linspace(2.31, 2.36, 20)
     spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
 
     with np.testing.assert_raises_regex(ValueError, "every fold"):
         cross_validate_telluric_segments(

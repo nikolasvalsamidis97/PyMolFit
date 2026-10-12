@@ -558,29 +558,3 @@ class LineList:
             reference_temperature=reference_temperature,
             line_source="empty_hitran",
         )
-
-    @classmethod
-    def demo_near_ir(cls) -> LineList:
-        """Small synthetic line list for development tests.
-
-        These are not real HITRAN values. They only let the package exercise the
-        same fitting/correction mechanics before real molecular data ingestion
-        is added.
-        """
-
-        wavelength = np.array(
-            [2.3183, 2.3210, 2.3265, 2.3312, 2.3377, 2.3420, 2.3485, 2.3540],
-            dtype=float,
-        )
-        strength = np.array([0.018, 0.026, 0.014, 0.03, 0.022, 0.012, 0.018, 0.015], dtype=float)
-        sigma = np.full(wavelength.shape, 1.8e-4, dtype=float)
-        gamma = np.full(wavelength.shape, 9.0e-5, dtype=float)
-        species = np.array(["H2O", "H2O", "CO2", "H2O", "CH4", "CO2", "H2O", "CH4"], dtype=str)
-        return cls(
-            wavelength=wavelength,
-            strength=strength,
-            sigma=sigma,
-            gamma=gamma,
-            species=species,
-            line_source="demo",
-        )

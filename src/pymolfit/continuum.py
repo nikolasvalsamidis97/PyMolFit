@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 
@@ -20,6 +21,8 @@ LBLRTM_H2O_CONTINUUM_DATA = "lblrtm_v12_11_h2o_continuum.npz"
 LBLRTM_CO2_CONTINUUM_DATA = "lblrtm_v12_11_co2_continuum.npz"
 LBLRTM_N2_FUNDAMENTAL_DATA = "lblrtm_v12_11_n2_fundamental.npz"
 LBLRTM_O2_CONTINUUM_DATA = "lblrtm_v12_11_o2_continuum.npz"
+LBLRTM_O3_CONTINUUM_DATA = "lblrtm_v12_11_o3_continuum.npz"
+LBLRTM_O2_UV_CONTINUUM_DATA = "lblrtm_v12_11_o2_uv_continuum.npz"
 LBLRTM_CO2_BANDHEAD_T_EFF_K = 246.0
 LBLRTM_CO2_BANDHEAD_TDEP = np.array(
     [
@@ -1014,13 +1017,192 @@ class LBLRTMN2OvertoneContinuum:
 
 
 @dataclass(frozen=True)
+class LBLRTMO3Continuum:
+    """LBLRTM 12.11 Chappuis/Wulf and Hartley-Huggins ozone absorption.
+
+    Cross sections are in cm2/molecule. Temperature coefficients retain the
+    source's additive (Chappuis) and relative (Huggins) conventions. The
+    Hartley UV table has no temperature dependence in this reference model.
+    """
+
+    chappuis_wavenumber_cm: np.ndarray
+    chappuis_coefficient: np.ndarray
+    huggins_wavenumber_cm: np.ndarray
+    huggins_coefficient: np.ndarray
+    huggins_temperature_coefficient: np.ndarray
+    hartley_wavenumber_cm: np.ndarray
+    hartley_coefficient: np.ndarray
+
+    def __post_init__(self) -> None:
+        for name in ("chappuis", "huggins", "hartley"):
+            grid = np.array(getattr(self, f"{name}_wavenumber_cm"), dtype=float, copy=True)
+            coefficients = np.array(getattr(self, f"{name}_coefficient"), dtype=float, copy=True)
+            shape = (3, grid.size) if name == "chappuis" else grid.shape
+            if (
+                grid.ndim != 1
+                or grid.size < 4
+                or not np.all(np.isfinite(grid))
+                or grid[0] <= 0
+                or not np.all(np.diff(grid) > 0)
+                or not np.allclose(np.diff(grid), grid[1] - grid[0])
+                or coefficients.shape != shape
+                or not np.all(np.isfinite(coefficients))
+            ):
+                raise ValueError(f"invalid O3 {name} regular grid or coefficient array")
+            reference = coefficients[0] if name == "chappuis" else coefficients
+            if np.any(reference < 0):
+                raise ValueError(f"negative O3 {name} reference cross sections")
+            grid.setflags(write=False)
+            coefficients.setflags(write=False)
+            object.__setattr__(self, f"{name}_wavenumber_cm", grid)
+            object.__setattr__(self, f"{name}_coefficient", coefficients)
+        temperature = np.array(self.huggins_temperature_coefficient, dtype=float, copy=True)
+        if temperature.shape != (2, self.huggins_wavenumber_cm.size) or not np.all(
+            np.isfinite(temperature)
+        ):
+            raise ValueError("invalid O3 Huggins temperature coefficients")
+        temperature.setflags(write=False)
+        object.__setattr__(self, "huggins_temperature_coefficient", temperature)
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def from_package_data(cls) -> LBLRTMO3Continuum:
+        with (
+            resources.files("pymolfit")
+            .joinpath("data", LBLRTM_O3_CONTINUUM_DATA)
+            .open("rb") as handle,
+            np.load(handle) as data,
+        ):
+            return cls(**{name: data[name] for name in cls.__dataclass_fields__})
+
+    def optical_depth_layer(
+        self,
+        wavenumber_cm: np.ndarray,
+        *,
+        o3_column_cm2: float,
+        temperature_k: float,
+        xo3cn: float = 1.0,
+        jrad: int = 1,
+    ) -> np.ndarray:
+        """Return the layer optical depth, with no extrapolation outside bands."""
+        if not np.isfinite(temperature_k) or temperature_k <= 0:
+            raise ValueError("temperature_k must be finite and positive")
+        if not np.all(np.isfinite([o3_column_cm2, xo3cn])) or min(o3_column_cm2, xo3cn) < 0:
+            raise ValueError("O3 column and xo3cn must be finite and non-negative")
+        if jrad not in (0, 1):
+            raise ValueError("jrad must be 0 or 1")
+        target = np.asarray(wavenumber_cm, dtype=float)
+        tau = np.zeros(target.shape, dtype=float)
+        if o3_column_cm2 == 0 or xo3cn == 0:
+            return tau
+        dt = float(temperature_k) - 273.15
+        c0, c1, c2 = self.chappuis_coefficient
+        t1, t2 = self.huggins_temperature_coefficient
+        branches = (
+            (
+                self.chappuis_wavenumber_cm,
+                c0 + dt * (c1 + dt * c2),
+                (target >= 8920.0) & (target <= 24665.0),
+            ),
+            (
+                self.huggins_wavenumber_cm,
+                self.huggins_coefficient * (1 + dt * (t1 + dt * t2)),
+                (target >= 27370.0) & (target < 40800.0),
+            ),
+            (
+                self.hartley_wavenumber_cm,
+                self.hartley_coefficient,
+                (target >= 40800.0) & (target <= 54000.0),
+            ),
+        )
+        # Use exactly one Hartley-Huggins branch at the 40800 cm-1 join.
+        for grid, cross_section, selected in branches:
+            if np.any(selected):
+                tau[selected] = _interpolate_contnm_cross_section(
+                    grid,
+                    cross_section,
+                    target[selected],
+                    temperature_k=temperature_k,
+                    jrad=jrad,
+                )
+        return float(o3_column_cm2) * float(xo3cn) * np.maximum(tau, 0.0)
+
+
+def _interpolate_contnm_cross_section(
+    grid: np.ndarray,
+    cross_section: np.ndarray,
+    target: np.ndarray,
+    *,
+    temperature_k: float,
+    jrad: int,
+) -> np.ndarray:
+    # CONTNM removes the radiation field, restores RADFN for JRAD=1, then
+    # applies XINT. Zero guard points preserve the stencil at table boundaries.
+    source = cross_section / grid
+    if jrad == 1:
+        source = source * radiation_term_cm(grid, temperature_k)
+    step = grid[1] - grid[0]
+    padded_grid = grid[0] + step * np.arange(-2, grid.size + 2)
+    return cubic_interpolate_regular(padded_grid, np.pad(source, 2), target)
+
+
+@lru_cache(maxsize=1)
+def _o2_far_uv_table() -> tuple[np.ndarray, np.ndarray]:
+    with (
+        resources.files("pymolfit")
+        .joinpath("data", LBLRTM_O2_UV_CONTINUUM_DATA)
+        .open("rb") as handle,
+        np.load(handle) as data,
+    ):
+        return data["wavenumber_cm"], data["cross_section_cm2"]
+
+
+def _o2_uv_cross_section(
+    target: np.ndarray,
+    *,
+    pressure_mbar: float,
+    temperature_k: float,
+    jrad: int,
+) -> np.ndarray:
+    cross_section = np.zeros(target.shape, dtype=float)
+    selected = (target > 36000.0) & (target <= 99999.0)
+    if not np.any(selected):
+        return cross_section
+    # HERTDA/HERPRS: keep the analytic 10 cm-1 sampling and pressure factor.
+    grid = np.arange(36000.0, 100030.0, 10.0)
+    ratio = grid / 48811.0
+    herzberg = 6.884e-24 * ratio * np.exp(-69.738 * np.log(ratio) ** 2)
+    herzberg -= np.where(grid <= 40000.0, (40000.0 - grid) / 4000.0 * 7.917e-27, 0.0)
+    herzberg[0] = 0.0
+    herzberg *= 1 + 0.83 * (pressure_mbar / 1013.0) * (273.16 / temperature_k)
+    cross_section[selected] = _interpolate_contnm_cross_section(
+        grid,
+        herzberg,
+        target[selected],
+        temperature_k=temperature_k,
+        jrad=jrad,
+    )
+    selected = (target >= 56740.0) & (target <= 86960.0)
+    if np.any(selected):
+        grid, far_uv = _o2_far_uv_table()
+        cross_section[selected] += _interpolate_contnm_cross_section(
+            grid,
+            far_uv,
+            target[selected],
+            temperature_k=temperature_k,
+            jrad=jrad,
+        )
+    return np.maximum(cross_section, 0.0)
+
+
+@dataclass(frozen=True)
 class LBLRTMO2Continuum:
-    """Ground-based O2 continuum branches from LBLRTM 12.11.
+    """Infrared, visible, and ultraviolet O2 continua from LBLRTM 12.11.
 
     The implementation follows ``contnm.f90`` for the O2 fundamental,
     1.27 micron CIA, 9100--11000 cm-1 analytic band, A-band continuum,
-    and Greenblatt visible continuum. Each branch retains its original
-    density and collision-partner convention.
+    Greenblatt visible continuum, Herzberg, and far-UV absorption. Each
+    branch retains its original density and collision-partner convention.
     """
 
     fundamental_wavenumber_cm: np.ndarray
@@ -1249,6 +1431,16 @@ class LBLRTMO2Continuum:
                 self.visible_wavenumber_cm,
                 visible_source,
                 target,
+                temperature_k=temperature_k,
+                jrad=jrad,
+            )
+        )
+        tau += (
+            float(xo2cn)
+            * float(o2_column_cm2)
+            * _o2_uv_cross_section(
+                target,
+                pressure_mbar=pressure_mbar,
                 temperature_k=temperature_k,
                 jrad=jrad,
             )

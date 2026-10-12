@@ -42,12 +42,9 @@ dependencies = [
 dev = [
     "build>=1.2",
     "pytest>=7.0",
-    "ruff>=0.8",
+    "ruff==0.15.18",
     "tomli>=2.0; python_version<'3.11'",
     "twine>=5.1",
-]
-examples = [
-    "matplotlib>=3.7",
 ]
 interactive = [
     "matplotlib>=3.7",

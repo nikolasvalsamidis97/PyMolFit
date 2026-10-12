@@ -8,6 +8,7 @@ from astropy.table import Table
 
 import pymolfit.workflow as workflow_module
 from pymolfit import (
+    AdvancedOptions,
     AtmosphereProfile,
     LineList,
     ModelConfig,
@@ -17,6 +18,7 @@ from pymolfit import (
     correct,
     correct_arrays,
     correct_file,
+    load_fit_product,
     save_corrected_txt,
     save_fit_product_ecsv,
     transmission_model,
@@ -39,6 +41,7 @@ from pymolfit.workflow import (
     _split_spectrum,
     _stitch_segment_results,
 )
+from tests.helpers import demo_lines
 
 
 def _fixed_decimal(value, width, decimals):
@@ -108,7 +111,7 @@ def test_rayleigh_component_uses_fixed_physical_scale():
 
 def test_correct_arrays_uses_demo_workflow():
     wavelength = np.linspace(2.31, 2.36, 400)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig(species_scales={"H2O": 1.3}))
 
     result = correct_arrays(
@@ -193,31 +196,33 @@ def test_multi_order_auto_alignment_uses_constant_shift_per_physical_group():
     np.testing.assert_allclose(recovered, shifts, atol=3.0e-5)
 
 
-def test_unified_correct_passes_array_group_ids():
+def test_unified_correct_passes_array_group_ids(monkeypatch):
     wavelength = np.concatenate((np.linspace(1.500, 1.510, 40), np.linspace(1.505, 1.515, 40)))
     group_id = np.repeat((3, 7), 40)
-    observation = Observation(wavelength_frame="observatory")
+    observation = Observation(
+        wavelength_frame="observatory",
+        latitude_deg=-24.6276,
+        longitude_deg=-70.4045,
+        altitude_m=2648,
+        airmass=1,
+    )
 
+    monkeypatch.setattr(
+        "pymolfit.workflow._resolve_line_list", lambda *a, **kw: LineList.empty_hitran()
+    )
     result = correct(
-        wavelength=wavelength,
-        flux=np.ones_like(wavelength),
-        group_id=group_id,
-        wavelength_medium="vacuum",
-        observation=observation,
-        line_list=LineList.empty_hitran(),
-        physical=False,
-        continuum_order=0,
-        solve_continuum_linear=True,
-        auto_segment=True,
-        segment_size=0.01,
+        Spectrum(wavelength, np.ones_like(wavelength), group_id=group_id, observation=observation),
+        advanced=AdvancedOptions(continuum_order=0, solve_continuum_linear=True, segment_size=0.01),
+        report=False,
     )
 
     np.testing.assert_array_equal(result.spectrum.group_id, group_id)
+    np.testing.assert_array_equal(result.corrected.group_id, group_id)
 
 
 def test_correct_arrays_automatically_uses_linear_continuum_for_linear_loss():
     wavelength = np.linspace(2.31, 2.36, 400)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     flux = transmission_model(
         wavelength,
         line_list,
@@ -229,6 +234,7 @@ def test_correct_arrays_automatically_uses_linear_continuum_for_linear_loss():
         flux,
         line_list=line_list,
         continuum_order=1,
+        loss="linear",
         high_resolution_grid=False,
         auto_segment=False,
     )
@@ -245,7 +251,7 @@ def test_correct_arrays_auto_continuum_falls_back_after_failed_linear_fit(
     monkeypatch,
 ):
     wavelength = np.linspace(2.31, 2.36, 400)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     flux = transmission_model(
         wavelength,
         line_list,
@@ -273,6 +279,7 @@ def test_correct_arrays_auto_continuum_falls_back_after_failed_linear_fit(
             flux,
             line_list=line_list,
             continuum_order=1,
+            loss="linear",
             high_resolution_grid=False,
             auto_segment=False,
         )
@@ -296,7 +303,7 @@ def test_correct_arrays_auto_continuum_falls_back_after_failed_linear_fit(
 
 def test_correct_arrays_auto_continuum_profiles_robust_loss():
     wavelength = np.linspace(2.31, 2.36, 400)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     flux = transmission_model(
         wavelength,
         line_list,
@@ -417,7 +424,7 @@ def test_correct_arrays_automatically_estimates_and_refines_lsf_sigma():
 
 def test_correct_arrays_keeps_explicit_lsf_sigma_fixed_by_default():
     wavelength = np.linspace(2.31, 2.36, 300)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     flux = transmission_model(wavelength, line_list)
 
     result = correct_arrays(
@@ -442,7 +449,7 @@ def test_correct_arrays_disables_auto_lsf_without_metadata_or_features():
     result = correct_arrays(
         wavelength,
         np.ones_like(wavelength),
-        line_list=LineList.demo_near_ir(),
+        line_list=demo_lines(),
         continuum_order=0,
         auto_segment=False,
     )
@@ -613,7 +620,7 @@ def test_correct_arrays_rejects_unknown_continuum_solver_mode():
         correct_arrays(
             wavelength,
             np.ones_like(wavelength),
-            line_list=LineList.demo_near_ir(),
+            line_list=demo_lines(),
             solve_continuum_linear="sometimes",
         )
 
@@ -628,7 +635,7 @@ def test_correct_arrays_rejects_unknown_lsf_variable_width_mode():
         correct_arrays(
             wavelength,
             np.ones_like(wavelength),
-            line_list=LineList.demo_near_ir(),
+            line_list=demo_lines(),
             lsf_variable_width="sometimes",
         )
 
@@ -722,7 +729,7 @@ def test_correct_arrays_allows_expert_observability_threshold_override():
 
 def test_correct_arrays_accepts_native_radiative_transfer_controls():
     wavelength = np.linspace(2.31, 2.36, 120)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
 
     result = correct_arrays(
         wavelength,
@@ -787,7 +794,7 @@ def test_correct_file_automatically_segments_native_grid_and_stitches_output(tmp
     assert result.corrected.wavelength.size == wavelength.size
     assert 0 < np.count_nonzero(result.fit_mask) < wavelength.size
     np.testing.assert_allclose(result.spectrum.wavelength, wavelength)
-    assert np.loadtxt(output_path).shape[0] == wavelength.size
+    assert len(Table.read(output_path, format="ascii.ecsv")) == wavelength.size
 
 
 def test_segmented_physical_result_matches_unsegmented_result(tmp_path):
@@ -994,7 +1001,7 @@ def test_correct_arrays_exposes_independent_segment_wavelength_shifts():
 
 def test_correct_arrays_exposes_global_wavelength_polynomial():
     wavelength = np.linspace(2.31, 2.36, 700)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     names, basis = optical_depth_basis(wavelength, line_list)
     x = 2.0 * (wavelength - np.mean(wavelength)) / np.ptp(wavelength)
     coefficients = np.array([1.0e-5, 4.0e-5])
@@ -1127,33 +1134,33 @@ def test_correct_arrays_auto_selects_simplest_supported_wavelength_model(
 
 def test_correct_file_writes_outputs(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 300)
-    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    flux = transmission_model(wavelength, demo_lines(), ModelConfig())
     input_path = tmp_path / "spectrum.txt"
-    output_path = tmp_path / "corrected.txt"
-    product_path = tmp_path / "product.ecsv"
+    output_path = tmp_path / "corrected.ecsv"
     np.savetxt(input_path, np.column_stack([wavelength, flux]))
 
     result = correct_file(
         input_path,
         output_path,
         wavelength_medium="vacuum",
-        demo_line_list=True,
+        line_list=demo_lines(),
         continuum_order=0,
-        product_path=product_path,
     )
 
     assert result.success
     assert output_path.exists()
-    assert product_path.exists()
+    restored = load_fit_product(output_path)
+    np.testing.assert_allclose(restored.corrected.flux, result.corrected.flux, equal_nan=True)
+    np.testing.assert_allclose(restored.transmission, result.transmission, equal_nan=True)
 
 
 def test_standalone_result_writers_save_txt_and_ecsv(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 300)
-    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    flux = transmission_model(wavelength, demo_lines(), ModelConfig())
     result = correct_arrays(
         wavelength,
         flux,
-        line_list=LineList.demo_near_ir(),
+        line_list=demo_lines(),
         continuum_order=0,
     )
     txt_path = tmp_path / "corrected_spectrum.txt"
@@ -1225,8 +1232,8 @@ def test_hitran_selection_uses_dynamic_lblrtm_margin(tmp_path):
             line_list_path=None,
             hitran_par=hitran_path,
             hitran_species=None,
-            hitran_min_strength=None,
-            hitran_max_lines=None,
+            min_line_strength=None,
+            max_lines=None,
             line_cutoff_cm=None,
             line_wing_mode="full",
             lblrtm_sample=4.0,
@@ -1239,8 +1246,8 @@ def test_hitran_selection_uses_dynamic_lblrtm_margin(tmp_path):
         line_list_path=None,
         hitran_par=hitran_path,
         hitran_species=None,
-        hitran_min_strength=None,
-        hitran_max_lines=None,
+        min_line_strength=None,
+        max_lines=None,
         line_cutoff_cm=None,
         line_wing_mode="lblrtm_dynamic",
         lblrtm_sample=4.0,
@@ -1319,7 +1326,7 @@ def test_correct_file_stops_when_wavelength_medium_is_unknown(tmp_path):
         ValueError,
         match="stopped the correction because wavelength_medium was not provided",
     ):
-        correct_file(input_path, demo_line_list=True, continuum_order=0)
+        correct_file(input_path, line_list=demo_lines(), continuum_order=0)
 
 
 @pytest.mark.parametrize(
@@ -1395,7 +1402,7 @@ def test_conflicting_fits_wavelength_medium_is_rejected():
 def test_correct_file_uses_fits_wavelength_medium_when_omitted(tmp_path, ctype):
     input_path = tmp_path / f"spectrum_{ctype.lower()}.fits"
     wavelength = np.linspace(2.31, 2.36, 300)
-    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    flux = transmission_model(wavelength, demo_lines(), ModelConfig())
     primary = fits.PrimaryHDU()
     primary.header["CTYPE1"] = ctype
     spectrum_hdu = fits.BinTableHDU.from_columns(
@@ -1406,7 +1413,7 @@ def test_correct_file_uses_fits_wavelength_medium_when_omitted(tmp_path, ctype):
     )
     fits.HDUList([primary, spectrum_hdu]).writeto(input_path)
 
-    result = correct_file(input_path, demo_line_list=True, continuum_order=0)
+    result = correct_file(input_path, line_list=demo_lines(), continuum_order=0)
 
     expected = air_to_vacuum_wavelength(wavelength) if ctype == "AWAV" else wavelength
     np.testing.assert_allclose(result.spectrum.wavelength, expected)
@@ -1629,62 +1636,47 @@ def test_workflow_converts_documented_heliocentric_product_to_observatory_frame(
     assert converted.meta["observatory_frame_velocity_km_s"] == header["HELIOVEL"]
 
 
-def test_unified_correct_rejects_ambiguous_input_routes():
-    wavelength = np.linspace(2.31, 2.36, 40)
-    flux = np.ones_like(wavelength)
-    observation = Observation(wavelength_frame="observatory")
-
+def test_unified_correct_rejects_removed_input_routes():
     with pytest.raises(ValueError, match="provide input_path"):
         correct()
-    with pytest.raises(ValueError, match="not both"):
-        correct(
-            input_path="spectrum.fits",
-            wavelength=wavelength,
-            flux=flux,
-            observation=observation,
-            wavelength_medium="vacuum",
-        )
-    with pytest.raises(ValueError, match="both wavelength and flux"):
-        correct(wavelength=wavelength, observation=observation)
-    with pytest.raises(ValueError, match="requires observation"):
-        correct(
-            wavelength=wavelength,
-            flux=flux,
-            wavelength_medium="vacuum",
-        )
-    with pytest.raises(ValueError, match="wavelength_frame"):
-        correct(
-            wavelength=wavelength,
-            flux=flux,
-            wavelength_medium="vacuum",
-            observation=Observation(),
-        )
-    with pytest.raises(ValueError, match="requires wavelength_medium"):
-        correct(
-            wavelength=wavelength,
-            flux=flux,
-            observation=observation,
-        )
+    for name in ("wavelength", "flux", "observation", "spectrum"):
+        with pytest.raises(TypeError, match=name):
+            correct("missing.fits", **{name: None})
 
 
 def test_unified_correct_declares_public_options_for_editor_completion():
+    from dataclasses import fields
+
+    from pymolfit import AdvancedOptions, CacheConfig
+
     correct_parameters = inspect.signature(correct).parameters
     file_parameters = inspect.signature(correct_file).parameters
     array_parameters = inspect.signature(correct_arrays).parameters
+    exposed = set(correct_parameters) | {
+        field.name for cls in (AdvancedOptions, CacheConfig) for field in fields(cls)
+    }
+    for hidden in ("components", "physical", "partition_table", "atmosphere", "line_list"):
+        assert hidden in file_parameters and hidden in array_parameters
+        assert hidden not in exposed
+    for control in ("continuum_order", "wavelength_order", "initial_species_scales", "max_nfev"):
+        assert control in exposed
+    assert list(correct_parameters)[:5] == [
+        "input_path",
+        "output_path",
+        "theoretical_spectrum",
+        "region_file",
+        "show_plot",
+    ]
+    advanced_parameters = inspect.signature(AdvancedOptions).parameters
+    assert "continuum_order" not in correct_parameters
+    assert advanced_parameters["continuum_order"].default == "auto"
+    assert advanced_parameters["continuum_order"].kind is inspect.Parameter.KEYWORD_ONLY
 
-    assert all(name in correct_parameters for name in file_parameters if name != "input_path")
-    assert all(name in correct_parameters for name in array_parameters)
-    assert not any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in correct_parameters.values()
-    )
-    assert correct_parameters["continuum_order"].default == 1
-    assert correct_parameters["continuum_order"].kind is inspect.Parameter.KEYWORD_ONLY
 
-
-def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_path):
+def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_path, monkeypatch):
     input_path = tmp_path / "spectrum.txt"
     wavelength = np.linspace(2.31, 2.36, 500)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(
         wavelength,
         line_list,
@@ -1717,27 +1709,36 @@ def test_unified_correct_file_and_array_routes_are_numerically_identical(tmp_pat
         "auto_segment": False,
     }
 
-    file_result = correct(
+    file_result = correct_file(
         input_path=input_path,
         wavelength_medium="vacuum",
         observation=observation,
         **options,
     )
-    array_result = correct(
+    array_result = correct_arrays(
         wavelength=wavelength,
         flux=flux,
         wavelength_medium="vacuum",
         observation=observation,
         **options,
     )
+    monkeypatch.setattr("pymolfit.workflow._resolve_line_list", lambda *a, **kw: line_list)
     spectrum_result = correct(
-        spectrum=Spectrum(
-            wavelength=wavelength,
-            flux=flux,
-            wavelength_medium="vacuum",
+        Spectrum(
+            wavelength=wavelength, flux=flux, wavelength_medium="vacuum", observation=observation
         ),
-        observation=observation,
-        **options,
+        advanced=AdvancedOptions(
+            continuum_order=0,
+            solve_continuum_linear=True,
+            lsf_sigma_pixels=0.0,
+            fit_lsf_sigma=False,
+            lsf_lorentz_fwhm_pixels=0.0,
+            fit_lsf_lorentz_fwhm=False,
+            lsf_variable_width=False,
+            wavelength_order=None,
+            segment_size=0.1,
+        ),
+        report=False,
     )
 
     np.testing.assert_allclose(
@@ -1780,48 +1781,44 @@ def test_unified_correct_validates_options_before_model_work():
     spectrum = Spectrum(
         wavelength=np.linspace(2.31, 2.32, 10),
         flux=np.ones(10),
+        observation=Observation(wavelength_frame="observatory"),
     )
 
     with pytest.raises(ValueError, match="continuum_order"):
-        correct(spectrum=spectrum, continuum_order=-1)
-    with pytest.raises(ValueError, match="only one explicit wavelength model"):
-        correct(
-            spectrum=spectrum,
-            fit_segment_wavelength_shifts=True,
-            fit_segment_wavelength_polynomial=True,
-        )
+        correct(spectrum, advanced=AdvancedOptions(continuum_order=-1))
+    with pytest.raises(ValueError, match="wavelength_order"):
+        correct(spectrum, advanced=AdvancedOptions(wavelength_order=-1))
 
 
-def test_unified_correct_arrays_preserves_mask_and_writes_products(tmp_path):
+def test_unified_correct_arrays_preserves_mask_and_writes_products(tmp_path, monkeypatch):
     wavelength = np.linspace(2.31, 2.36, 120)
     flux = np.ones_like(wavelength)
     mask = np.ones_like(wavelength, dtype=bool)
     mask[[3, 17]] = False
-    output_path = tmp_path / "corrected.txt"
-    product_path = tmp_path / "fit_product.ecsv"
+    output_path = tmp_path / "fit_product.ecsv"
 
+    monkeypatch.setattr("pymolfit.workflow._resolve_line_list", lambda *a, **kw: demo_lines())
     result = correct(
-        wavelength=wavelength,
-        flux=flux,
-        mask=mask,
-        wavelength_medium="vacuum",
-        observation=Observation(wavelength_frame="observatory"),
+        Spectrum(
+            wavelength, flux, mask=mask, observation=Observation(wavelength_frame="observatory")
+        ),
         output_path=output_path,
-        product_path=product_path,
-        demo_line_list=True,
-        physical=False,
-        continuum_order=0,
-        lsf_sigma_pixels=0.0,
-        fit_lsf_sigma=False,
-        lsf_lorentz_fwhm_pixels=0.0,
-        fit_lsf_lorentz_fwhm=False,
-        lsf_variable_width=False,
-        high_resolution_grid=False,
-        fit_wavelength_shift=False,
-        auto_segment=False,
+        advanced=AdvancedOptions(
+            continuum_order=0,
+            lsf_sigma_pixels=0.0,
+            fit_lsf_sigma=False,
+            lsf_lorentz_fwhm_pixels=0.0,
+            fit_lsf_lorentz_fwhm=False,
+            lsf_variable_width=False,
+            wavelength_order=None,
+            segment_size=0.1,
+        ),
+        report=False,
     )
 
     assert result.success
     np.testing.assert_array_equal(result.spectrum.mask, mask)
     assert output_path.exists()
-    assert product_path.exists()
+    restored = load_fit_product(output_path)
+    np.testing.assert_array_equal(restored.spectrum.mask, mask)
+    np.testing.assert_allclose(restored.corrected.flux, result.corrected.flux, equal_nan=True)

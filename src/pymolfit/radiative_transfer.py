@@ -12,6 +12,7 @@ from .components import (
     HitranLineAbsorption,
     N2ContinuumAbsorption,
     O2ContinuumAbsorption,
+    O3ContinuumAbsorption,
     RayleighScatteringAbsorption,
     combine_optical_depth_components,
 )
@@ -57,6 +58,8 @@ class PhysicalModelConfig:
     n2_continuum_xn2cn: float = 1.0
     o2_continuum: bool = False
     o2_continuum_xo2cn: float = 1.0
+    o3_continuum: bool = False
+    o3_continuum_xo3cn: float = 1.0
     components: tuple[AbsorptionComponent, ...] | None = None
 
 
@@ -85,6 +88,8 @@ def hitran_optical_depth_basis(
     n2_continuum_xn2cn: float = 1.0,
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
+    o3_continuum: bool = False,
+    o3_continuum_xo3cn: float = 1.0,
 ) -> tuple[tuple[str, ...], np.ndarray]:
     """Calculate optical-depth basis vectors from current physical components.
 
@@ -113,6 +118,8 @@ def hitran_optical_depth_basis(
         n2_continuum_xn2cn=n2_continuum_xn2cn,
         o2_continuum=o2_continuum,
         o2_continuum_xo2cn=o2_continuum_xo2cn,
+        o3_continuum=o3_continuum,
+        o3_continuum_xo3cn=o3_continuum_xo3cn,
     )
     return combine_optical_depth_components(
         wavelength_micron,
@@ -156,6 +163,8 @@ def physical_optical_depth_basis(
             n2_continuum_xn2cn=config.n2_continuum_xn2cn,
             o2_continuum=config.o2_continuum,
             o2_continuum_xo2cn=config.o2_continuum_xo2cn,
+            o3_continuum=config.o3_continuum,
+            o3_continuum_xo3cn=config.o3_continuum_xo3cn,
         )
     return combine_optical_depth_components(
         wavelength_micron,
@@ -187,6 +196,8 @@ def physical_components_from_options(
     n2_continuum_xn2cn: float = 1.0,
     o2_continuum: bool = False,
     o2_continuum_xo2cn: float = 1.0,
+    o3_continuum: bool = False,
+    o3_continuum_xo3cn: float = 1.0,
 ) -> tuple[AbsorptionComponent, ...]:
     """Build the default pure-Python component set."""
 
@@ -219,6 +230,8 @@ def physical_components_from_options(
         components.append(N2ContinuumAbsorption(xn2cn=n2_continuum_xn2cn))
     if o2_continuum:
         components.append(O2ContinuumAbsorption(xo2cn=o2_continuum_xo2cn))
+    if o3_continuum:
+        components.append(O3ContinuumAbsorption(xo3cn=o3_continuum_xo3cn))
     return tuple(components)
 
 

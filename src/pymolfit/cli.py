@@ -22,6 +22,15 @@ def _auto_or_float(value: str) -> str | float:
         raise argparse.ArgumentTypeError("expected 'auto' or a number") from exc
 
 
+def _auto_or_int(value: str) -> str | int:
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected 'auto' or an integer") from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pymolfit")
     parser.add_argument(
@@ -33,10 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     fit_parser = subparsers.add_parser("fit", help="fit and remove telluric absorption")
     fit_parser.add_argument("input", type=Path, help="input spectrum")
-    fit_parser.add_argument("output", type=Path, help="output corrected ASCII spectrum")
-    fit_parser.add_argument("--product", type=Path, help="optional full fit-product table")
     fit_parser.add_argument(
-        "--product-format", default="ascii.ecsv", help="Astropy table format for --product"
+        "output", type=Path, help="output full correction product (ECSV by default)"
+    )
+    fit_parser.add_argument(
+        "--output-format", default="ascii.ecsv", help="Astropy table format for the output product"
     )
     fit_parser.add_argument("--plot", type=Path, help="optional diagnostic plot path")
     fit_parser.add_argument("--line-list", type=Path, help="Astropy-readable line-list table")
@@ -45,10 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--hitran-species", action="append", default=[], help="species to keep from HITRAN .par"
     )
     fit_parser.add_argument(
-        "--hitran-min-strength", type=float, help="minimum HITRAN line intensity to keep"
+        "--min-line-strength", type=float, help="minimum catalogue reference line intensity to keep"
     )
     fit_parser.add_argument(
-        "--hitran-max-lines", type=int, help="maximum strongest HITRAN lines to keep"
+        "--max-lines", type=int, help="maximum number of strongest catalogue lines to keep"
     )
     fit_parser.add_argument(
         "--aer-catalog",
@@ -74,17 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument(
         "--no-reuse-local-aer",
-        "--no-reuse-molecfit-aer",
         dest="no_reuse_molecfit_aer",
         action="store_true",
         help="do not reuse a verified exact local AER catalogue",
     )
     fit_parser.add_argument("--aer-timeout-s", type=float, default=120.0)
-    fit_parser.add_argument(
-        "--demo-lines",
-        action="store_true",
-        help="use the small synthetic demo line list; never use this for scientific data",
-    )
     fit_parser.add_argument(
         "--mtckd-h2o",
         type=Path,
@@ -139,7 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--uncertainty-col", default=None, help="uncertainty column name or index"
     )
-    fit_parser.add_argument("--hdu", type=int, default=1, help="FITS HDU containing the spectrum")
+    fit_parser.add_argument(
+        "--hdu",
+        type=int,
+        default=None,
+        help="FITS HDU containing the spectrum (default: automatically select a unique spectral HDU)",
+    )
     fit_parser.add_argument(
         "--image-index",
         type=int,
@@ -163,7 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="suppress the resolved fit-configuration report",
     )
-    fit_parser.add_argument("--continuum-order", type=int, default=1)
+    fit_parser.add_argument(
+        "--continuum-order",
+        type=_auto_or_int,
+        default="auto",
+        help="continuum degree, or auto: start quadratic and validate degrees 1-4",
+    )
     fit_parser.add_argument(
         "--solve-continuum-linear",
         action=argparse.BooleanOptionalAction,
@@ -340,10 +354,18 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--o2-continuum",
         action="store_true",
-        help="include the source-backed LBLRTM ground-based O2 continuum branches",
+        help="include the source-backed LBLRTM infrared, visible, and UV O2 continua",
     )
     fit_parser.add_argument(
         "--o2-continuum-xo2cn", type=float, default=1.0, help="LBLRTM O2 continuum scale factor"
+    )
+    fit_parser.add_argument(
+        "--o3-continuum",
+        action="store_true",
+        help="include the source-backed LBLRTM Chappuis/Wulf and Hartley-Huggins ozone bands",
+    )
+    fit_parser.add_argument(
+        "--o3-continuum-xo3cn", type=float, default=1.0, help="LBLRTM O3 continuum scale factor"
     )
     fit_parser.add_argument(
         "--line-margin-micron",
@@ -353,9 +375,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument(
         "--min-transmission",
+        type=_auto_or_float,
+        default="auto",
+        help="fixed transmission threshold, or auto: 0.01 plus a propagated-noise limit",
+    )
+    fit_parser.add_argument(
+        "--max-corrected-relative-uncertainty",
         type=float,
-        default=0.01,
-        help="mask corrected pixels whose fitted atmospheric transmission is below this fraction",
+        default=0.1,
+        help="automatic correction-mask uncertainty limit relative to continuum",
+    )
+    fit_parser.add_argument(
+        "--automatic-fit-regions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="select distributed telluric windows unless regions are supplied",
     )
     fit_parser.add_argument(
         "--fit-wavelength-shift",
@@ -363,7 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "fit residual wavelength alignment; the default auto mode compares "
-            "no shift, a constant detector-pixel shift, and a linear pixel-shift "
+            "no shift, a constant detector-pixel shift, and linear or quadratic pixel-shift "
             "trend; the positive flag forces the legacy constant-micron model "
             "and the negative flag disables alignment fitting"
         ),
@@ -458,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--loss",
         choices=["linear", "soft_l1", "huber", "cauchy", "arctan"],
-        default="linear",
+        default="soft_l1",
         help=(
             "linear for clean, well-masked spectra; soft_l1 for mostly clean "
             "spectra containing a limited number of outliers"
@@ -466,8 +500,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument(
         "--f-scale",
-        type=float,
-        default=1.0,
+        type=_auto_or_float,
+        default="auto",
         help="inlier/outlier residual scale for robust losses; ignored by linear loss",
     )
     fit_parser.add_argument(
@@ -628,7 +662,6 @@ def build_parser() -> argparse.ArgumentParser:
     install_aer_parser.add_argument("--offline", action="store_true")
     install_aer_parser.add_argument(
         "--no-reuse-local-aer",
-        "--no-reuse-molecfit",
         dest="no_reuse_molecfit",
         action="store_true",
     )
@@ -642,7 +675,6 @@ def build_parser() -> argparse.ArgumentParser:
     aer_status_parser.add_argument("--cache-dir", type=Path)
     aer_status_parser.add_argument(
         "--no-reuse-local-aer",
-        "--no-reuse-molecfit",
         dest="no_reuse_molecfit",
         action="store_true",
     )
@@ -771,7 +803,6 @@ def main(argv: list[str] | None = None) -> int:
             (
                 args.line_list is not None,
                 args.hitran_par is not None,
-                args.demo_lines,
                 args.mtckd_h2o is not None,
                 args.lblrtm_h2o_continuum,
                 args.co2_continuum is not None,
@@ -782,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.rayleigh,
                 args.n2_continuum,
                 args.o2_continuum,
+                args.o3_continuum,
             )
         )
         if not has_opacity_input and args.no_auto_aer:
@@ -792,6 +824,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             mixing_ratios = _parse_mixing_ratios(args.mixing_ratio)
             cia_tables = _parse_cia_tables(args.cia_table)
+            for name, path in (("O2_CIA", args.o2_cia), ("N2_CIA", args.n2_cia)):
+                if path is not None:
+                    cia_tables = dict(cia_tables or {})
+                    if name in cia_tables:
+                        raise ValueError(f"duplicate CIA table for {name}")
+                    cia_tables[name] = path
             fit_ranges = _parse_ranges(args.fit_range)
             exclude_ranges = _parse_ranges(args.exclude_range)
         except ValueError as exc:
@@ -813,9 +851,8 @@ def main(argv: list[str] | None = None) -> int:
             line_list_path=args.line_list,
             hitran_par=args.hitran_par,
             hitran_species=tuple(args.hitran_species) if args.hitran_species else None,
-            hitran_min_strength=args.hitran_min_strength,
-            hitran_max_lines=args.hitran_max_lines,
-            demo_line_list=args.demo_lines,
+            min_line_strength=args.min_line_strength,
+            max_lines=args.max_lines,
             aer_catalog=None if args.no_auto_aer else (args.aer_catalog or "auto"),
             aer_cache_dir=args.aer_cache_dir,
             aer_source=args.aer_source,
@@ -826,13 +863,12 @@ def main(argv: list[str] | None = None) -> int:
             h2o_continuum="lblrtm" if args.lblrtm_h2o_continuum else args.mtckd_h2o,
             h2o_continuum_foreign_closure=args.mtckd_h2o_foreign_closure,
             co2_continuum="lblrtm" if args.lblrtm_co2_continuum else args.co2_continuum,
-            o2_cia=args.o2_cia,
-            n2_cia=args.n2_cia,
             cia_tables=cia_tables,
             physical=(
                 True
                 if args.n2_continuum
                 or args.o2_continuum
+                or args.o3_continuum
                 or cia_tables
                 or args.lblrtm_h2o_continuum
                 or args.lblrtm_co2_continuum
@@ -898,8 +934,12 @@ def main(argv: list[str] | None = None) -> int:
             n2_continuum_xn2cn=args.n2_continuum_xn2cn,
             o2_continuum=args.o2_continuum,
             o2_continuum_xo2cn=args.o2_continuum_xo2cn,
+            o3_continuum=args.o3_continuum,
+            o3_continuum_xo3cn=args.o3_continuum_xo3cn,
             line_margin_micron=args.line_margin_micron,
             min_transmission=args.min_transmission,
+            max_corrected_relative_uncertainty=args.max_corrected_relative_uncertainty,
+            automatic_fit_regions=args.automatic_fit_regions,
             fit_wavelength_shift=args.fit_wavelength_shift,
             fit_wavelength_polynomial=args.fit_wavelength_polynomial,
             wavelength_polynomial_order=args.wavelength_polynomial_order,
@@ -933,8 +973,7 @@ def main(argv: list[str] | None = None) -> int:
             xtol=args.xtol,
             gtol=args.gtol,
             estimate_uncertainties=args.estimate_uncertainties,
-            product_path=args.product,
-            product_format=args.product_format,
+            output_format=args.output_format,
             plot_path=args.plot,
             report=not args.quiet,
         )

@@ -22,10 +22,8 @@ from .linelist import LineList
 from .model import (
     PiecewiseConstantRebinPlan,
     SampleAverageRebinPlan,
-    convolve_lsf,
     high_resolution_wavelength_grid,
     lsf_kernel_half_width_pixels,
-    observe_high_resolution_values,
     optical_depth_basis,
     prepare_piecewise_constant_rebin,
     prepare_sample_average_rebin,
@@ -43,7 +41,7 @@ from .physics import (
     lblrtm_dynamic_max_line_cutoff_cm,
     wavelength_micron_to_wavenumber_cm,
 )
-from .provenance import build_fit_provenance, provenance_json
+from .provenance import _jsonable, build_fit_provenance, provenance_json
 from .radiative_transfer import PhysicalModelConfig, physical_optical_depth_basis
 from .spectrum import Spectrum, correct_spectrum
 
@@ -105,6 +103,8 @@ class FitConfig:
     n2_continuum_xn2cn: float = 1.0
     o2_continuum: bool = False
     o2_continuum_xo2cn: float = 1.0
+    o3_continuum: bool = False
+    o3_continuum_xo3cn: float = 1.0
     components: tuple[AbsorptionComponent, ...] | None = None
     fit_wavelength_shift: bool = False
     fit_wavelength_polynomial: bool = False
@@ -112,6 +112,7 @@ class FitConfig:
     fit_segment_wavelength_shifts: bool = False
     fit_segment_wavelength_polynomial: bool = False
     segment_wavelength_polynomial_order: int = 1
+    wavelength_group_polynomial_orders: Mapping[int, int] | None = None
     initial_wavelength_shift: float = 0.0
     wavelength_shift_bounds: tuple[float, float] = (-5.0e-4, 5.0e-4)
     wavelength_shift_unit: Literal["micron", "pixel"] = "micron"
@@ -135,14 +136,6 @@ class FitConfig:
     staged_optimization: bool = True
     basis_workers: int = 0
     estimate_uncertainties: bool = False
-
-
-@dataclass(frozen=True)
-class StellarForwardModel:
-    """Intrinsic normalized stellar template used by the joint flux model."""
-
-    wavelength_micron: np.ndarray
-    normalized_flux: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -174,7 +167,6 @@ class TelluricFitResult:
     covariance_rank: int = 0
     fit_mask: np.ndarray | None = None
     fit_weights: np.ndarray | None = None
-    stellar_model: np.ndarray | None = None
     parameter_bound_status: dict[str, str] = field(default_factory=dict)
     wavelength_group_coefficients: dict[int, np.ndarray] = field(default_factory=dict)
     wavelength_group_bounds: dict[int, tuple[float, float]] = field(default_factory=dict)
@@ -204,8 +196,6 @@ class TelluricFitResult:
             table["fit_mask"] = np.asarray(self.fit_mask, dtype=bool)
         if self.fit_weights is not None:
             table["fit_weight"] = np.asarray(self.fit_weights, dtype=float)
-        if self.stellar_model is not None:
-            table["stellar_model"] = np.asarray(self.stellar_model, dtype=float)
         table["corrected_mask"] = self.corrected.valid
         table.meta.update(
             {
@@ -270,6 +260,7 @@ class TelluricFitResult:
                     sort_keys=True,
                 ),
                 "provenance_json": provenance_json(self.provenance),
+                "spectrum_meta_json": json.dumps(_jsonable(self.spectrum.meta), sort_keys=True),
             }
         )
         return table
@@ -323,6 +314,7 @@ class TelluricFitResult:
             "corrected_uncertainty",
         )
         source_meta = {
+            **dict(_json_meta(table, "spectrum_meta_json", {})),
             "io_type": "pymolfit_product",
             "product_schema": FIT_PRODUCT_SCHEMA,
             "product_schema_version": version,
@@ -407,7 +399,6 @@ class TelluricFitResult:
             covariance_rank=int(table.meta.get("covariance_rank", 0)),
             fit_mask=_optional_bool_column(table, "fit_mask"),
             fit_weights=_optional_float_column(table, "fit_weight"),
-            stellar_model=_optional_float_column(table, "stellar_model"),
             parameter_bound_status={
                 str(key): str(value)
                 for key, value in _json_meta(
@@ -501,37 +492,6 @@ def _validate_fit_weights(
     if np.any((weights < 0.0) | (weights > 1.0)):
         raise ValueError(f"{label} must lie between 0 and 1")
     return weights
-
-
-def _validate_stellar_model(
-    model: StellarForwardModel,
-    *,
-    label: str,
-) -> StellarForwardModel:
-    wavelength = np.asarray(model.wavelength_micron, dtype=float)
-    flux = np.asarray(model.normalized_flux, dtype=float)
-    if wavelength.ndim != 1 or flux.ndim != 1 or wavelength.shape != flux.shape:
-        raise ValueError(f"{label} wavelength and flux must be matching 1D arrays")
-    valid = np.isfinite(wavelength) & np.isfinite(flux) & (wavelength > 0.0)
-    if np.count_nonzero(valid) < 3:
-        raise ValueError(f"{label} must contain at least three finite samples")
-    wavelength = wavelength[valid]
-    flux = flux[valid]
-    order = np.argsort(wavelength, kind="stable")
-    wavelength = wavelength[order]
-    flux = flux[order]
-    unique = np.concatenate(([True], np.diff(wavelength) > 0.0))
-    wavelength = wavelength[unique]
-    flux = flux[unique]
-    if wavelength.size < 3:
-        raise ValueError(f"{label} must contain at least three unique wavelengths")
-    if not np.all(np.isfinite(flux)):
-        raise ValueError(f"{label} must contain only finite values")
-    if np.any(flux < 0.0):
-        raise ValueError(f"{label} must be non-negative")
-    if not np.any(flux > 0.0):
-        raise ValueError(f"{label} must contain at least one positive value")
-    return StellarForwardModel(wavelength, flux)
 
 
 @dataclass(frozen=True)
@@ -921,12 +881,23 @@ def _species_scale_setup(
     config: FitConfig,
 ) -> tuple[tuple[str, ...], dict[str, float], np.ndarray, np.ndarray, np.ndarray]:
     fixed_scales = dict(config.fixed_species_scales or {})
+    unknown = set(fixed_scales) - set(species_names)
+    if unknown:
+        raise ValueError(f"Fixed species not present in the absorption model: {sorted(unknown)}")
     for name, value in fixed_scales.items():
-        if value <= 0:
-            raise ValueError(f"fixed scale for {name} must be positive")
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"fixed scale for {name} must be finite and positive")
     fitted_names = tuple(name for name in species_names if name not in fixed_scales)
     initial_scales = config.initial_species_scales or {}
-    p0 = np.log(np.array([initial_scales.get(name, 1.0) for name in fitted_names], dtype=float))
+    for name, value in initial_scales.items():
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"initial scale for {name} must be finite and positive")
+        if name in fitted_names and not config.scale_bounds[0] <= value <= config.scale_bounds[1]:
+            raise ValueError(f"initial scale for {name} must lie within scale_bounds")
+    default_scale = float(np.clip(1.0, *config.scale_bounds))
+    p0 = np.log(
+        np.array([initial_scales.get(name, default_scale) for name in fitted_names], dtype=float)
+    )
     lower = np.full(len(fitted_names), np.log(config.scale_bounds[0]))
     upper = np.full(len(fitted_names), np.log(config.scale_bounds[1]))
     return fitted_names, fixed_scales, p0, lower, upper
@@ -1476,120 +1447,6 @@ def _transmission_from_prepared_basis(
     )
 
 
-def _joint_forward_components(
-    observed_wavelength: np.ndarray,
-    species_names: tuple[str, ...],
-    basis: np.ndarray,
-    *,
-    config: FitConfig,
-    species_scales: Mapping[str, float],
-    airmass: float,
-    wavelength_shift: float | np.ndarray,
-    lsf_sigma_pixels: float,
-    lsf_box_width_pixels: float,
-    lsf_lorentz_fwhm_pixels: float,
-    lsf_wavelength_exponent: float,
-    basis_wavelength: np.ndarray,
-    model_wavelength: np.ndarray,
-    highres_pixels_per_observed_pixel: float,
-    stellar_model: StellarForwardModel | None,
-    rebin_plan: PiecewiseConstantRebinPlan | None = None,
-    native_to_model_plan: SampleAverageRebinPlan | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return observed stellar flux and the stellar-aware telluric divisor."""
-
-    if stellar_model is None:
-        transmission = _transmission_from_prepared_basis(
-            observed_wavelength,
-            species_names,
-            basis,
-            config=config,
-            species_scales=species_scales,
-            airmass=airmass,
-            wavelength_shift=wavelength_shift,
-            lsf_sigma_pixels=lsf_sigma_pixels,
-            lsf_box_width_pixels=lsf_box_width_pixels,
-            lsf_lorentz_fwhm_pixels=lsf_lorentz_fwhm_pixels,
-            lsf_wavelength_exponent=lsf_wavelength_exponent,
-            basis_wavelength=basis_wavelength,
-            model_wavelength=model_wavelength,
-            highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
-            rebin_plan=rebin_plan,
-            native_to_model_plan=native_to_model_plan,
-        )
-        return np.ones(transmission.shape, dtype=float), transmission
-
-    intrinsic_stellar = np.interp(
-        basis_wavelength,
-        stellar_model.wavelength_micron,
-        stellar_model.normalized_flux,
-        left=1.0,
-        right=1.0,
-    )
-    raw_transmission = transmission_from_basis(
-        species_names,
-        _shift_basis(basis_wavelength, basis, wavelength_shift),
-        species_scales=species_scales,
-        airmass=airmass,
-        wavelength_micron=basis_wavelength,
-    )
-    if config.high_resolution_grid:
-        common = {
-            "lsf_sigma_pixels": lsf_sigma_pixels,
-            "lsf_box_width_pixels": lsf_box_width_pixels,
-            "lsf_lorentz_fwhm_pixels": lsf_lorentz_fwhm_pixels,
-            "highres_pixels_per_observed_pixel": highres_pixels_per_observed_pixel,
-            "lsf_variable_width": config.lsf_variable_width,
-            "lsf_reference_wavelength_micron": config.lsf_reference_wavelength_micron,
-            "lsf_wavelength_exponent": lsf_wavelength_exponent,
-            "lsf_kernel_width_fwhm": config.lsf_kernel_width_fwhm,
-            "lsf_molecfit_voigt": config.lsf_molecfit_voigt,
-            "rebin_mode": config.high_resolution_rebin_mode,
-            "rebin_plan": rebin_plan,
-            "model_wavelength_micron": model_wavelength,
-            "native_to_model_plan": native_to_model_plan,
-        }
-        observed_stellar = observe_high_resolution_values(
-            observed_wavelength,
-            basis_wavelength,
-            intrinsic_stellar,
-            **common,
-        )
-        observed_joint = observe_high_resolution_values(
-            observed_wavelength,
-            basis_wavelength,
-            intrinsic_stellar * raw_transmission,
-            **common,
-        )
-    else:
-        convolution = {
-            "gaussian_sigma_pixels": lsf_sigma_pixels,
-            "box_width_pixels": lsf_box_width_pixels,
-            "lorentz_fwhm_pixels": lsf_lorentz_fwhm_pixels,
-            "wavelength_micron": observed_wavelength,
-            "variable_width": config.lsf_variable_width,
-            "reference_wavelength_micron": config.lsf_reference_wavelength_micron,
-            "wavelength_exponent": lsf_wavelength_exponent,
-            "kernel_width_fwhm": config.lsf_kernel_width_fwhm,
-            "molecfit_voigt": config.lsf_molecfit_voigt,
-        }
-        observed_stellar = convolve_lsf(intrinsic_stellar, **convolution)
-        observed_joint = convolve_lsf(
-            intrinsic_stellar * raw_transmission,
-            **convolution,
-        )
-    effective_transmission = np.divide(
-        observed_joint,
-        observed_stellar,
-        out=np.ones(observed_joint.shape, dtype=float),
-        where=observed_stellar > np.finfo(float).tiny,
-    )
-    return (
-        np.asarray(observed_stellar, dtype=float),
-        np.clip(effective_transmission, 0.0, 1.0),
-    )
-
-
 def _observable_optical_depth_basis(
     observed_wavelength: np.ndarray,
     valid: np.ndarray,
@@ -1648,7 +1505,6 @@ def fit_tellurics(
     config: FitConfig | None = None,
     fit_mask: np.ndarray | None = None,
     fit_weights: np.ndarray | None = None,
-    stellar_model: StellarForwardModel | None = None,
 ) -> TelluricFitResult:
     """Fit telluric transmission and return a corrected spectrum.
 
@@ -1693,11 +1549,6 @@ def fit_tellurics(
             spectrum.wavelength.shape,
             label="fit_weights",
         )[sort_order]
-    if stellar_model is not None:
-        stellar_model = _validate_stellar_model(
-            stellar_model,
-            label="stellar_model",
-        )
     spectrum = spectrum.sorted()
     valid = spectrum.valid.copy()
     valid &= _windows_mask(spectrum.wavelength, config.fit_ranges, config.exclude_ranges)
@@ -1708,10 +1559,9 @@ def fit_tellurics(
     if np.count_nonzero(valid) < config.continuum_order + 2:
         raise ValueError("not enough valid pixels to fit")
 
-    wavelength_fit = spectrum.wavelength[valid]
     flux_fit = spectrum.flux[valid]
-    _, design_fit = _poly_design(wavelength_fit, config.continuum_order)
     _, design_all = _poly_design(spectrum.wavelength, config.continuum_order)
+    design_fit = design_all[valid]
 
     # Fit windows constrain parameter estimation, not the wavelength range that
     # receives a telluric correction. Keep every line that can contribute to
@@ -1780,6 +1630,8 @@ def fit_tellurics(
             n2_continuum_xn2cn=config.n2_continuum_xn2cn,
             o2_continuum=config.o2_continuum,
             o2_continuum_xo2cn=config.o2_continuum_xo2cn,
+            o3_continuum=config.o3_continuum,
+            o3_continuum_xo3cn=config.o3_continuum_xo3cn,
             components=selected_components,
         )
         species_names, basis_all = physical_optical_depth_basis(
@@ -1948,7 +1800,7 @@ def fit_tellurics(
             else config.lsf_wavelength_exponent
         )
         scales = _scales_from_params(fitted_species_names, fixed_species_scales, log_scales)
-        observed_stellar, transmission = _joint_forward_components(
+        transmission = _transmission_from_prepared_basis(
             spectrum.wavelength,
             species_names,
             basis_all,
@@ -1963,23 +1815,21 @@ def fit_tellurics(
             basis_wavelength=basis_wavelength,
             model_wavelength=model_wavelength,
             highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
-            stellar_model=stellar_model,
             rebin_plan=rebin_plan,
             native_to_model_plan=native_to_model_plan,
         )
-        observed_stellar = observed_stellar[valid]
         transmission = transmission[valid]
         if config.solve_continuum_linear:
             continuum_coeff = _solve_profiled_continuum(
                 design_fit,
-                observed_stellar * transmission,
+                transmission,
                 flux_fit,
                 sigma,
                 loss=config.loss,
                 f_scale=config.f_scale,
             )
         continuum = design_fit @ continuum_coeff
-        return (flux_fit - continuum * observed_stellar * transmission) / sigma
+        return (flux_fit - continuum * transmission) / sigma
 
     wavelength_shift_coarse_search = None
     if wavelength_parameter_index is not None and config.initialize_wavelength_shift_grid:
@@ -2055,7 +1905,7 @@ def fit_tellurics(
         else config.lsf_wavelength_exponent
     )
     species_scales = _scales_from_params(fitted_species_names, fixed_species_scales, log_scales)
-    observed_stellar, transmission = _joint_forward_components(
+    transmission = _transmission_from_prepared_basis(
         spectrum.wavelength,
         species_names,
         basis_all,
@@ -2070,21 +1920,20 @@ def fit_tellurics(
         basis_wavelength=basis_wavelength,
         model_wavelength=model_wavelength,
         highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
-        stellar_model=stellar_model,
         rebin_plan=rebin_plan,
         native_to_model_plan=native_to_model_plan,
     )
     if config.solve_continuum_linear:
         continuum_coeff = _solve_profiled_continuum(
             design_fit,
-            observed_stellar[valid] * transmission[valid],
+            transmission[valid],
             flux_fit,
             sigma,
             loss=config.loss,
             f_scale=config.f_scale,
         )
     continuum = design_all @ continuum_coeff
-    model_flux = continuum * observed_stellar * transmission
+    model_flux = continuum * transmission
     parameter_names = [f"log_scale:{name}" for name in fitted_species_names]
     active_transmission_indices = list(range(len(fitted_species_names)))
     parameter_cursor = len(fitted_species_names)
@@ -2209,7 +2058,7 @@ def fit_tellurics(
                 fixed_species_scales,
                 local_log_scales,
             )
-            _, local_transmission = _joint_forward_components(
+            local_transmission = _transmission_from_prepared_basis(
                 spectrum.wavelength,
                 species_names,
                 basis_all,
@@ -2224,7 +2073,6 @@ def fit_tellurics(
                 basis_wavelength=basis_wavelength,
                 model_wavelength=model_wavelength,
                 highres_pixels_per_observed_pixel=highres_pixels_per_observed_pixel,
-                stellar_model=stellar_model,
                 rebin_plan=rebin_plan,
                 native_to_model_plan=native_to_model_plan,
             )
@@ -2298,9 +2146,6 @@ def fit_tellurics(
         covariance_rank=covariance_rank,
         fit_mask=valid.copy(),
         fit_weights=(None if fit_weights is None else np.asarray(fit_weights, dtype=float).copy()),
-        stellar_model=(
-            np.asarray(observed_stellar, dtype=float).copy() if stellar_model is not None else None
-        ),
         parameter_bound_status=bound_status,
         provenance=provenance,
     )
@@ -2315,7 +2160,6 @@ class _PreparedSegment:
     flux_fit: np.ndarray
     sigma: np.ndarray
     fit_weights: np.ndarray | None
-    stellar_model: StellarForwardModel | None
     species_names: tuple[str, ...]
     basis_all: np.ndarray
     basis_fit: np.ndarray
@@ -2380,6 +2224,8 @@ def _opacity_cache_key(
         config.n2_continuum_xn2cn,
         config.o2_continuum,
         config.o2_continuum_xo2cn,
+        config.o3_continuum,
+        config.o3_continuum_xo3cn,
         id(config.atmosphere),
         tuple(id(component) for component in (config.components or ())),
     )
@@ -2400,6 +2246,7 @@ def _multi_fit_jacobian_sparsity(
     fit_lsf_lorentz_fwhm: bool,
     fit_lsf_wavelength_exponent: bool,
     continuum_prior_weight: float,
+    wavelength_group_parameter_counts: Sequence[int] | None = None,
 ) -> object | None:
     """Return the exact residual/parameter dependency pattern for segments."""
 
@@ -2433,14 +2280,17 @@ def _multi_fit_jacobian_sparsity(
     if segment_wavelength_order is not None:
         block = segment_wavelength_order + 1
         group_count = int(np.max(segment_wavelength_groups)) + 1
-        group_columns = [
-            slice(column_cursor + group * block, column_cursor + (group + 1) * block)
-            for group in range(group_count)
-        ]
+        counts = (
+            [block] * group_count
+            if wavelength_group_parameter_counts is None
+            else wavelength_group_parameter_counts
+        )
+        starts = np.concatenate(([column_cursor], column_cursor + np.cumsum(counts)))
+        group_columns = [slice(int(starts[g]), int(starts[g + 1])) for g in range(group_count)]
         local_wavelength_columns = [
             group_columns[int(group)] for group in segment_wavelength_groups
         ]
-        column_cursor += group_count * block
+        column_cursor += sum(counts)
 
     for enabled in (
         fit_lsf_sigma,
@@ -2662,7 +2512,6 @@ def _prepare_multi_fit_segment(
     spectrum: Spectrum,
     fit_mask: np.ndarray | None,
     fit_weights: np.ndarray | None,
-    stellar_model: StellarForwardModel | None,
     continuum_prior: np.ndarray | None,
     *,
     line_list: LineList,
@@ -2691,11 +2540,6 @@ def _prepare_multi_fit_segment(
             label="each fit weight array",
         )[order]
         valid &= sorted_fit_weights > 0
-    if stellar_model is not None:
-        stellar_model = _validate_stellar_model(
-            stellar_model,
-            label="each stellar model",
-        )
     continuum_prior_fit = None
     if continuum_prior is not None:
         continuum_prior = np.asarray(continuum_prior, dtype=float)
@@ -2705,10 +2549,9 @@ def _prepare_multi_fit_segment(
     if np.count_nonzero(valid) < config.continuum_order + 2:
         raise ValueError("not enough valid pixels to fit one of the segments")
 
-    wavelength_fit = segment.wavelength[valid]
     flux_fit = segment.flux[valid]
-    _, design_fit = _poly_design(wavelength_fit, config.continuum_order)
     _, design_all = _poly_design(segment.wavelength, config.continuum_order)
+    design_fit = design_all[valid]
     cache_key = _opacity_cache_key(segment.wavelength, line_list, config)
     prepared_opacity = None if opacity_cache is None else opacity_cache.get(cache_key)
     if prepared_opacity is None:
@@ -2760,6 +2603,8 @@ def _prepare_multi_fit_segment(
                 n2_continuum_xn2cn=config.n2_continuum_xn2cn,
                 o2_continuum=config.o2_continuum,
                 o2_continuum_xo2cn=config.o2_continuum_xo2cn,
+                o3_continuum=config.o3_continuum,
+                o3_continuum_xo3cn=config.o3_continuum_xo3cn,
                 components=selected_components,
             )
             species_names, basis_all = physical_optical_depth_basis(
@@ -2863,7 +2708,6 @@ def _prepare_multi_fit_segment(
         flux_fit=flux_fit,
         sigma=sigma,
         fit_weights=sorted_fit_weights,
-        stellar_model=stellar_model,
         species_names=species_names,
         basis_all=basis_all,
         basis_fit=basis_fit,
@@ -3035,7 +2879,6 @@ def fit_telluric_segments(
     config: FitConfig | None = None,
     fit_masks: Sequence[np.ndarray | None] | None = None,
     fit_weights: Sequence[np.ndarray | None] | None = None,
-    stellar_models: Sequence[StellarForwardModel | None] | None = None,
     continuum_priors: Sequence[np.ndarray | None] | None = None,
     global_wavelength_bounds: tuple[float, float] | None = None,
     wavelength_group_ids: Sequence[int] | None = None,
@@ -3091,10 +2934,6 @@ def fit_telluric_segments(
         fit_weights = [None] * len(spectra)
     if len(fit_weights) != len(spectra):
         raise ValueError("fit_weights must have the same length as spectra")
-    if stellar_models is None:
-        stellar_models = [None] * len(spectra)
-    if len(stellar_models) != len(spectra):
-        raise ValueError("stellar_models must have the same length as spectra")
     if continuum_priors is None:
         continuum_priors = [None] * len(spectra)
     if len(continuum_priors) != len(spectra):
@@ -3105,6 +2944,29 @@ def fit_telluric_segments(
         raise ValueError("wavelength_group_ids must have the same length as spectra")
     external_group_ids = tuple(int(value) for value in wavelength_group_ids)
     unique_group_ids = tuple(dict.fromkeys(external_group_ids))
+    group_parameter_counts = []
+    if segment_wavelength_order is not None:
+        for group_id in unique_group_ids:
+            degree = (config.wavelength_group_polynomial_orders or {}).get(
+                group_id,
+                segment_wavelength_order,
+            )
+            if (
+                not isinstance(degree, (int, np.integer))
+                or not -1 <= degree <= segment_wavelength_order
+            ):
+                raise ValueError(
+                    "wavelength group orders must be integers from -1 to the configured order"
+                )
+            group_parameter_counts.append(degree + 1)
+    elif config.wavelength_group_polynomial_orders:
+        raise ValueError("wavelength group orders require per-group wavelength fitting")
+    free_wavelength_coefficients = (
+        np.arange(segment_wavelength_order + 1)[None, :]
+        < np.asarray(group_parameter_counts)[:, None]
+        if segment_wavelength_order is not None
+        else None
+    )
     group_position = {group_id: index for index, group_id in enumerate(unique_group_ids)}
     segment_group_positions = np.asarray(
         [group_position[group_id] for group_id in external_group_ids],
@@ -3154,7 +3016,6 @@ def fit_telluric_segments(
             spectra,
             fit_masks,
             fit_weights,
-            stellar_models,
             continuum_priors,
             external_group_ids,
             strict=True,
@@ -3172,13 +3033,12 @@ def fit_telluric_segments(
                         job[1],
                         job[2],
                         job[3],
-                        job[4],
                         line_list=line_list,
                         config=config,
                         global_wavelength_order=global_wavelength_order,
                         global_wavelength_bounds=global_wavelength_bounds,
                         segment_wavelength_order=segment_wavelength_order,
-                        local_wavelength_bounds=resolved_group_bounds[job[5]],
+                        local_wavelength_bounds=resolved_group_bounds[job[4]],
                         opacity_cache=_opacity_cache,
                     ),
                     jobs,
@@ -3190,7 +3050,6 @@ def fit_telluric_segments(
                 spectrum,
                 fit_mask,
                 fit_weight,
-                stellar_model,
                 continuum_prior,
                 line_list=line_list,
                 config=config,
@@ -3200,7 +3059,7 @@ def fit_telluric_segments(
                 local_wavelength_bounds=resolved_group_bounds[group_id],
                 opacity_cache=_opacity_cache,
             )
-            for spectrum, fit_mask, fit_weight, stellar_model, continuum_prior, group_id in jobs
+            for spectrum, fit_mask, fit_weight, continuum_prior, group_id in jobs
         ]
 
     global_species: list[str] = []
@@ -3291,16 +3150,16 @@ def fit_telluric_segments(
                 members,
                 axis=0,
             )
-        p0_parts.append(initial_group_wavelength_coefficients.ravel())
+        p0_parts.append(initial_group_wavelength_coefficients[free_wavelength_coefficients])
         lower_parts.append(
             np.full(
-                len(unique_group_ids) * (segment_wavelength_order + 1),
+                sum(group_parameter_counts),
                 config.wavelength_shift_bounds[0],
             )
         )
         upper_parts.append(
             np.full(
-                len(unique_group_ids) * (segment_wavelength_order + 1),
+                sum(group_parameter_counts),
                 config.wavelength_shift_bounds[1],
             )
         )
@@ -3373,6 +3232,7 @@ def fit_telluric_segments(
             fit_lsf_lorentz_fwhm=config.fit_lsf_lorentz_fwhm,
             fit_lsf_wavelength_exponent=config.fit_lsf_wavelength_exponent,
             continuum_prior_weight=config.continuum_prior_weight,
+            wavelength_group_parameter_counts=group_parameter_counts,
         )
 
     def unpack(params: np.ndarray):
@@ -3390,11 +3250,11 @@ def fit_telluric_segments(
             global_wavelength_coefficients = None
         if segment_wavelength_order is not None:
             n_wavelength_coefficients = segment_wavelength_order + 1
-            stop = cursor + len(unique_group_ids) * n_wavelength_coefficients
-            segment_wavelength_coefficients = np.asarray(
-                params[cursor:stop],
-                dtype=float,
-            ).reshape(len(unique_group_ids), n_wavelength_coefficients)
+            stop = cursor + sum(group_parameter_counts)
+            segment_wavelength_coefficients = np.zeros(
+                (len(unique_group_ids), n_wavelength_coefficients)
+            )
+            segment_wavelength_coefficients[free_wavelength_coefficients] = params[cursor:stop]
             cursor = stop
         else:
             segment_wavelength_coefficients = None
@@ -3466,7 +3326,7 @@ def fit_telluric_segments(
             else:
                 segment_shift_all = 0.0
                 segment_shift_basis = 0.0
-            observed_stellar, transmission = _joint_forward_components(
+            transmission = _transmission_from_prepared_basis(
                 segment.spectrum.wavelength,
                 segment.species_names,
                 segment.basis_all,
@@ -3483,16 +3343,14 @@ def fit_telluric_segments(
                 basis_wavelength=segment.basis_wavelength,
                 model_wavelength=segment.model_wavelength,
                 highres_pixels_per_observed_pixel=(segment.highres_pixels_per_observed_pixel),
-                stellar_model=segment.stellar_model,
                 rebin_plan=segment.rebin_plan,
                 native_to_model_plan=segment.native_to_model_plan,
             )
-            observed_stellar = observed_stellar[segment.valid]
             transmission = transmission[segment.valid]
             if config.solve_continuum_linear:
                 continuum_coeff = _solve_profiled_continuum(
                     segment.design_fit,
-                    observed_stellar * transmission,
+                    transmission,
                     segment.flux_fit,
                     segment.sigma,
                     loss=config.loss,
@@ -3504,9 +3362,7 @@ def fit_telluric_segments(
             else:
                 continuum_coeff = continuum_coefficients[index]
             continuum = segment.design_fit @ continuum_coeff
-            residuals.append(
-                (segment.flux_fit - continuum * observed_stellar * transmission) / segment.sigma
-            )
+            residuals.append((segment.flux_fit - continuum * transmission) / segment.sigma)
             if config.continuum_prior_weight > 0 and segment.continuum_prior_fit is not None:
                 residuals.append(
                     _continuum_prior_residual(
@@ -3549,7 +3405,7 @@ def fit_telluric_segments(
         )
         parameter_cursor += global_wavelength_order + 1
     if segment_wavelength_order is not None:
-        parameter_cursor += len(unique_group_ids) * (segment_wavelength_order + 1)
+        parameter_cursor += sum(group_parameter_counts)
     for enabled in (
         config.fit_lsf_sigma,
         config.fit_lsf_box_width,
@@ -3683,10 +3539,11 @@ def fit_telluric_segments(
         parameter_cursor += global_wavelength_order + 1
     if segment_wavelength_order is not None:
         for group_index, external_group_id in enumerate(unique_group_ids):
+            count = group_parameter_counts[group_index]
             local_indices = list(
                 range(
                     parameter_cursor,
-                    parameter_cursor + segment_wavelength_order + 1,
+                    parameter_cursor + count,
                 )
             )
             parameter_names.extend(
@@ -3695,12 +3552,12 @@ def fit_telluric_segments(
                     if config.wavelength_shift_unit == "pixel"
                     else f"wavelength_group:{external_group_id}:coefficient:{degree}"
                 )
-                for degree in range(segment_wavelength_order + 1)
+                for degree in range(count)
             )
             for segment_index, position in enumerate(segment_group_positions):
                 if int(position) == group_index:
                     segment_transmission_indices[segment_index].extend(local_indices)
-            parameter_cursor += segment_wavelength_order + 1
+            parameter_cursor += count
     for enabled, name in (
         (config.fit_lsf_sigma, "lsf_sigma_pixels"),
         (config.fit_lsf_box_width, "lsf_box_width_pixels"),
@@ -3821,7 +3678,7 @@ def fit_telluric_segments(
             segment_shift_basis = 0.0
         reported_shift = float(np.nanmedian(segment_shift_all))
         reported_segment_shifts.append(reported_shift)
-        observed_stellar, transmission = _joint_forward_components(
+        transmission = _transmission_from_prepared_basis(
             segment.spectrum.wavelength,
             segment.species_names,
             segment.basis_all,
@@ -3838,14 +3695,13 @@ def fit_telluric_segments(
             basis_wavelength=segment.basis_wavelength,
             model_wavelength=segment.model_wavelength,
             highres_pixels_per_observed_pixel=segment.highres_pixels_per_observed_pixel,
-            stellar_model=segment.stellar_model,
             rebin_plan=segment.rebin_plan,
             native_to_model_plan=segment.native_to_model_plan,
         )
         if config.solve_continuum_linear:
             continuum_coeff = _solve_profiled_continuum(
                 segment.design_fit,
-                observed_stellar[segment.valid] * transmission[segment.valid],
+                transmission[segment.valid],
                 segment.flux_fit,
                 segment.sigma,
                 loss=config.loss,
@@ -3857,7 +3713,7 @@ def fit_telluric_segments(
         else:
             continuum_coeff = continuum_coefficients[index]
         continuum = segment.design_all @ continuum_coeff
-        model_flux = continuum * observed_stellar * transmission
+        model_flux = continuum * transmission
         transmission_uncertainty = None
         if parameter_covariance is not None:
 
@@ -3901,7 +3757,7 @@ def fit_telluric_segments(
                 else:
                     local_shift_all = 0.0
                     local_shift_basis = 0.0
-                _, local_transmission = _joint_forward_components(
+                local_transmission = _transmission_from_prepared_basis(
                     current_segment.spectrum.wavelength,
                     current_segment.species_names,
                     current_segment.basis_all,
@@ -3920,7 +3776,6 @@ def fit_telluric_segments(
                     highres_pixels_per_observed_pixel=(
                         current_segment.highres_pixels_per_observed_pixel
                     ),
-                    stellar_model=current_segment.stellar_model,
                     rebin_plan=current_segment.rebin_plan,
                     native_to_model_plan=current_segment.native_to_model_plan,
                 )
@@ -3974,11 +3829,6 @@ def fit_telluric_segments(
                     if segment.fit_weights is None
                     else np.asarray(segment.fit_weights, dtype=float).copy()
                 ),
-                stellar_model=(
-                    np.asarray(observed_stellar, dtype=float).copy()
-                    if segment.stellar_model is not None
-                    else None
-                ),
                 parameter_bound_status=dict(bound_status),
                 provenance={**provenance, "segment_index": index},
             )
@@ -4026,7 +3876,6 @@ def _apply_multi_fit_to_segment(
     line_list: LineList,
     config: FitConfig,
     fit_result: MultiTelluricFitResult,
-    stellar_model: StellarForwardModel | None = None,
     global_wavelength_bounds: tuple[float, float] | None = None,
     wavelength_group_id: int | None = None,
 ) -> TelluricFitResult:
@@ -4049,7 +3898,6 @@ def _apply_multi_fit_to_segment(
         spectrum,
         None,
         None,
-        stellar_model,
         None,
         line_list=line_list,
         config=evaluation_config,
@@ -4086,7 +3934,7 @@ def _apply_multi_fit_to_segment(
             wavelength_coefficients,
         )
 
-    observed_stellar, transmission = _joint_forward_components(
+    transmission = _transmission_from_prepared_basis(
         prepared.spectrum.wavelength,
         prepared.species_names,
         prepared.basis_all,
@@ -4105,20 +3953,19 @@ def _apply_multi_fit_to_segment(
         basis_wavelength=prepared.basis_wavelength,
         model_wavelength=prepared.model_wavelength,
         highres_pixels_per_observed_pixel=prepared.highres_pixels_per_observed_pixel,
-        stellar_model=prepared.stellar_model,
         rebin_plan=prepared.rebin_plan,
         native_to_model_plan=prepared.native_to_model_plan,
     )
     continuum_coefficients = _solve_profiled_continuum(
         prepared.design_fit,
-        observed_stellar[prepared.valid] * transmission[prepared.valid],
+        transmission[prepared.valid],
         prepared.flux_fit,
         prepared.sigma,
         loss=config.loss,
         f_scale=config.f_scale,
     )
     continuum = prepared.design_all @ continuum_coefficients
-    model_flux = continuum * observed_stellar * transmission
+    model_flux = continuum * transmission
     corrected = correct_spectrum(
         prepared.spectrum,
         transmission,
@@ -4155,11 +4002,6 @@ def _apply_multi_fit_to_segment(
         reduced_chi_square=float(fit_result.reduced_chi_square),
         covariance_rank=int(fit_result.covariance_rank),
         fit_mask=np.zeros(prepared.spectrum.wavelength.size, dtype=bool),
-        stellar_model=(
-            np.asarray(observed_stellar, dtype=float).copy()
-            if prepared.stellar_model is not None
-            else None
-        ),
         parameter_bound_status=dict(fit_result.parameter_bound_status),
         provenance=provenance,
     )

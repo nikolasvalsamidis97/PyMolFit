@@ -18,6 +18,12 @@ venv/
 # reproducible publication campaign is versioned separately below.
 local_tests/
 
-# Keep the paper-validation layout in Git while excluding generated results.
-paper_validation/**/results/*
-!paper_validation/**/results/.gitkeep
+# Paper scripts are versioned; generated figures, fit products and archives are not.
+paper_validation/*/*.png
+validation_results/
+
+# Generated tutorial products; the small input fixtures are versioned.
+docs/user_guide/outputs/
+docs/user_guide/regions/
+docs/user_guide/data/*.header.txt
+.ipynb_checkpoints/

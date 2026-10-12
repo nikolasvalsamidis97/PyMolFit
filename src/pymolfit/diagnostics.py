@@ -100,9 +100,9 @@ def format_fit_summary(
             f"  stellar template: {_format_scalar(stellar_template.get('source'))}",
             "  stellar use: "
             + (
-                "joint stellar x atmosphere forward model"
-                if stellar_template.get("joint_forward_model", False)
-                else "confidence-weighted telluric fit mask"
+                "confidence-weighted telluric fit mask"
+                if weighted_stellar_mask
+                else "binary stellar exclusions"
             ),
             "  stellar broadening/alignment: "
             f"RV={_format_scalar(stellar_template.get('radial_velocity_kms'))} km/s, "
@@ -171,6 +171,7 @@ def format_fit_summary(
             f"alt={_format_scalar(atmosphere.get('observatory_altitude_m'))} m",
             *_format_airmass_lines(atmosphere, config),
             "Fit masks and segmentation",
+            f"  region selection: {_format_scalar(_mapping(provenance.get('fit_region_selection')).get('source'))}",
             "  fit ranges: "
             f"{_summarize_ranges(config.get('fit_ranges'), automatic_label='automatic (all valid pixels)')}",
             "  excluded ranges (observatory vacuum micron): "
@@ -186,6 +187,7 @@ def format_fit_summary(
             ),
             "Continuum and optimizer",
             f"  continuum order: {_format_scalar(config.get('continuum_order'))}",
+            f"  continuum selection: {_format_scalar(_mapping(provenance.get('automatic_continuum')).get('requested'))}",
             "  continuum solver: "
             f"{_format_scalar(continuum.get('selected', config.get('solve_continuum_linear')))} "
             f"(requested={_format_scalar(continuum.get('requested'))}, "
@@ -241,6 +243,8 @@ def format_fit_summary(
             f"N2={_format_scalar(config.get('n2_continuum'))}, "
             f"O2={_format_scalar(config.get('o2_continuum'))}",
             f"  minimum corrected transmission: {_format_scalar(config.get('min_transmission'))}",
+            f"  input error source: {_format_scalar(_mapping(provenance.get('input_uncertainty')).get('source'))}",
+            f"  correction quality mask: {_format_scalar(_mapping(provenance.get('correction_mask')).get('source'))}",
             "Fitted parameters",
         )
     )

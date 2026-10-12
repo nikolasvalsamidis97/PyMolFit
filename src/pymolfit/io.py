@@ -12,6 +12,7 @@ from astropy.io import fits
 from astropy.table import Table
 
 from .errors import ProductFormatError, SpectrumFormatError, WavelengthMetadataError
+from .observation import Observation
 from .provenance import file_sha256
 from .spectrum import Spectrum
 
@@ -28,6 +29,12 @@ WAVELENGTH_COLUMNS = (
     "wavelength_nm",
     "wavelength_angstrom",
     "wavelength_angstroms",
+    "awav",
+    "wave_air",
+    "wavelength_air",
+    "wave_vac",
+    "wave_vacuum",
+    "wavelength_vacuum",
 )
 FLUX_COLUMNS = ("flux", "flam", "fnu", "spectrum", "spec", "data", "science")
 UNCERTAINTY_COLUMNS = ("uncertainty", "error", "err", "sigma", "noise", "flux_err", "flux_error")
@@ -44,7 +51,7 @@ def load_spectrum(
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
-    hdu: int = 1,
+    hdu: int | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: str | None = None,
     image_index: int | None = None,
@@ -52,6 +59,11 @@ def load_spectrum(
     header_output_path: str | Path | None = None,
 ) -> Spectrum:
     """Load a spectrum from a FITS or text-based file.
+
+    With ``hdu=None``, search for a unique spectral table or wavelength-calibrated
+    image, excluding labelled auxiliary extensions. Multiple candidates require
+    an explicit ``hdu``; orders are not combined automatically. An explicit HDU
+    is read exactly as requested, without falling back to another extension.
 
     Loading a FITS file saves its complete, formatted header to a neighboring
     ``*.header.txt`` file by default. The text file contains the primary header
@@ -64,12 +76,39 @@ def load_spectrum(
     input, ``None`` infers the medium from the selected wavelength column's
     ``TUCDn``/``TTYPEn`` metadata and other unambiguous header declarations.
     PyMolFit stops if a FITS file does not declare a reliable convention.
+    FITS observing metadata are attached as ``spectrum.observation.metadata``;
+    the original header keywords are retained without inventing missing values.
+
+    :param path: Input FITS, text, CSV or ECSV file.
+    :param format: Explicit file format; None infers from the filename.
+    :param wavelength_col: Wavelength column name or zero-based index; None detects it.
+    :param flux_col: Flux column name or zero-based index; None detects it.
+    :param uncertainty_col: Flux standard-deviation column name or zero-based index;
+        None detects it if available.
+    :param hdu: FITS extension index; None searches for a unique spectral extension.
+    :param wavelength_unit: Fallback wavelength unit where metadata are unavailable.
+    :param wavelength_medium: 'air' or 'vacuum'; None infers reliable FITS metadata
+        or uses the text-loader convention. This is a label, not a conversion.
+    :param image_index: Row to extract from a supported 2D FITS image.
+    :param save_header: Save a readable FITS-header sidecar (default True).
+    :param header_output_path: Optional sidecar destination; otherwise beside the FITS.
+    :return: A Spectrum with native samples and available observing metadata.
     """
 
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"spectrum file does not exist: {path}")
     chosen_format = infer_spectrum_format(path, format)
+    if chosen_format in {"fits", "fit", "fz"}:
+        with fits.open(path) as hdul:
+            hdu = _select_spectrum_hdu(
+                hdul,
+                hdu,
+                wavelength_col=wavelength_col,
+                flux_col=flux_col,
+                uncertainty_col=uncertainty_col,
+                image_index=image_index,
+            )
     resolved_wavelength_medium = wavelength_medium
     wavelength_medium_source = "user"
     if resolved_wavelength_medium is None:
@@ -145,8 +184,11 @@ def load_spectrum(
 def infer_fits_wavelength_medium(
     path: str | Path,
     *,
-    hdu: int = 1,
+    hdu: int | None = None,
     wavelength_col: int | str | None = None,
+    flux_col: int | str | None = None,
+    uncertainty_col: int | str | None = None,
+    image_index: int | None = None,
 ) -> str | None:
     """Infer air or vacuum wavelengths for the selected FITS spectral column.
 
@@ -160,12 +202,15 @@ def infer_fits_wavelength_medium(
 
     source = Path(path)
     with fits.open(source) as hdul:
-        target_index = int(hdu)
-        if target_index >= len(hdul):
-            raise ValueError(f"FITS file {source} does not contain HDU {hdu}")
+        target_index = _select_spectrum_hdu(
+            hdul,
+            hdu,
+            wavelength_col=wavelength_col,
+            flux_col=flux_col,
+            uncertainty_col=uncertainty_col,
+            image_index=image_index,
+        )
         target_hdu = hdul[target_index]
-        if target_hdu.data is None and target_index != 0:
-            target_hdu = hdul[0]
 
         header = dict(hdul[0].header)
         header.update(dict(target_hdu.header))
@@ -380,8 +425,7 @@ def save_corrected_txt(result: TelluricFitResult, path: str | Path) -> Path:
     details must be retained. Saving does not rerun or modify the fit, and an
     existing file at ``path`` is overwritten.
 
-    :param result: Completed PyMolFit telluric-fit result returned by
-        ``correct_file`` or ``correct_arrays``.
+    :param result: Completed PyMolFit telluric-fit result returned by correct().
     :param path: Destination filename, conventionally ending in ``.txt``.
     :return: The destination path that was written.
     """
@@ -402,8 +446,7 @@ def save_fit_product_ecsv(result: TelluricFitResult, path: str | Path) -> Path:
     to another Astropy workflow. Saving does not rerun or modify the fit, and
     an existing file at ``path`` is overwritten.
 
-    :param result: Completed PyMolFit telluric-fit result returned by
-        ``correct_file`` or ``correct_arrays``.
+    :param result: Completed PyMolFit telluric-fit result returned by correct().
     :param path: Destination filename, conventionally ending in ``.ecsv``.
     :return: The destination path that was written.
     """
@@ -442,6 +485,9 @@ def load_fit_product(path: str | Path) -> TelluricFitResult:
     Compact text files written with :func:`save_corrected_txt` intentionally
     cannot be loaded as fit results because they do not contain the observed
     flux, transmission, model, masks, or provenance.
+
+    :param path: Complete ECSV correction product saved by correct().
+    :return: Reconstructed result; no fitting is performed.
     """
 
     from .fit import TelluricFitResult
@@ -496,38 +542,165 @@ def _load_ascii(
     )
 
 
+def _select_spectrum_hdu(
+    hdul: fits.HDUList,
+    hdu: int | None,
+    *,
+    wavelength_col: int | str | None = None,
+    flux_col: int | str | None = None,
+    uncertainty_col: int | str | None = None,
+    image_index: int | None = None,
+) -> int:
+    """Select one supported spectrum without interpreting arbitrary tables as flux."""
+
+    if hdu is not None:
+        if isinstance(hdu, bool) or not isinstance(hdu, (int, np.integer)):
+            raise SpectrumFormatError(
+                "hdu must be an integer index or None for automatic selection"
+            )
+        if not -len(hdul) <= hdu < len(hdul):
+            raise SpectrumFormatError(
+                f"FITS file does not contain HDU {hdu}; it has {len(hdul)} HDUs"
+            )
+        index = int(hdu) % len(hdul)
+        if hdul[index].data is None:
+            raise SpectrumFormatError(f"FITS HDU {index} ({hdul[index].name}) contains no data")
+        return index
+
+    auxiliary_names = {
+        "ERR",
+        "ERROR",
+        "ERRORS",
+        "UNCERTAINTY",
+        "SIGMA",
+        "NOISE",
+        "VAR",
+        "VARIANCE",
+        "IVAR",
+        "WEIGHT",
+        "WEIGHTS",
+        "MASK",
+        "DQ",
+        "QUALITY",
+        "BPM",
+        "BLAZE",
+        "FLAT",
+        "SKY",
+        "WAVE",
+        "WAVELENGTH",
+    }
+    candidates = []
+    for index, extension in enumerate(hdul):
+        name_parts = set(extension.name.upper().replace("-", "_").split("_"))
+        if name_parts & auxiliary_names:
+            continue
+        if isinstance(extension, (fits.BinTableHDU, fits.TableHDU)):
+            names = extension.columns.names
+            # Positional fallback remains available for explicitly selected HDUs,
+            # but cannot distinguish a spectrum from an unrelated numeric table.
+            if wavelength_col is None and not any(
+                name.lower() in WAVELENGTH_COLUMNS for name in names
+            ):
+                continue
+            if flux_col is None and not any(name.lower() in FLUX_COLUMNS for name in names):
+                continue
+            if extension.data is None:
+                continue
+            table = Table(extension.data, copy=False)
+            try:
+                wave_name = _resolve_column(table, wavelength_col, WAVELENGTH_COLUMNS, 0)
+                flux_name = _resolve_column(table, flux_col, FLUX_COLUMNS, 1)
+                if wave_name == flux_name:
+                    continue
+                wavelength = _column_to_1d(table[wave_name])
+                flux = _column_to_1d(table[flux_name])
+                if wavelength.size < 2 or wavelength.shape != flux.shape:
+                    continue
+                if uncertainty_col is not None:
+                    error_name = _resolve_column(table, uncertainty_col, UNCERTAINTY_COLUMNS, 2)
+                    if _column_to_1d(table[error_name]).shape != flux.shape:
+                        continue
+            except (ValueError, TypeError):
+                continue
+        elif isinstance(extension, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)):
+            if any(value is not None for value in (wavelength_col, flux_col, uncertainty_col)):
+                continue
+            header = extension.header
+            if "CRVAL1" not in header or not ("CDELT1" in header or "CD1_1" in header):
+                continue
+            if str(header.get("CTYPE1", "")).strip().upper() not in {"", "LINEAR", "WAVE", "AWAV"}:
+                continue
+            if extension.data is None:
+                continue
+            data = np.asarray(extension.data).squeeze()
+            if data.ndim not in {1, 2} or data.shape[-1] < 2:
+                continue
+            if (
+                data.ndim == 2
+                and image_index is not None
+                and not -data.shape[0] <= image_index < data.shape[0]
+            ):
+                continue
+            try:
+                wavelength, _ = _wavelength_from_linear_wcs(
+                    header, data.shape[-1], fallback_unit="micron"
+                )
+            except (ValueError, TypeError):
+                continue
+        else:
+            continue
+        finite_wave = wavelength[np.isfinite(wavelength) & (wavelength > 0)]
+        if finite_wave.size >= 2 and np.ptp(finite_wave) > 0:
+            candidates.append(index)
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        choices = ", ".join(f"{index} ({hdul[index].name})" for index in candidates)
+        raise SpectrumFormatError(
+            f"Multiple spectral HDUs found: {choices}. Specify hdu=<index> to select one; "
+            "automatic selection does not combine spectra or orders."
+        )
+    raise SpectrumFormatError(
+        "No supported spectral HDU could be identified automatically. Specify hdu=<index> "
+        "and, if needed, wavelength_col/flux_col or image_index. "
+        "Automatic selection requires recognised wavelength/flux columns or a linear wavelength WCS."
+    )
+
+
 def _load_fits(
     path: Path,
     *,
     wavelength_col: int | str | None = None,
     flux_col: int | str | None = None,
     uncertainty_col: int | str | None = None,
-    hdu: int = 1,
+    hdu: int | None = None,
     wavelength_unit: str = "micron",
     wavelength_medium: str = "vacuum",
     image_index: int | None = None,
 ) -> Spectrum:
     with fits.open(path) as hdul:
-        if not -len(hdul) <= int(hdu) < len(hdul):
-            raise SpectrumFormatError(
-                f"FITS file {path} does not contain HDU {hdu}; it has {len(hdul)} HDUs"
-            )
+        hdu = _select_spectrum_hdu(
+            hdul,
+            hdu,
+            wavelength_col=wavelength_col,
+            flux_col=flux_col,
+            uncertainty_col=uncertainty_col,
+            image_index=image_index,
+        )
         target_hdu = hdul[hdu]
         data = target_hdu.data
-        if data is None and hdu != 0:
-            target_hdu = hdul[0]
-            data = target_hdu.data
-        if data is None:
-            raise SpectrumFormatError(
-                f"FITS file {path} does not contain spectrum data in HDU {hdu}"
-            )
 
+        # Match the correction workflow's primary-header precedence.
+        header = dict(target_hdu.header)
+        header.update(dict(hdul[0].header))
+        observation = Observation(metadata=header)
         if hasattr(data, "columns"):
             table = Table(data)
             for column in data.columns:
                 if column.name in table.colnames and column.unit:
                     table[column.name].unit = column.unit
-            return _spectrum_from_table(
+            spectrum = _spectrum_from_table(
                 table,
                 wavelength_col=wavelength_col,
                 flux_col=flux_col,
@@ -535,9 +708,18 @@ def _load_fits(
                 wavelength_unit=wavelength_unit,
                 wavelength_medium=wavelength_medium,
             )
+            return replace(
+                spectrum,
+                observation=observation,
+                meta={**spectrum.meta, "hdu": hdu},
+            )
 
         image = np.asarray(data, dtype=float).squeeze()
         if image.ndim == 2 and image_index is not None:
+            if not -image.shape[0] <= image_index < image.shape[0]:
+                raise SpectrumFormatError(
+                    f"image_index {image_index} is outside the FITS image row range"
+                )
             image = image[int(image_index)]
         if image.ndim != 1:
             raise SpectrumFormatError(
@@ -552,6 +734,7 @@ def _load_fits(
             wavelength_unit=unit,
             wavelength_medium=wavelength_medium,
             meta={"source": str(path), "hdu": hdu, "io_type": "fits_image"},
+            observation=observation,
         )
 
 
@@ -573,6 +756,9 @@ def _spectrum_from_table(
         try:
             uncertainty_name = _resolve_column(table, None, UNCERTAINTY_COLUMNS, 2, required=False)
         except ValueError:
+            uncertainty_name = None
+        non_error_columns = QUALITY_COLUMNS + VALID_MASK_COLUMNS + ORDER_COLUMNS + DETECTOR_COLUMNS
+        if uncertainty_name is not None and uncertainty_name.lower() in non_error_columns:
             uncertainty_name = None
 
     unit = _infer_wavelength_unit(table, wave_name, wavelength_unit)
@@ -598,6 +784,7 @@ def _spectrum_from_table(
         wavelength_unit=unit,
         wavelength_medium=wavelength_medium,
         meta={
+            **dict(table.meta),
             "io_type": "table",
             "wavelength_col": wave_name,
             "flux_col": flux_name,

@@ -9,22 +9,33 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release-metadata:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install build
-      - run: python -m build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: distributions
-          path: dist/
+      - name: Require a versioned release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+
+          version = ast.literal_eval(ast.parse(Path("src/pymolfit/_version.py").read_text()).body[0].value)
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Publish only from the matching version tag"
+          assert f"version: {version}\n" in Path("CITATION.cff").read_text()
+          assert f"## {version} - " in Path("CHANGELOG.md").read_text()
+          PY
 
   publish:
-    needs: build
+    needs: [verify, release-metadata]
     runs-on: ubuntu-latest
     environment:
       name: pypi

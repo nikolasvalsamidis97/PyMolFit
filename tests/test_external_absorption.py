@@ -212,7 +212,8 @@ def test_workflow_accepts_external_continuum_and_cia_paths(tmp_path):
         flux,
         atmosphere=_atmosphere(),
         co2_continuum=continuum_path,
-        o2_cia=cia_path,
+        cia_tables={"O2_CIA": cia_path},
+        aer_catalog=None,
         continuum_order=0,
     )
 
@@ -231,6 +232,7 @@ def test_workflow_accepts_packaged_lblrtm_continua():
         atmosphere=_atmosphere(),
         h2o_continuum="lblrtm",
         co2_continuum="lblrtm",
+        aer_catalog=None,
         continuum_order=0,
     )
 
@@ -250,6 +252,7 @@ def test_workflow_accepts_generic_pair_cia_mapping(tmp_path):
         flux,
         atmosphere=_atmosphere(),
         cia_tables={"CO2-H2O_CIA": cia_path},
+        aer_catalog=None,
         continuum_order=0,
     )
 
@@ -268,7 +271,8 @@ def test_workflow_rejects_double_counted_n2_continuum_and_cia(tmp_path):
             np.ones_like(wavelength),
             atmosphere=_atmosphere(),
             n2_continuum=True,
-            n2_cia=cia_path,
+            cia_tables={"N2_CIA": cia_path},
+            aer_catalog=None,
             continuum_order=0,
         )
 
@@ -281,6 +285,7 @@ def test_workflow_accepts_source_backed_o2_continuum():
         np.ones_like(wavelength),
         atmosphere=_atmosphere(),
         o2_continuum=True,
+        aer_catalog=None,
         continuum_order=0,
     )
 
@@ -300,6 +305,7 @@ def test_workflow_rejects_double_counted_o2_continuum_and_cia(tmp_path):
             np.ones_like(wavelength),
             atmosphere=_atmosphere(),
             o2_continuum=True,
-            o2_cia=cia_path,
+            cia_tables={"O2_CIA": cia_path},
+            aer_catalog=None,
             continuum_order=0,
         )

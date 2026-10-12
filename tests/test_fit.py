@@ -10,18 +10,49 @@ from pymolfit import (
     LineList,
     ModelConfig,
     Spectrum,
-    TelluricFitResult,
     fit_telluric_segments,
     fit_tellurics,
     transmission_model,
 )
-from pymolfit.fit import StellarForwardModel, _linearized_parameter_covariance
-from pymolfit.model import convolve_lsf
+from pymolfit.fit import _linearized_parameter_covariance
+from tests.helpers import demo_lines
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+@pytest.mark.parametrize("solve_continuum_linear", [False, True])
+def test_restricted_fit_preserves_continuum_coordinate(segmented, solve_continuum_linear):
+    wavelength = np.linspace(2.31, 2.36, 600)
+    coordinate = np.linspace(-1.0, 1.0, wavelength.size)
+    continuum = 1.2 + 0.2 * coordinate + 0.1 * coordinate**2
+    line_list = demo_lines()
+    transmission = transmission_model(wavelength, line_list, ModelConfig())
+    spectrum = Spectrum(
+        wavelength=wavelength,
+        flux=continuum * transmission,
+        uncertainty=np.full(wavelength.size, 0.001),
+    )
+    config = FitConfig(
+        continuum_order=2,
+        solve_continuum_linear=solve_continuum_linear,
+        fixed_species_scales=dict.fromkeys(np.unique(line_list.species), 1.0),
+        fit_ranges=((2.318, 2.342),),
+    )
+    if segmented:
+        result = fit_telluric_segments(
+            [spectrum], line_list=line_list, config=config
+        ).segment_results[0]
+    else:
+        result = fit_tellurics(spectrum, line_list=line_list, config=config)
+
+    assert result.success
+    np.testing.assert_allclose(result.continuum, continuum, atol=1e-8)
+    np.testing.assert_allclose(result.model_flux, spectrum.flux, atol=1e-8)
+    np.testing.assert_allclose(result.transmission, transmission, atol=1e-10)
 
 
 def test_multi_segment_opacity_cache_reuses_basis_without_changing_result(monkeypatch):
     wavelength = np.linspace(2.31, 2.36, 240)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     flux = transmission_model(
         wavelength,
         line_list,
@@ -72,7 +103,7 @@ def test_multi_segment_opacity_cache_reuses_basis_without_changing_result(monkey
 def test_fit_tellurics_improves_synthetic_spectrum():
     rng = np.random.default_rng(4)
     wavelength = np.linspace(2.31, 2.36, 900)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     true_transmission = transmission_model(
         wavelength,
         line_list,
@@ -95,82 +126,9 @@ def test_fit_tellurics_improves_synthetic_spectrum():
     assert all(scale > 0 for scale in result.species_scales.values())
 
 
-def test_joint_stellar_model_recovers_blended_telluric_line_and_round_trips():
-    wavelength = np.linspace(0.4997, 0.5003, 1_201)
-    line_list = LineList(
-        wavelength=np.array([0.5]),
-        strength=np.array([3.0e-5]),
-        sigma=np.array([8.0e-6]),
-        gamma=np.array([2.0e-6]),
-        species=np.array(["H2O"]),
-    )
-    true_scale = 0.8
-    raw_transmission = transmission_model(
-        wavelength,
-        line_list,
-        ModelConfig(
-            species_scales={"H2O": true_scale},
-            lsf_sigma_pixels=0.0,
-            lsf_lorentz_fwhm_pixels=0.0,
-        ),
-    )
-    intrinsic_stellar = 1.0 - 0.35 * np.exp(-0.5 * ((wavelength - 0.500006) / 1.4e-5) ** 2)
-    lsf_sigma = 2.0
-    observed = convolve_lsf(
-        intrinsic_stellar * raw_transmission,
-        gaussian_sigma_pixels=lsf_sigma,
-        box_width_pixels=0.0,
-        lorentz_fwhm_pixels=0.0,
-    )
-    observed_stellar = convolve_lsf(
-        intrinsic_stellar,
-        gaussian_sigma_pixels=lsf_sigma,
-        box_width_pixels=0.0,
-        lorentz_fwhm_pixels=0.0,
-    )
-    config = FitConfig(
-        continuum_order=0,
-        solve_continuum_linear=True,
-        lsf_sigma_pixels=lsf_sigma,
-        lsf_lorentz_fwhm_pixels=0.0,
-        fit_lsf_sigma=False,
-        fit_lsf_lorentz_fwhm=False,
-        fit_wavelength_shift=False,
-        high_resolution_grid=False,
-        min_transmission=0.001,
-    )
-
-    ordinary = fit_tellurics(
-        Spectrum(wavelength, observed),
-        line_list=line_list,
-        config=config,
-    )
-    joint = fit_tellurics(
-        Spectrum(wavelength, observed),
-        line_list=line_list,
-        config=config,
-        stellar_model=StellarForwardModel(wavelength, intrinsic_stellar),
-    )
-
-    assert abs(joint.species_scales["H2O"] - true_scale) < 1.0e-8
-    assert abs(ordinary.species_scales["H2O"] - true_scale) > 0.1
-    np.testing.assert_allclose(joint.model_flux, observed, rtol=0.0, atol=1.0e-11)
-    np.testing.assert_allclose(
-        joint.corrected.flux,
-        observed_stellar,
-        rtol=0.0,
-        atol=1.0e-11,
-    )
-    assert joint.stellar_model is not None
-
-    loaded = TelluricFitResult.from_table(joint.to_table())
-    np.testing.assert_allclose(loaded.stellar_model, observed_stellar)
-    np.testing.assert_allclose(loaded.transmission, joint.transmission)
-
-
 def test_fit_tellurics_accepts_fit_mask():
     wavelength = np.linspace(2.31, 2.36, 300)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig(species_scales={"H2O": 1.2}))
     spectrum = Spectrum(wavelength=wavelength, flux=flux)
     fit_mask = wavelength < 2.345
@@ -285,7 +243,7 @@ def test_species_outside_fit_ranges_is_applied_but_not_fitted():
 
 def test_fit_tellurics_reorders_fit_mask_with_unsorted_wavelength():
     wavelength = np.linspace(2.31, 2.36, 300)[::-1]
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig())
     fit_mask = wavelength < 2.345
 
@@ -305,7 +263,7 @@ def test_fit_tellurics_reorders_fit_mask_with_unsorted_wavelength():
 def test_fit_tellurics_estimates_and_propagates_local_uncertainties():
     rng = np.random.default_rng(19)
     wavelength = np.linspace(2.31, 2.36, 500)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     transmission = transmission_model(
         wavelength,
         line_list,
@@ -343,7 +301,7 @@ def test_fit_tellurics_estimates_and_propagates_local_uncertainties():
 def test_multi_segment_fit_estimates_and_propagates_shared_uncertainties(tmp_path):
     rng = np.random.default_rng(29)
     wavelength = np.linspace(2.31, 2.36, 350)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     transmission = transmission_model(
         wavelength,
         line_list,
@@ -429,7 +387,7 @@ def test_covariance_rank_is_invariant_to_parameter_units():
 
 def test_robust_fit_reports_raw_reduced_chi_square_with_profiled_continuum():
     wavelength = np.linspace(2.31, 2.36, 300)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     uncertainty = np.full(wavelength.shape, 0.003)
     flux = transmission_model(
         wavelength,

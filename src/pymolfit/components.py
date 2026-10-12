@@ -13,6 +13,7 @@ from .continuum import (
     LBLRTMN2FundamentalContinuum,
     LBLRTMN2OvertoneContinuum,
     LBLRTMO2Continuum,
+    LBLRTMO3Continuum,
     MTCKDH2OContinuum,
     TabulatedContinuum,
     _lblrtm_n2_rot_grid,
@@ -427,7 +428,7 @@ class N2ContinuumAbsorption:
 
 @dataclass(frozen=True)
 class O2ContinuumAbsorption:
-    """LBLRTM ground-based O2 continuum component."""
+    """LBLRTM infrared, visible, and UV O2 continuum component."""
 
     continuum: LBLRTMO2Continuum | None = None
     basis_name: str = "O2"
@@ -471,6 +472,45 @@ class O2ContinuumAbsorption:
                 o2_vmr=o2_vmr,
                 h2o_vmr=h2o_vmr,
                 xo2cn=self.xo2cn,
+                jrad=self.jrad,
+            )
+        return (self.basis_name,), (self.scale * tau)[None, :]
+
+
+@dataclass(frozen=True)
+class O3ContinuumAbsorption:
+    """LBLRTM ozone broad-band absorption, sharing the O3 line scale."""
+
+    continuum: LBLRTMO3Continuum | None = None
+    basis_name: str = "O3"
+    xo3cn: float = 1.0
+    jrad: int = 1
+    scale: float = 1.0
+
+    def optical_depth_basis(
+        self,
+        wavelength_micron: np.ndarray,
+        atmosphere: AtmosphereProfile,
+        *,
+        species: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[str, ...], np.ndarray]:
+        if species is not None and self.basis_name not in species and "O3" not in species:
+            return _empty_basis(wavelength_micron)
+        if not np.all(np.isfinite([self.xo3cn, self.scale])) or min(self.xo3cn, self.scale) < 0:
+            raise ValueError("xo3cn and scale must be finite and non-negative")
+        if self.jrad not in (0, 1):
+            raise ValueError("jrad must be 0 or 1")
+        if not _atmosphere_has_species(atmosphere, "O3"):
+            return _empty_basis(wavelength_micron)
+        continuum = self.continuum or LBLRTMO3Continuum.from_package_data()
+        target = wavelength_micron_to_wavenumber_cm(wavelength_micron)
+        tau = np.zeros(target.shape, dtype=float)
+        for layer in atmosphere.layers:
+            tau += continuum.optical_depth_layer(
+                target,
+                o3_column_cm2=layer.column_density_cm2("O3"),
+                temperature_k=layer.temperature_k,
+                xo3cn=self.xo3cn,
                 jrad=self.jrad,
             )
         return (self.basis_name,), (self.scale * tau)[None, :]

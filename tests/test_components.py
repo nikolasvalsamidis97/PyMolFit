@@ -151,6 +151,7 @@ def test_correct_arrays_accepts_custom_components_without_line_list():
         flux,
         atmosphere=_atmosphere(),
         components=(component,),
+        aer_catalog=None,
         continuum_order=0,
     )
 

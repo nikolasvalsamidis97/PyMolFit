@@ -1,18 +1,19 @@
 import numpy as np
+import pytest
 
 from pymolfit import (
-    LineList,
     ModelConfig,
     correct_arrays,
     correct_file,
     format_fit_summary,
     transmission_model,
 )
+from tests.helpers import demo_lines
 
 
 def _demo_result():
     wavelength = np.linspace(2.31, 2.36, 160)
-    line_list = LineList.demo_near_ir()
+    line_list = demo_lines()
     flux = transmission_model(wavelength, line_list, ModelConfig())
     return correct_arrays(
         wavelength,
@@ -49,6 +50,19 @@ def test_format_fit_summary_reports_effective_configuration():
     assert "fit_quality" in result.provenance
 
 
+@pytest.mark.parametrize("weighted", [False, True])
+def test_stellar_mask_description_matches_actual_mode(weighted):
+    result = _demo_result()
+    result.provenance["stellar_template"] = {
+        "source": "template.fits",
+        "confidence_weighted_masking": weighted,
+    }
+    report = format_fit_summary(result)
+    assert ("confidence-weighted telluric fit mask" in report) == weighted
+    assert ("binary stellar exclusions" in report) != weighted
+    assert "joint" not in report
+
+
 def test_format_fit_summary_distinguishes_profile_and_multiplier_airmass():
     result = _demo_result()
     result.provenance["atmosphere_metadata"] = {"airmass": 1.23926543209877}
@@ -64,15 +78,16 @@ def test_format_fit_summary_distinguishes_profile_and_multiplier_airmass():
 
 def test_correct_file_always_prints_effective_configuration(tmp_path, capsys):
     wavelength = np.linspace(2.31, 2.36, 160)
-    flux = transmission_model(wavelength, LineList.demo_near_ir(), ModelConfig())
+    flux = transmission_model(wavelength, demo_lines(), ModelConfig())
     input_path = tmp_path / "spectrum.txt"
     np.savetxt(input_path, np.column_stack((wavelength, flux)))
 
     correct_file(
         input_path,
         wavelength_medium="vacuum",
-        demo_line_list=True,
+        line_list=demo_lines(),
         continuum_order=0,
+        automatic_fit_regions=False,
         auto_segment=False,
         lsf_sigma_pixels=0.0,
         lsf_lorentz_fwhm_pixels=0.0,

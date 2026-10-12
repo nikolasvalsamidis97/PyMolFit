@@ -92,7 +92,7 @@ def test_correct_file_exposes_canonical_string_choices() -> None:
     assert inspect.signature(correct_file).parameters["fit_lsf_lorentz_fwhm"].default == "auto"
     assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_bounds"].default is None
     assert inspect.signature(correct_file).parameters["segment_size"].default == 0.005
-    assert inspect.signature(correct_file).parameters["min_transmission"].default == 0.01
+    assert inspect.signature(correct_file).parameters["min_transmission"].default == "auto"
 
 
 def test_atmosphere_hover_text_defines_domain_terms() -> None:
@@ -108,9 +108,9 @@ def test_loss_hover_text_explains_when_robust_fitting_is_appropriate() -> None:
     docstring = inspect.getdoc(correct_file)
     assert docstring is not None
 
-    assert "clean, well-masked spectrum" in docstring
-    assert "mostly clean spectrum containing a limited number" in docstring
-    assert "Robust loss cannot repair generally poor calibration" in docstring
+    assert '"soft_l1"`` (default)' in docstring
+    assert "reduces the influence of outliers" in docstring
+    assert "Robust loss does not repair incorrect calibration" in docstring
     assert "robust losses use an iteratively reweighted version" in docstring
 
 

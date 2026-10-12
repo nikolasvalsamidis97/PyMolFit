@@ -4,19 +4,19 @@ import numpy as np
 
 from pymolfit import (
     FitConfig,
-    LineList,
     ModelConfig,
     Spectrum,
     fit_telluric_segments_with_systematics,
     fit_tellurics_with_systematics,
     transmission_model,
 )
+from tests.helpers import demo_lines
 
 
 def test_systematic_refits_produce_and_propagate_transmission_envelope(tmp_path):
     rng = np.random.default_rng(841)
     wavelength = np.linspace(2.31, 2.36, 420)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     uncertainty = np.full(wavelength.shape, 0.002)
     flux = transmission_model(
         wavelength,
@@ -66,7 +66,7 @@ def test_systematic_refits_produce_and_propagate_transmission_envelope(tmp_path)
 
 def test_systematic_refits_require_named_variants():
     wavelength = np.linspace(2.31, 2.36, 80)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     spectrum = Spectrum(wavelength=wavelength, flux=np.ones_like(wavelength))
 
     with np.testing.assert_raises_regex(ValueError, "at least one"):
@@ -80,7 +80,7 @@ def test_systematic_refits_require_named_variants():
 
 def test_multi_segment_systematics_preserve_shared_refit_and_write_products(tmp_path):
     wavelength = np.linspace(2.31, 2.36, 260)
-    line_list = LineList.demo_near_ir().select_species(("H2O",))
+    line_list = demo_lines().select_species(("H2O",))
     transmission = transmission_model(
         wavelength,
         line_list,

@@ -106,7 +106,7 @@ def test_plot_fit_rejects_compact_output_file(tmp_path):
     compact_path = tmp_path / "corrected.ecsv"
     np.savetxt(compact_path, np.ones((3, 2)))
 
-    with pytest.raises(ValueError, match="product_path"):
+    with pytest.raises(ValueError, match="output_path"):
         plot_fit(compact_path, show=False)
 
 
