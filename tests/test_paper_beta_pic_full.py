@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,6 +73,12 @@ def test_molecular_policy_keeps_unfitted_abundances_at_unity():
 
 
 def test_molecfit_explicitly_enables_molecular_continua(tmp_path, monkeypatch):
+    # The external executable is mocked; do not require Unix paths or symlink privileges.
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(comparison.tempfile, "TemporaryDirectory", lambda **_: nullcontext(work))
+    links = []
+    monkeypatch.setattr(Path, "symlink_to", lambda path, target: links.append((path.name, target)))
     (tmp_path / "input.fits").touch()
     (tmp_path / "gdas.fits").touch()
     catalogue = tmp_path / "aer_v_3.9"
@@ -103,6 +110,11 @@ def test_molecfit_explicitly_enables_molecular_continua(tmp_path, monkeypatch):
     assert commands[0][1]["LBLRTM_ICNTNM"] == 5
     assert commands[0][1]["LIST_MOLEC"] == "H2O,O2,O3,N2"
     assert commands[0][1]["FIT_MOLEC"] == "1,1,0,0"
+    assert links == [
+        ("b", comparison.BACKEND),
+        ("profiles", comparison.BACKEND / "share/molecfit/data/profiles"),
+        ("hitran", catalogue.parent),
+    ]
 
 
 def test_molecular_policy_includes_species_outside_fit_regions():
