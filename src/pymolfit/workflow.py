@@ -19,8 +19,17 @@ from ._automatic import (
     automatic_regions,
     automatic_robust_scale,
     choose_continuum_order,
+    ensure_automatic_region_coverage,
     estimate_missing_uncertainty,
+    guarded_continuum_refinement,
     mask_uncertain_correction,
+)
+from ._coordinated_rescue import defer_rescued_pair
+from ._coordinated_selection import configured_selection_start, coordinated_model_selection
+from ._wavelength_validation import (
+    build_wavelength_validation_plan,
+    evaluate_wavelength_validation,
+    score_wavelength_validation_fold,
 )
 from .aer_data import AERCatalogArtifact, load_aer_line_window
 from .atmosphere import (
@@ -96,7 +105,7 @@ from .regions import (
 from .spectrum import Spectrum, normalize_wavelength_medium
 from .theoretical import StellarMaskResult, TheoreticalSpectrum
 
-DEFAULT_SEGMENT_SIZE_MICRON = 0.005
+DEFAULT_SEGMENT_SIZE_MICRON = 0.01
 AUTO_LINEAR_CONTINUUM_MAX_NFEV = 100
 DEFAULT_LSF_SIGMA_BOUNDS = (0.0, 5.0)
 AUTO_LSF_SIGMA_FALLBACK_PIXELS = 2.0
@@ -166,7 +175,7 @@ class AdvancedOptions:
 
     :param continuum_order: Polynomial flux-continuum degree; 'auto' starts at 2
         and tests degrees 1--4 on withheld wavelength blocks.
-    :param segment_size: Target processing span in microns; 0.005 is 50 Angstrom.
+    :param segment_size: Target processing span in microns; 0.01 is 100 Angstrom.
     :param solve_continuum_linear: Solve continuum coefficients within each trial;
         'auto' normally enables this. False fits them nonlinearly instead.
     :param automatic_fit_regions: Select telluric fitting windows when none are supplied.
@@ -177,8 +186,11 @@ class AdvancedOptions:
     :param wavelength_scope: 'group' shares each correction within a physical order
         or detector group; 'global' shares one correction across the spectrum.
     :param initial_wavelength_shift: Initial model shift in microns; None estimates it.
-    :param wavelength_shift_bounds: Allowed correction bounds in microns; None
-        derives them from detector sampling. Positive shifts move lines redward.
+    :param wavelength_shift_bounds: Coefficient bounds in detector pixels with
+        wavelength_order='auto', or microns with an explicit order. None starts
+        automatic selection at +/-3 pixels and permits supported expansion to
+        +/-12 pixels. Supplied bounds are never widened automatically.
+        Positive shifts move lines redward.
     :param initial_species_scales: Starting molecular column scales, keyed by species;
         omitted species start at 1 and remain free to fit when sufficiently strong.
     :param fixed_species_scales: Positive molecular scales held fixed, not initial guesses.
@@ -220,7 +232,7 @@ class AdvancedOptions:
     continuum_order: int | Literal["auto"] = "auto"
     """Flux-continuum polynomial degree, or automatic selection."""
     segment_size: float = DEFAULT_SEGMENT_SIZE_MICRON
-    """Target segment width in microns (0.005 = 50 Angstrom)."""
+    """Target segment width in microns (0.01 = 100 Angstrom)."""
     solve_continuum_linear: ContinuumSolveMode = "auto"
     """Solve continuum coefficients inside each nonlinear fitting trial."""
     automatic_fit_regions: bool = True
@@ -902,7 +914,7 @@ def correct_file(
     :param radiative_transfer_step_cm: Explicit native radiative-transfer spacing in inverse centimetres; ``None`` derives it from atmospheric layers and line widths.
     :param radiative_transfer_max_points: Maximum native-grid samples before PyMolFit asks for segmentation or a larger explicit safety limit.
     :param auto_segment: ``True`` separates FITS orders/detectors and wavelength discontinuities into physical groups, then divides wide groups into bounded radiative-transfer chunks. Molecular columns remain global, continuum coefficients remain local to numerical chunks, and automatic wavelength polynomials are shared across every chunk from the same physical group. ``False`` fits the input as one segment and may exceed grid limits.
-    :param segment_size: Maximum numerical radiative-transfer chunk width in microns; ``0.005`` equals 50 Angstrom. Reducing it limits memory use but does not create independent physical orders or independent wavelength solutions.
+    :param segment_size: Maximum numerical radiative-transfer chunk width in microns; ``0.01`` equals 100 Angstrom. Reducing it limits memory use but does not create independent physical orders or independent wavelength solutions.
     :param line_cutoff_cm: Optional maximum Voigt-wing distance in inverse centimetres; ``None`` follows ``line_wing_mode`` defaults.
     :param subtract_cutoff_profile: ``True`` subtracts the profile value at the cutoff before truncation; ``False`` leaves the chosen wing mode unchanged.
     :param line_taper_cm: Cosine-taper width in inverse centimetres at a finite line cutoff; ``0`` disables an added taper.
@@ -1879,7 +1891,9 @@ def _correct_spectrum_workflow(
         or resolved_wavelength_shift_bounds[1] <= resolved_wavelength_shift_bounds[0]
     ):
         raise ValueError("wavelength_shift_bounds must be finite and increasing")
-    wavelength_shift_unit = "pixel" if automatic_pixel_wavelength_bounds else "micron"
+    wavelength_shift_unit = (
+        "pixel" if automatic_pixel_wavelength_bounds or auto_select_wavelength_model else "micron"
+    )
 
     fit_initial_wavelength_shift = (
         _micron_shift_to_pixel(
@@ -2008,6 +2022,33 @@ def _correct_spectrum_workflow(
         )
         auto_select_wavelength_model = False
 
+    if region_resolution["source"] == "distributed_catalogue_windows" and fit_ranges:
+        # Use the same processing geometry as run_fit, including grid limits.
+        # Missing-error estimation above deliberately uses the original catalogue
+        # windows, before continuum-support pixels are added to the fit.
+        coverage_segments = (spectrum,)
+        if auto_segment and (
+            resolved_high_resolution_grid
+            or fit_config.fit_segment_wavelength_shifts
+            or fit_config.fit_segment_wavelength_polynomial
+        ):
+            coverage_segments = physical_group_preview
+            if resolved_high_resolution_grid:
+                coverage_segments = _subdivide_segments_for_grid_limit(
+                    coverage_segments,
+                    config=fit_config,
+                    minimum_points=continuum_order + 2,
+                )
+        region_resolution["catalogue_fit_ranges_micron"] = fit_ranges
+        fit_ranges, region_resolution["coverage"] = ensure_automatic_region_coverage(
+            coverage_segments,
+            fit_ranges,
+            exclude_ranges,
+            continuum_order=continuum_order,
+        )
+        fit_config = replace(fit_config, fit_ranges=fit_ranges)
+        region_resolution["fit_ranges_micron"] = fit_ranges
+
     fit_opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
 
     def run_fit(config: FitConfig) -> TelluricFitResult:
@@ -2098,7 +2139,18 @@ def _correct_spectrum_workflow(
         multi_result = fit_telluric_segments(
             active_segments,
             line_list=resolved_line_list,
-            config=config,
+            config=(
+                replace(
+                    config,
+                    wavelength_group_coefficient_bounds={
+                        group: bounds
+                        for group, bounds in config.wavelength_group_coefficient_bounds.items()
+                        if group in active_group_ids
+                    },
+                )
+                if config.wavelength_group_coefficient_bounds
+                else config
+            ),
             fit_weights=active_fit_weights,
             global_wavelength_bounds=full_bounds,
             wavelength_group_ids=active_group_ids,
@@ -2127,6 +2179,16 @@ def _correct_spectrum_workflow(
 
     wavelength_model_resolution: dict[str, object] = {
         "requested": ("auto" if fit_wavelength_shift == "auto" else bool(fit_wavelength_shift)),
+        "allow_automatic_bound_expansion": wavelength_shift_bounds is None,
+        "validation_refines_continuum_order": automatic_continuum_order,
+        "validation_uses_processing_segments": bool(
+            auto_segment
+            and (
+                resolved_high_resolution_grid
+                or fit_config.fit_segment_wavelength_shifts
+                or fit_config.fit_segment_wavelength_polynomial
+            )
+        ),
         "coefficient_unit": fit_config.wavelength_shift_unit,
         "bounds": list(fit_config.wavelength_shift_bounds),
         "selected_model": (
@@ -2395,6 +2457,93 @@ def _correct_spectrum_workflow(
                 )
         continuum_resolution["selected_order"] = fit_config.continuum_order
         scale_resolution["selected_scale"] = fit_config.f_scale
+
+    if (
+        automatic_continuum_order
+        and selected_result.success
+        and stellar_fit_weights is None
+        and not (lsf_sigma_pixels == "auto" and not fit_config.fit_lsf_sigma)
+    ):
+        # These starts come from the caller/header or a fixed policy. They never
+        # reuse full-data fitted atmospheric, LSF or wavelength coefficients.
+        starting_sigma = (
+            float(np.clip(1.0, *fit_config.lsf_sigma_bounds))
+            if lsf_sigma_pixels == "auto" and fit_config.fit_lsf_sigma
+            else resolved_lsf_sigma_pixels
+        )
+        starting_shift = float(
+            np.clip(fit_initial_wavelength_shift, *fit_config.wavelength_shift_bounds)
+        )
+        validation_start = replace(
+            fit_config,
+            initial_species_scales=initial_species_scales,
+            lsf_sigma_pixels=starting_sigma,
+            initial_wavelength_shift=starting_shift,
+            initialize_lsf_sigma_grid=fit_config.fit_lsf_sigma,
+            initialize_wavelength_shift_grid=True,
+        )
+        selected_result, fit_config, validation = guarded_continuum_refinement(
+            selected_result,
+            fit_config,
+            continuum_resolution,
+            run_fit=run_fit,
+            starting_config=validation_start,
+        )
+        continuum_resolution["guarded_degree_validation"] = validation
+        continuum_resolution["selected_order"] = fit_config.continuum_order
+
+    # Finish native model selection before either coordinated selection stage. Each stage
+    # preserves the preceding accepted result on failure, and an original-native
+    # guard prevents cumulative losses across otherwise acceptable decisions.
+    deferred_pair = wavelength_model_resolution.get("blocked_validation", {}).get(
+        "deferred_continuum_wavelength_pair"
+    )
+    joint_eligible = bool(
+        automatic_continuum_order
+        and auto_select_wavelength_model
+        and selected_result.success
+        and stellar_fit_weights is None
+        and not (lsf_sigma_pixels == "auto" and not fit_config.fit_lsf_sigma)
+        and fit_config.wavelength_shift_unit == "pixel"
+    )
+    if deferred_pair is not None or joint_eligible:
+        starting_sigma = (
+            float(np.clip(1.0, *fit_config.lsf_sigma_bounds))
+            if lsf_sigma_pixels == "auto" and fit_config.fit_lsf_sigma
+            else resolved_lsf_sigma_pixels
+        )
+        coordinated_start = configured_selection_start(
+            fit_config,
+            initial_species_scales=initial_species_scales,
+            lsf_sigma_pixels=starting_sigma,
+            resolved_lorentz_fwhm_pixels=resolved_lsf_lorentz_fwhm_pixels,
+            automatic_lorentz=lsf_lorentz_fwhm_pixels == "auto",
+        )
+        selected_result, fit_config, coordinated_details = coordinated_model_selection(
+            selected_result,
+            fit_config,
+            deferred_pair,
+            run_fit=run_fit,
+            starting_config=coordinated_start,
+            enable_joint=joint_eligible,
+        )
+        wavelength_model_resolution["coordinated_joint_selection"] = coordinated_details
+        if "rescue_stage" in coordinated_details:
+            wavelength_model_resolution["coordinated_continuum_rescue"] = coordinated_details[
+                "rescue_stage"
+            ]
+        if "joint_stage" in coordinated_details:
+            wavelength_model_resolution["joint_model_reconsideration"] = coordinated_details[
+                "joint_stage"
+            ]
+        if coordinated_details["accepted"]:
+            continuum_resolution["selected_order"] = fit_config.continuum_order
+            continuum_resolution["coordinated_joint_selection_accepted"] = True
+            wavelength_model_resolution.update(
+                selected_model=_configured_wavelength_model_name(fit_config),
+                selected_coefficients_pixels=selected_result.wavelength_coefficients.tolist(),
+                selection_reason="coordinated_choices_passed_original_native_guards",
+            )
 
     quality_mask_resolution = {
         "source": "fixed_threshold",
@@ -2935,13 +3084,14 @@ def _select_group_wavelength_models(spectrum, *, line_list, config, segment_size
     groups = _split_spectrum(
         spectrum, segment_size=float(np.ptp(wave)) + 1.0, minimum_points=config.continuum_order + 2
     )
-    orders, records = {}, []
+    orders, coefficient_bounds, records = {}, {}, []
     lower, upper = config.wavelength_shift_bounds
     pilot_config = replace(
         config,
         fit_segment_wavelength_shifts=False,
         fit_segment_wavelength_polynomial=False,
         wavelength_group_polynomial_orders=None,
+        wavelength_group_coefficient_bounds=None,
     )
     for group in groups:
         group_id = int(group.meta["physical_group_index"])
@@ -2951,7 +3101,15 @@ def _select_group_wavelength_models(spectrum, *, line_list, config, segment_size
                 line_list=line_list,
                 config=pilot_config,
                 segment_size=segment_size,
-                resolution={},
+                resolution={
+                    "allow_automatic_bound_expansion": resolution.get(
+                        "allow_automatic_bound_expansion", False
+                    ),
+                    "validation_uses_processing_segments": True,
+                    "validation_refines_continuum_order": resolution.get(
+                        "validation_refines_continuum_order", False
+                    ),
+                },
             )
             degree = (
                 selected.wavelength_polynomial_order
@@ -2960,8 +3118,10 @@ def _select_group_wavelength_models(spectrum, *, line_list, config, segment_size
             )
             lower = min(lower, selected.wavelength_shift_bounds[0])
             upper = max(upper, selected.wavelength_shift_bounds[1])
+            coefficient_bounds[group_id] = selected.wavelength_shift_bounds
         except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
             degree, details = -1, {"selection_reason": "pilot_fit_error", "error": str(exc)}
+            coefficient_bounds[group_id] = config.wavelength_shift_bounds
             warnings.warn(
                 f"Wavelength pilot for group {group_id} failed; keeping its input calibration.",
                 RuntimeWarning,
@@ -2978,15 +3138,367 @@ def _select_group_wavelength_models(spectrum, *, line_list, config, segment_size
         fit_segment_wavelength_polynomial=maximum_order > 0,
         segment_wavelength_polynomial_order=maximum_order,
         wavelength_group_polynomial_orders=orders,
+        wavelength_group_coefficient_bounds=coefficient_bounds,
+        wavelength_shift_unit="pixel",
         wavelength_shift_bounds=(lower, upper),
         initial_wavelength_shift=0.0,
     )
     return selected, {
         **resolution,
-        "selection_reason": "per_group_penalized_pilot_evidence",
+        "coefficient_unit": "pixel",
+        "selection_reason": "per_group_pilot_and_blocked_validation_evidence",
         "groups": records,
         "bounds": [lower, upper],
+        "group_coefficient_bounds": coefficient_bounds,
     }
+
+
+def _wavelength_bound_hits(result, config):
+    """Include near-bound solutions even when an optimizer did not flag them."""
+    status = {
+        name: value
+        for name, value in result.parameter_bound_status.items()
+        if "wavelength_" in name
+    }
+    if config.fit_wavelength_shift or config.fit_wavelength_polynomial:
+        lower, upper = config.wavelength_shift_bounds
+        margin = 0.01 * (upper - lower)
+        for index, value in enumerate(result.segment_results[0].wavelength_coefficients):
+            if value <= lower + margin:
+                status[f"coefficient_{index}"] = "lower"
+            elif value >= upper - margin:
+                status[f"coefficient_{index}"] = "upper"
+    return status
+
+
+def _validate_wavelength_candidates(
+    spectrum,
+    *,
+    line_list,
+    config,
+    segment_size,
+    global_bounds,
+    selected,
+    candidates,
+    use_processing_segments=True,
+    automatic_continuum_order=False,
+):
+    """Reconsider pilot rejections using common, guarded, whole-feature holdouts.
+
+    This is conditional model selection: a reference fit locates the blocks.
+    Every subsequent prediction is made by a fit that excludes its scored block
+    and guard. Full-data fitted coefficients are never used to initialize folds.
+    """
+    details = {"method": "conditional_guarded_absorption_blocks", "comparisons": []}
+    if not candidates:
+        return selected, {**details, "status": "no_promising_rejected_candidates"}
+    segments = (
+        _split_spectrum(
+            spectrum, segment_size=segment_size, minimum_points=config.continuum_order + 2
+        )
+        if use_processing_segments
+        else (spectrum,)
+    )
+    if use_processing_segments and config.high_resolution_grid:
+        segments = _subdivide_segments_for_grid_limit(
+            segments, config=config, minimum_points=config.continuum_order + 2
+        )
+    segments = tuple(part for part in segments if _segment_has_fit_pixels(part, config))
+    details["processing_segment_pixel_counts"] = [len(part.wavelength) for part in segments]
+    training_config = replace(
+        config,
+        fit_wavelength_shift=False,
+        fit_wavelength_polynomial=False,
+        fit_segment_wavelength_shifts=False,
+        fit_segment_wavelength_polynomial=False,
+        wavelength_group_polynomial_orders=None,
+        wavelength_group_coefficient_bounds=None,
+        wavelength_shift_unit="pixel",
+        estimate_uncertainties=False,
+        use_jacobian_sparsity=False,
+    )
+    cache = {}
+
+    def fit_with_continuum_refinement(fit_config, fit_masks=None, *, refine=True):
+        result = fit_telluric_segments(
+            segments,
+            line_list=line_list,
+            config=fit_config,
+            fit_masks=fit_masks,
+            global_wavelength_bounds=global_bounds,
+            _opacity_cache=cache,
+        )
+        refinement = {
+            "requested": (
+                "auto" if automatic_continuum_order and refine else fit_config.continuum_order
+            ),
+            "initial_order": fit_config.continuum_order,
+            "selected_order": fit_config.continuum_order,
+        }
+        if not automatic_continuum_order or not refine or not result.success:
+            return result, fit_config, refinement
+        try:
+            # The outer wavelength holdout is excluded from both the inner
+            # continuum-order comparison and its subsequent parameter refit.
+            samples = [
+                (
+                    part.spectrum.wavelength,
+                    part.spectrum.flux,
+                    part.spectrum.uncertainty,
+                    part.transmission,
+                    np.asarray(part.fit_mask, dtype=bool),
+                )
+                for part in result.segment_results
+            ]
+            trial_order, refinement = choose_continuum_order(
+                samples,
+                loss=fit_config.loss,
+                f_scale=fit_config.f_scale,
+                initial_order=fit_config.continuum_order,
+            )
+            if trial_order != fit_config.continuum_order:
+                trial_config = replace(
+                    fit_config,
+                    continuum_order=trial_order,
+                    initial_species_scales=dict(result.species_scales),
+                    lsf_sigma_pixels=result.lsf_sigma_pixels,
+                    lsf_lorentz_fwhm_pixels=result.lsf_lorentz_fwhm_pixels,
+                    lsf_wavelength_exponent=result.lsf_wavelength_exponent,
+                    initialize_lsf_sigma_grid=False,
+                    initial_wavelength_shift=(
+                        float(result.segment_results[0].wavelength_coefficients[0])
+                        if fit_config.fit_wavelength_shift or fit_config.fit_wavelength_polynomial
+                        else fit_config.initial_wavelength_shift
+                    ),
+                )
+                candidate = fit_telluric_segments(
+                    segments,
+                    line_list=line_list,
+                    config=trial_config,
+                    fit_masks=fit_masks,
+                    global_wavelength_bounds=global_bounds,
+                    _opacity_cache=cache,
+                )
+                if candidate.success and all(
+                    np.all(np.isfinite(part.continuum)) and np.all(part.continuum > 0)
+                    for part in candidate.segment_results
+                ):
+                    result, fit_config = candidate, trial_config
+                else:
+                    refinement["fallback"] = (
+                        "adaptive_refit_did_not_converge_or_nonpositive_continuum"
+                    )
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            refinement["fallback"] = str(exc)
+        refinement["selected_order"] = fit_config.continuum_order
+        return result, fit_config, refinement
+
+    try:
+        reference, _, reference_refinement = fit_with_continuum_refinement(
+            replace(selected[1], estimate_uncertainties=False),
+        )
+        details["reference_continuum_refinement"] = reference_refinement
+        if not reference.success:
+            return selected, {**details, "status": "reference_fit_did_not_converge"}
+        # On the normalized order domain |x| <= 1, sum(|a_k|) bounds
+        # polynomial displacement. Include possible motion relative to reference.
+        reference_displacement = float(
+            np.sum(np.abs(reference.segment_results[0].wavelength_coefficients))
+        )
+        maximum_displacement = max(
+            max(abs(value) for value in record[1].wavelength_shift_bounds)
+            * (
+                record[1].wavelength_polynomial_order + 1
+                if record[1].fit_wavelength_polynomial
+                else 1
+            )
+            for record in [selected, *candidates]
+        )
+        folds, plan = build_wavelength_validation_plan(
+            reference.segment_results,
+            continuum_order=config.continuum_order,
+            lsf_sigma_pixels=reference.lsf_sigma_pixels,
+            wavelength_guard_pixels=maximum_displacement + reference_displacement,
+        )
+        details["plan"] = plan
+        if not folds:
+            return selected, {**details, "status": "insufficient_validation_blocks"}
+        # One training-only starting fit per fold is shared by every model.
+        starting_results = []
+        for fold in folds:
+            start, start_config, refinement = fit_with_continuum_refinement(
+                training_config,
+                fold["train_masks"],
+            )
+            if not start.success:
+                return selected, {**details, "status": "training_reference_did_not_converge"}
+            starting_results.append((start, start_config, refinement))
+
+        def evaluate(record, *, fixed_continuum_order=None, starts=None):
+            scores = []
+            active_starts = starting_results if starts is None else starts
+            for fold, starting in zip(folds, active_starts, strict=True):
+                start, start_config, start_refinement = starting
+                if record[0] == "none":
+                    result = start
+                    fold_config = start_config
+                    refinement = start_refinement
+                else:
+                    # Model family and permitted bounds are the only choices
+                    # inherited from the full-data screen. Reset all warm starts.
+                    lower, upper = record[1].wavelength_shift_bounds
+                    initial_shift = config.initial_wavelength_shift
+                    if abs(initial_shift) < 0.02:
+                        initial_shift = 0.02 * (upper - lower)
+                    fold_config = replace(
+                        training_config,
+                        continuum_order=(
+                            training_config.continuum_order
+                            if fixed_continuum_order is None
+                            else fixed_continuum_order
+                        ),
+                        fit_wavelength_shift=record[1].fit_wavelength_shift,
+                        fit_wavelength_polynomial=record[1].fit_wavelength_polynomial,
+                        wavelength_polynomial_order=record[1].wavelength_polynomial_order,
+                        wavelength_shift_bounds=record[1].wavelength_shift_bounds,
+                        initial_wavelength_shift=float(np.clip(initial_shift, lower, upper)),
+                        initial_species_scales=dict(start.species_scales),
+                        lsf_sigma_pixels=start.lsf_sigma_pixels,
+                        lsf_lorentz_fwhm_pixels=start.lsf_lorentz_fwhm_pixels,
+                        lsf_wavelength_exponent=start.lsf_wavelength_exponent,
+                        initialize_lsf_sigma_grid=False,
+                    )
+                    result, fold_config, refinement = fit_with_continuum_refinement(
+                        fold_config,
+                        fold["train_masks"],
+                        refine=fixed_continuum_order is None,
+                    )
+                score = score_wavelength_validation_fold(result, fold)
+                hits = _wavelength_bound_hits(result, fold_config)
+                if hits:
+                    score.update(valid=False, reason="wavelength_coefficient_at_bound")
+                score["wavelength_bound_status"] = hits
+                score.update(
+                    selected_continuum_order=fold_config.continuum_order,
+                    continuum_refinement=refinement,
+                    training_cost=float(result.cost),
+                    nfev=int(result.nfev),
+                    lsf_sigma_pixels=float(result.lsf_sigma_pixels),
+                    coefficients_pixels=(
+                        result.segment_results[0].wavelength_coefficients.tolist()
+                    ),
+                    fit_success=bool(result.success),
+                )
+                scores.append(score)
+            return scores
+
+        # Retry a failed continuum comparison as a whole.  A separate degree
+        # for each wavelength family would confound the paired comparison.
+        # Original score masks, original errors and guard masks stay unchanged.
+        records = [selected, *candidates]
+        matrix = []
+        for record in records:
+            try:
+                matrix.append(evaluate(record))
+            # Preserve each failed family's place in the paired comparison.
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:  # noqa: PERF203
+                matrix.append({"error": str(exc)})
+        original_matrix = matrix
+        original_selected = selected
+        rescue = {
+            "method": "common_fixed_degree_physical_validity_retry",
+            "triggered": False,
+            "attempts": [],
+        }
+        physical_reasons = {"nonpositive_continuum", "nonfinite_prediction"}
+
+        def continuum_invalid(scores):
+            return isinstance(scores, list) and any(
+                item.get("reason") in physical_reasons for item in scores
+            )
+
+        if automatic_continuum_order and any(continuum_invalid(scores) for scores in matrix):
+            rescue["triggered"] = True
+            rescue["original_fold_scores"] = [
+                {"model": record[0], "scores": scores}
+                for record, scores in zip(records, matrix, strict=True)
+            ]
+            for order in range(config.continuum_order - 1, -1, -1):
+                attempt = {"continuum_order": order, "accepted": False}
+                try:
+                    # Each retry starts afresh from the neutral, no-shift fit
+                    # trained only on this fold.  Full-data or previous-degree
+                    # fitted coefficients never initialize the retry.
+                    retry_starts = [
+                        fit_with_continuum_refinement(
+                            replace(training_config, continuum_order=order),
+                            fold["train_masks"],
+                            refine=False,
+                        )
+                        for fold in folds
+                    ]
+                    trial_matrix = [
+                        evaluate(record, fixed_continuum_order=order, starts=retry_starts)
+                        for record in records
+                    ]
+                    attempt["fold_scores"] = [
+                        {"model": record[0], "scores": scores}
+                        for record, scores in zip(records, trial_matrix, strict=True)
+                    ]
+                    # Degree selection uses physical validity only, never the
+                    # withheld flux residual or relative model improvement.
+                    # Bounds failures remain invalid and cannot be rescued by
+                    # relaxing their checks or dropping their score pixels.
+                    if all(all(score.get("valid") for score in scores) for scores in trial_matrix):
+                        matrix = trial_matrix
+                        attempt["accepted"] = True
+                        rescue["selected_continuum_order"] = order
+                        rescue["attempts"].append(attempt)
+                        break
+                    attempt["reason"] = "common_comparison_still_invalid"
+                except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+                    attempt.update(reason="retry_fit_error", error=str(exc))
+                rescue["attempts"].append(attempt)
+        details["paired_continuum_rescue"] = rescue
+        if isinstance(matrix[0], dict):
+            return selected, {**details, "status": "validation_error", "error": matrix[0]["error"]}
+        current_scores = matrix[0]
+        details["reference_model"] = selected[0]
+        details["reference_fold_scores"] = current_scores
+        for candidate, candidate_scores in zip(candidates, matrix[1:], strict=True):
+            try:
+                if isinstance(candidate_scores, dict):
+                    raise ValueError(candidate_scores["error"])
+                comparison = evaluate_wavelength_validation(current_scores, candidate_scores)
+                comparison.update(
+                    from_model=selected[0],
+                    to_model=candidate[0],
+                    bounds_pixels=list(candidate[1].wavelength_shift_bounds),
+                    fold_scores=candidate_scores,
+                )
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+                comparison = {
+                    "from_model": selected[0],
+                    "to_model": candidate[0],
+                    "accepted": False,
+                    "reason": "candidate_validation_error",
+                    "error": str(exc),
+                }
+            details["comparisons"].append(comparison)
+            if comparison["accepted"]:
+                selected, current_scores = candidate, candidate_scores
+        details["status"] = "completed"
+        details["selected_model"] = selected[0]
+        selected, details = defer_rescued_pair(
+            original_selected,
+            candidates,
+            original_matrix,
+            selected,
+            details,
+        )
+    except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+        details.update(status="validation_error", error=str(exc))
+    return selected, details
 
 
 def _select_wavelength_model_from_pilots(
@@ -3020,6 +3532,7 @@ def _select_wavelength_model_from_pilots(
     )
     details: dict[str, object] = {
         **dict(resolution),
+        "coefficient_unit": "pixel",
         "pilot_width_micron": float(pilot_width),
         "pilot_region_count": len(pilot_segments),
         "pilot_regions": pilot_records,
@@ -3130,6 +3643,7 @@ def _select_wavelength_model_from_pilots(
         and constant_bound_status
         and constant_bic_improvement >= AUTO_WAVELENGTH_MIN_BIC_IMPROVEMENT
         and constant_improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
+        and resolution.get("allow_automatic_bound_expansion", False)
         and tuple(config.wavelength_shift_bounds) == AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
     )
     if should_expand_bounds:
@@ -3288,6 +3802,101 @@ def _select_wavelength_model_from_pilots(
             selected_result = candidate_result
             selected_metrics = candidate_metrics
 
+    penalized_selection = (selected_name, selected_config, selected_result, selected_metrics)
+    extra_candidates = []
+    expansions = []
+    for name, candidate_config, candidate_result, candidate_metrics in model_records[1:]:
+        _, improved_fraction = _wavelength_candidate_improvement(
+            no_shift_metrics, candidate_metrics
+        )
+        relative_gain = 1.0 - candidate_metrics["weighted_rss"] / max(
+            no_shift_metrics["weighted_rss"], np.finfo(float).tiny
+        )
+        if (
+            resolution.get("allow_automatic_bound_expansion", False)
+            and tuple(candidate_config.wavelength_shift_bounds)
+            == AUTO_WAVELENGTH_SHIFT_BOUNDS_PIXELS
+            and _wavelength_bound_hits(candidate_result, candidate_config)
+            and relative_gain >= 0.05
+            and improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
+        ):
+            expanded_config = replace(
+                candidate_config,
+                wavelength_shift_bounds=AUTO_WAVELENGTH_SHIFT_EXPANDED_BOUNDS_PIXELS,
+                initial_wavelength_shift=float(
+                    candidate_result.segment_results[0].wavelength_coefficients[0]
+                ),
+            )
+            try:
+                expanded_result = fit_telluric_segments(
+                    pilot_segments,
+                    line_list=line_list,
+                    config=expanded_config,
+                    global_wavelength_bounds=global_bounds,
+                    _opacity_cache=opacity_cache,
+                )
+                expanded_metrics = _lsf_pilot_model_metrics(expanded_result)
+                expansions.append(
+                    {
+                        "model": name,
+                        "bounds_pixels": list(expanded_config.wavelength_shift_bounds),
+                        "metrics": expanded_metrics,
+                        "coefficients_pixels": (
+                            expanded_result.segment_results[0].wavelength_coefficients.tolist()
+                        ),
+                    }
+                )
+                if expanded_result.success:
+                    extra_candidates.append(
+                        (name, expanded_config, expanded_result, expanded_metrics)
+                    )
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+                expansions.append({"model": name, "error": str(exc)})
+    details["validation_bound_expansions"] = expansions
+    complexity = {
+        "none": 0,
+        "constant_pixel_shift": 1,
+        "linear_pixel_trend": 2,
+        "quadratic_pixel_trend": 3,
+    }
+    validation_candidates = []
+    for record in [*model_records[1:], *extra_candidates]:
+        name, candidate_config, candidate_result, candidate_metrics = record
+        if complexity[name] < complexity[selected_name]:
+            continue
+        if (
+            name == selected_name
+            and candidate_config.wavelength_shift_bounds == selected_config.wavelength_shift_bounds
+        ):
+            continue
+        _, improved_fraction = _wavelength_candidate_improvement(
+            selected_metrics, candidate_metrics
+        )
+        relative_gain = 1.0 - candidate_metrics["weighted_rss"] / max(
+            selected_metrics["weighted_rss"], np.finfo(float).tiny
+        )
+        if (
+            relative_gain >= 0.05
+            and improved_fraction >= AUTO_WAVELENGTH_MIN_REGION_FRACTION
+            and not _wavelength_bound_hits(candidate_result, candidate_config)
+        ):
+            validation_candidates.append(record)
+    validation_candidates.sort(key=lambda record: complexity[record[0]])
+    chosen, validation = _validate_wavelength_candidates(
+        spectrum,
+        line_list=line_list,
+        config=config,
+        segment_size=segment_size,
+        global_bounds=global_bounds,
+        selected=penalized_selection,
+        candidates=validation_candidates,
+        use_processing_segments=resolution.get("validation_uses_processing_segments", True),
+        automatic_continuum_order=resolution.get("validation_refines_continuum_order", False),
+    )
+    selected_name, selected_config, selected_result, selected_metrics = chosen
+    details["blocked_validation"] = validation
+    validation_changed_selection = chosen is not penalized_selection
+
     selected_coefficients = (
         selected_result.segment_results[0].wavelength_coefficients.tolist()
         if selected_name != "none"
@@ -3309,9 +3918,13 @@ def _select_wavelength_model_from_pilots(
         "bounds": list(selected_config.wavelength_shift_bounds),
         "selected_model": selected_name,
         "selection_reason": (
-            "penalized_distributed_pilot_evidence"
-            if selected_name != "none"
-            else "no_supported_wavelength_correction"
+            "guarded_block_validation_improvement"
+            if validation_changed_selection
+            else (
+                "penalized_distributed_pilot_evidence"
+                if selected_name != "none"
+                else "no_supported_wavelength_correction"
+            )
         ),
         "selected_coefficients_pixels": selected_coefficients,
         "comparisons": comparisons,
@@ -3978,6 +4591,17 @@ _RESOLVING_POWER_KEYS = (
 )
 
 
+def _lsf_sampling_groups(spectrum: Spectrum) -> tuple[Spectrum, ...]:
+    """Keep detector sampling independent when orders overlap in wavelength."""
+    unit_spectrum = spectrum.to_unit("micron")
+    if unit_spectrum.group_id is None:
+        return (unit_spectrum,)
+    return tuple(
+        _take_spectrum(unit_spectrum, np.flatnonzero(unit_spectrum.group_id == group))
+        for group in np.unique(unit_spectrum.group_id)
+    )
+
+
 def _estimate_lsf_sigma_from_resolving_power(
     spectrum: Spectrum,
     header: Mapping[str, object] | None,
@@ -4002,21 +4626,27 @@ def _estimate_lsf_sigma_from_resolving_power(
     if resolving_power is None:
         return None
 
-    wavelength = spectrum.to_unit("micron").wavelength
-    wavelength = np.sort(wavelength[np.isfinite(wavelength)])
-    if wavelength.size < 2:
+    widths_by_group = []
+    for group in _lsf_sampling_groups(spectrum):
+        wavelength = group.wavelength
+        wavelength = np.sort(wavelength[np.isfinite(wavelength)])
+        if wavelength.size < 2:
+            continue
+        spacing = np.diff(wavelength)
+        positive = spacing[np.isfinite(spacing) & (spacing > 0)]
+        if positive.size == 0:
+            continue
+        representative_spacing = float(np.nanmedian(positive))
+        midpoint = 0.5 * (wavelength[:-1] + wavelength[1:])
+        usable = np.isfinite(spacing) & (spacing > 0) & (spacing <= 10.0 * representative_spacing)
+        widths = midpoint[usable] / (resolving_power * spacing[usable])
+        widths_by_group.append(widths[np.isfinite(widths) & (widths >= 0.2) & (widths <= 100.0)])
+    if not widths_by_group:
         return None
-    spacing = np.diff(wavelength)
-    positive = spacing[np.isfinite(spacing) & (spacing > 0)]
-    if positive.size == 0:
-        return None
-    representative_spacing = float(np.nanmedian(positive))
-    midpoint = 0.5 * (wavelength[:-1] + wavelength[1:])
-    usable = np.isfinite(spacing) & (spacing > 0) & (spacing <= 10.0 * representative_spacing)
-    fwhm_pixels = midpoint[usable] / (resolving_power * spacing[usable])
-    fwhm_pixels = fwhm_pixels[
-        np.isfinite(fwhm_pixels) & (fwhm_pixels >= 0.2) & (fwhm_pixels <= 100.0)
-    ]
+    # A single shared starting width remains a compromise when true samplings
+    # differ. Preserve the existing pixel-weighted median, using only physical
+    # within-order spacings; this does not introduce detector-specific fit widths.
+    fwhm_pixels = np.concatenate(widths_by_group)
     if fwhm_pixels.size == 0:
         return None
     sigma_pixels = float(np.nanmedian(fwhm_pixels) / 2.354820045)
@@ -4037,85 +4667,86 @@ def _estimate_lsf_sigma_from_spectral_features(
     fit_ranges: tuple[tuple[float, float], ...] | None,
     exclude_ranges: tuple[tuple[float, float], ...] | None,
 ) -> dict[str, object] | None:
-    ordered = spectrum.to_unit("micron").sorted()
-    wavelength = ordered.wavelength
-    flux = ordered.flux
-    usable = ordered.valid.copy()
-    if fit_ranges:
-        usable &= np.any(
-            [(wavelength >= lower) & (wavelength <= upper) for lower, upper in fit_ranges],
-            axis=0,
-        )
-    if exclude_ranges:
-        for lower, upper in exclude_ranges:
-            usable &= ~((wavelength >= lower) & (wavelength <= upper))
-
-    positive_steps = np.diff(wavelength)
-    finite_steps = positive_steps[np.isfinite(positive_steps) & (positive_steps > 0)]
-    if finite_steps.size == 0:
-        return None
-    representative_step = float(np.nanmedian(finite_steps))
-    boundaries = np.concatenate(
-        (
-            [0],
-            np.flatnonzero(positive_steps > 10.0 * representative_step) + 1,
-            [wavelength.size],
-        )
-    )
     widths = []
-    for start, stop in pairwise(boundaries):
-        local_usable = usable[start:stop]
-        if np.count_nonzero(local_usable) < 15:
+    for group in _lsf_sampling_groups(spectrum):
+        ordered = group.sorted()
+        wavelength = ordered.wavelength
+        flux = ordered.flux
+        usable = ordered.valid.copy()
+        if fit_ranges:
+            usable &= np.any(
+                [(wavelength >= lower) & (wavelength <= upper) for lower, upper in fit_ranges],
+                axis=0,
+            )
+        if exclude_ranges:
+            for lower, upper in exclude_ranges:
+                usable &= ~((wavelength >= lower) & (wavelength <= upper))
+
+        positive_steps = np.diff(wavelength)
+        finite_steps = positive_steps[np.isfinite(positive_steps) & (positive_steps > 0)]
+        if finite_steps.size == 0:
             continue
-        local_flux = np.asarray(flux[start:stop], dtype=float)
-        finite_flux = local_flux[local_usable]
-        scale = float(np.nanmedian(np.abs(finite_flux)))
-        if not np.isfinite(scale) or scale <= 0:
-            continue
-        filled = local_flux.copy()
-        filled[~local_usable] = float(np.nanmedian(finite_flux))
-        window = min(101, max(15, 2 * (filled.size // 20) + 1))
-        if window % 2 == 0:
-            window += 1
-        continuum = percentile_filter(
-            filled,
-            percentile=80.0,
-            size=window,
-            mode="nearest",
+        representative_step = float(np.nanmedian(finite_steps))
+        boundaries = np.concatenate(
+            (
+                [0],
+                np.flatnonzero(positive_steps > 10.0 * representative_step) + 1,
+                [wavelength.size],
+            )
         )
-        valid_continuum = np.isfinite(continuum) & (np.abs(continuum) > 1.0e-12 * scale)
-        normalized = np.ones_like(filled)
-        normalized[valid_continuum] = filled[valid_continuum] / continuum[valid_continuum]
-        absorption = 1.0 - normalized
-        differences = np.diff(normalized[local_usable])
-        noise = (
-            1.4826
-            * float(np.nanmedian(np.abs(differences - np.nanmedian(differences))))
-            / np.sqrt(2.0)
-            if differences.size
-            else 0.0
-        )
-        prominence = max(0.01, 4.0 * noise)
-        peaks, properties = find_peaks(
-            absorption,
-            height=max(0.015, 3.0 * noise),
-            prominence=prominence,
-            distance=2,
-        )
-        if peaks.size == 0:
-            continue
-        local_widths = peak_widths(
-            absorption,
-            peaks,
-            rel_height=0.5,
-        )[0]
-        valid_widths = (
-            np.isfinite(local_widths)
-            & (local_widths >= 0.8)
-            & (local_widths <= 30.0)
-            & (properties["prominences"] >= prominence)
-        )
-        widths.extend(local_widths[valid_widths].tolist())
+        for start, stop in pairwise(boundaries):
+            local_usable = usable[start:stop]
+            if np.count_nonzero(local_usable) < 15:
+                continue
+            local_flux = np.asarray(flux[start:stop], dtype=float)
+            finite_flux = local_flux[local_usable]
+            scale = float(np.nanmedian(np.abs(finite_flux)))
+            if not np.isfinite(scale) or scale <= 0:
+                continue
+            filled = local_flux.copy()
+            filled[~local_usable] = float(np.nanmedian(finite_flux))
+            window = min(101, max(15, 2 * (filled.size // 20) + 1))
+            if window % 2 == 0:
+                window += 1
+            continuum = percentile_filter(
+                filled,
+                percentile=80.0,
+                size=window,
+                mode="nearest",
+            )
+            valid_continuum = np.isfinite(continuum) & (np.abs(continuum) > 1.0e-12 * scale)
+            normalized = np.ones_like(filled)
+            normalized[valid_continuum] = filled[valid_continuum] / continuum[valid_continuum]
+            absorption = 1.0 - normalized
+            differences = np.diff(normalized[local_usable])
+            noise = (
+                1.4826
+                * float(np.nanmedian(np.abs(differences - np.nanmedian(differences))))
+                / np.sqrt(2.0)
+                if differences.size
+                else 0.0
+            )
+            prominence = max(0.01, 4.0 * noise)
+            peaks, properties = find_peaks(
+                absorption,
+                height=max(0.015, 3.0 * noise),
+                prominence=prominence,
+                distance=2,
+            )
+            if peaks.size == 0:
+                continue
+            local_widths = peak_widths(
+                absorption,
+                peaks,
+                rel_height=0.5,
+            )[0]
+            valid_widths = (
+                np.isfinite(local_widths)
+                & (local_widths >= 0.8)
+                & (local_widths <= 30.0)
+                & (properties["prominences"] >= prominence)
+            )
+            widths.extend(local_widths[valid_widths].tolist())
     if not widths:
         return None
     fwhm_pixels = float(np.nanpercentile(np.asarray(widths), 40.0))
@@ -4265,8 +4896,14 @@ def _split_spectrum(
         source = "fits_order_detector"
         for group in np.unique(unit_spectrum.group_id):
             indices = np.flatnonzero(unit_spectrum.group_id == group)
-            if indices.size >= minimum_points:
-                physical_groups.append(_take_spectrum(unit_spectrum, indices).sorted())
+            if indices.size < minimum_points:
+                raise ValueError(
+                    f"physical group {group!r} has {indices.size} samples; "
+                    f"at least {minimum_points} are required for this continuum. "
+                    "No samples were discarded. Fit this group separately with "
+                    "an appropriate model or explicitly exclude it before fitting."
+                )
+            physical_groups.append(_take_spectrum(unit_spectrum, indices).sorted())
     else:
         ordered = unit_spectrum.sorted()
         if ordered.wavelength.size < minimum_points:

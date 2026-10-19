@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_SEGMENT_SIZE_MICRON,
         metavar="MICRON",
-        help="maximum automatic segment width in microns (default: 0.005 = 50 Angstrom)",
+        help="maximum automatic segment width in microns (default: 0.01 = 100 Angstrom)",
     )
     fit_parser.add_argument(
         "--line-cutoff-cm",

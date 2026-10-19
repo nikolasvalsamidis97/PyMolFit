@@ -3,6 +3,83 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.8.1 - 2026-10-19
+
+### Fixed
+
+- Estimate instrumental sampling and narrow-feature widths within physical
+  orders, so overlapping orders cannot masquerade as finer detector sampling.
+  This can change automatic instrumental bounds and scientific corrections for
+  overlapping multi-order input.
+- Raise an explicit error when a labelled physical order is too short for the
+  requested continuum, instead of silently removing its samples.
+- Resolve native CRIRES WL/SPEC columns as matching order pairs and infer only
+  their matching ERR column. Ambiguous or mixed-order selections now fail
+  explicitly; selecting a FITS extension alone does not select an order.
+- Scale numerical wavelength perturbations by detector dispersion for
+  micron-valued grouped Jacobians and transmission-uncertainty propagation.
+  This can change those fits and uncertainties; pixel-valued paths are unchanged.
+- Preserve native pixel positions across fitting exclusions when measuring
+  residual wavelength shifts. This changes diagnostics, not the fitted arrays.
+
+### Added
+
+- Report numerical correction usability separately from optimiser convergence,
+  including empty corrected output and invalid model/continuum values. Counts
+  and reasons are recorded in `fit_quality.correction_usability`; `success`
+  keeps its optimiser meaning. A usable status does not establish physical
+  accuracy or change correction masks.
+
+### Changed
+
+- Coordinate automatic continuum and wavelength selection for supported
+  individual physical-order fits after the existing refinement stages. Invalid
+  paired wavelength checks can retry a common simpler
+  continuum; a supported pair is deferred and refitted together. A guarded joint
+  comparison can then reconsider continuum and wavelength models without undoing
+  an accepted rescue. Every replacement must pass fixed original-data residual
+  checks, including at most 2 percent RMS regression over the original fitting
+  windows. Failed or unsupported comparisons retain the preceding result and
+  configuration together. This runs with normal automatic defaults, adds fitting
+  work, and can change scientific corrections and retained-pixel counts; explicit
+  continuum/wavelength choices and correction-mask thresholds are preserved.
+  Stage decisions are recorded in `wavelength_alignment.coordinated_joint_selection`.
+- Extend automatic continuum-degree selection with three guarded, fully refitted
+  comparisons for a promising higher degree rejected by the initial screen.
+  Acceptance requires at least 5 percent pooled prediction improvement, an
+  improvement in every fold, and no regression in full-data RMS or median
+  residuals. Unsupported geometry, insufficient training support, or failed fits
+  retain the previous solution. Explicit continuum degrees are unchanged.
+  This can change scientific correction results and adds up to six validation
+  fits plus one final refit per triggered comparison. Decisions are recorded in
+  `automatic_continuum.guarded_degree_validation` provenance.
+- Add conditional recovery when a freely fitted Gaussian instrumental width
+  remains small and locally unresponsive. The fitter can try alternative starting
+  widths within the existing bounds, refitting all free parameters on the same
+  data and objective. It retains the original solution unless a converged,
+  finite, positive-continuum retry has a lower cost. Fixed widths are unchanged.
+  This can change scientific correction results and add optimiser calls;
+  `lsf_sigma_recovery` provenance records the checks and attempts.
+- Improve automatic wavelength-model selection per physical order. Promising
+  models rejected by the fixed-error pilot complexity penalty can be checked
+  using three guarded absorption-feature holdouts, without rescaling input
+  errors. Supported polynomial candidates can try wider default coefficient
+  bounds; explicit bounds are never widened, and each physical group's bounds
+  remain independent. Weak, failed or inconsistent validation keeps the last
+  supported selection. This can change scientific corrections and adds fitting work for
+  ambiguous orders; selection diagnostics are retained in provenance.
+- Increase the default `segment_size` from 0.005 to 0.01 micron (100 Angstrom)
+  across correction APIs and the CLI. Larger processing segments change the
+  local continuum fits and can change scientific correction results. Explicit
+  segment-size overrides and further subdivision for grid limits are preserved.
+- Expand automatic fitting windows within processing segments that select fewer
+  than 25 percent of available pixels or the continuum-dependent minimum count.
+  Affected segments use all valid, non-excluded pixels; existing windows,
+  masks and exclusions are retained. This can change fitted continua, atmospheric
+  parameters and correction results. Explicit ranges, region files and disabled
+  automatic selection are unchanged. Per-segment coverage is recorded in
+  provenance; the safeguard does not guarantee non-saturated continuum support.
+
 ## 0.8.0 - 2026-10-12
 
 ### Breaking API Changes

@@ -92,6 +92,7 @@ def format_fit_summary(
     wavelength_alignment = _mapping(provenance.get("wavelength_alignment"))
     segmentation = _mapping(provenance.get("segmentation"))
     fit_quality = _mapping(provenance.get("fit_quality"))
+    usability = correction_usability_diagnostics(result)
     stellar_template = _mapping(provenance.get("stellar_template"))
     stellar_template_lines: tuple[str, ...] = ()
     if stellar_template:
@@ -261,6 +262,9 @@ def format_fit_summary(
             f"{_format_scalar(result.parameter_bound_status or 'none')}",
             "Result",
             f"  success: {_format_scalar(result.success)}",
+            f"  numerical correction status: {usability['status']} "
+            f"({usability['retained_corrected_pixels']}/{usability['input_valid_pixels']} "
+            "valid samples retained)",
             f"  cost: {result.cost:.8g}",
             f"  function evaluations: {result.nfev}",
             f"  reduced chi-square: {_format_scalar(result.reduced_chi_square)}",
@@ -318,6 +322,88 @@ def correction_summary(result: TelluricFitResult) -> dict[str, float]:
     }
 
 
+def correction_usability_diagnostics(result: TelluricFitResult) -> dict[str, object]:
+    """Report numerical correction usability separately from optimizer success.
+
+    Inspect every valid observed sample, including points outside the fit mask.
+    This does not certify scientific accuracy, change masks, or rewrite success.
+    """
+    valid = result.spectrum.valid
+    fit = valid & (np.ones_like(valid) if result.fit_mask is None else result.fit_mask)
+    retained = valid & result.corrected.valid
+    continuum = np.asarray(result.continuum)
+    transmission = np.asarray(result.transmission)
+    model = np.asarray(result.model_flux)
+    counts = {
+        "input_valid_pixels": int(np.count_nonzero(valid)),
+        "fit_valid_pixels": int(np.count_nonzero(fit)),
+        "retained_corrected_pixels": int(np.count_nonzero(retained)),
+        "nonpositive_continuum_pixels": int(np.count_nonzero(valid & (continuum <= 0))),
+        "nonpositive_continuum_fit_pixels": int(np.count_nonzero(fit & (continuum <= 0))),
+        "nonpositive_continuum_retained_pixels": int(np.count_nonzero(retained & (continuum <= 0))),
+        "nonfinite_continuum_pixels": int(np.count_nonzero(valid & ~np.isfinite(continuum))),
+        "nonfinite_model_pixels": int(np.count_nonzero(valid & ~np.isfinite(model))),
+        "nonfinite_transmission_pixels": int(np.count_nonzero(valid & ~np.isfinite(transmission))),
+        "negative_transmission_pixels": int(np.count_nonzero(valid & (transmission < 0))),
+    }
+    input_count = counts["input_valid_pixels"]
+    retained_count = counts["retained_corrected_pixels"]
+    model_problems = [
+        name.removesuffix("_pixels")
+        for name in (
+            "nonpositive_continuum_pixels",
+            "nonfinite_continuum_pixels",
+            "nonfinite_model_pixels",
+            "nonfinite_transmission_pixels",
+            "negative_transmission_pixels",
+        )
+        if counts[name]
+    ]
+    reasons = list(model_problems)
+    if not result.success:
+        reasons.append("optimizer_not_converged")
+    if not input_count:
+        reasons.append("no_valid_input_samples")
+    elif not retained_count:
+        reasons.append("no_retained_corrected_samples")
+
+    provenance = _mapping(result.provenance)
+    config = _mapping(_mapping(provenance.get("fit_config")).get("fields"))
+    floor = _mapping(provenance.get("correction_mask")).get(
+        "minimum_transmission", config.get("min_transmission")
+    )
+    below_floor = None
+    if isinstance(floor, (float, int)) and np.isfinite(floor) and 0 < floor < 1:
+        below_floor = int(
+            np.count_nonzero(valid & np.isfinite(transmission) & (transmission < floor))
+        )
+        if input_count and below_floor == input_count:
+            reasons.append("all_valid_samples_below_transmission_floor")
+    else:
+        floor = None
+
+    if not input_count:
+        status = "no_valid_input"
+    elif not retained_count:
+        status = "empty_correction"
+    elif model_problems:
+        status = "invalid_model"
+    elif not result.success:
+        status = "optimizer_not_converged"
+    else:
+        status = "usable"
+    return {
+        "status": status,
+        "numerically_usable": status == "usable",
+        "optimizer_success": bool(result.success),
+        "reasons": reasons,
+        **counts,
+        "retained_fraction": retained_count / input_count if input_count else None,
+        "minimum_transmission": float(floor) if floor is not None else None,
+        "pixels_below_transmission_floor": below_floor,
+    }
+
+
 def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
     """Measure residual alignment and correction behavior without refitting."""
 
@@ -344,8 +430,15 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
     groups: list[dict[str, object]] = []
     for group in np.unique(group_values):
         group_label = group.item() if isinstance(group, np.generic) else group
-        group_indices = np.flatnonzero(finite & (group_values == group))
+        native_indices = np.flatnonzero(group_values == group)
+        native_indices = native_indices[
+            np.argsort(result.spectrum.wavelength[native_indices], kind="stable")
+        ]
+        native_pixel = np.arange(native_indices.size, dtype=float)
+        selected = finite[native_indices]
+        group_indices = native_indices[selected]
         group_transmission = result.transmission[group_indices]
+        native_model = result.transmission[native_indices]
         telluric = group_transmission < 0.995
         telluric_count = int(np.count_nonzero(telluric))
         if telluric_count < 12:
@@ -358,14 +451,14 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
             )
             continue
         observed = normalized[group_indices]
-        model = group_transmission
-        pixel = np.arange(model.size, dtype=float)
+        # Retain detector-pixel spacing across fit exclusions and bad pixels.
+        pixel = native_pixel[selected]
         costs = np.empty(shifts.size, dtype=float)
         for shift_index, shift in enumerate(shifts):
             shifted = np.interp(
                 pixel,
-                pixel + shift,
-                model,
+                native_pixel + shift,
+                native_model,
                 left=np.nan,
                 right=np.nan,
             )
@@ -435,6 +528,7 @@ def fit_quality_diagnostics(result: TelluricFitResult) -> dict[str, object]:
             }
         )
     return {
+        "correction_usability": correction_usability_diagnostics(result),
         "groups": groups,
         "measured_group_count": int(measured_shifts.size),
         "median_absolute_residual_shift_pixels": (

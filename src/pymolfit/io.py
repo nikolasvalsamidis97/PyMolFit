@@ -44,6 +44,20 @@ ORDER_COLUMNS = ("order", "spectral_order", "echelle_order", "physical_group")
 DETECTOR_COLUMNS = ("detec", "detector", "chip", "extension")
 
 
+def _native_order_prefixes(names) -> tuple[str, ...]:
+    """Recognize paired CRIRES order/suborder WL+SPEC columns, case-insensitively."""
+    lowered = {str(name).lower() for name in names}
+    prefixes = []
+    for name in lowered:
+        parts = name.split("_")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts[:2]) or parts[2] != "wl":
+            continue
+        prefix = "_".join(parts[:2])
+        if prefix + "_spec" in lowered:
+            prefixes.append(prefix)
+    return tuple(sorted(prefixes))
+
+
 def load_spectrum(
     path: str | Path,
     *,
@@ -327,6 +341,14 @@ def _fits_wavelength_column_index(
         index = names.get(candidate.casefold())
         if index is not None:
             return index
+    native_orders = _native_order_prefixes(names)
+    if len(native_orders) == 1:
+        return names[native_orders[0] + "_wl"]
+    if len(native_orders) > 1:
+        raise SpectrumFormatError(
+            "Multiple native physical orders require an explicit wavelength_col "
+            "before inferring wavelength-medium metadata."
+        )
     return 1 if field_count else None
 
 
@@ -598,11 +620,18 @@ def _select_spectrum_hdu(
             names = extension.columns.names
             # Positional fallback remains available for explicitly selected HDUs,
             # but cannot distinguish a spectrum from an unrelated numeric table.
-            if wavelength_col is None and not any(
-                name.lower() in WAVELENGTH_COLUMNS for name in names
+            single_native_order = len(_native_order_prefixes(names)) == 1
+            if (
+                wavelength_col is None
+                and not single_native_order
+                and not any(name.lower() in WAVELENGTH_COLUMNS for name in names)
             ):
                 continue
-            if flux_col is None and not any(name.lower() in FLUX_COLUMNS for name in names):
+            if (
+                flux_col is None
+                and not single_native_order
+                and not any(name.lower() in FLUX_COLUMNS for name in names)
+            ):
                 continue
             if extension.data is None:
                 continue
@@ -747,11 +776,39 @@ def _spectrum_from_table(
     wavelength_unit: str,
     wavelength_medium: str,
 ) -> Spectrum:
+    native_orders = _native_order_prefixes(table.colnames)
+    named_generic_pair = any(name.lower() in WAVELENGTH_COLUMNS for name in table.colnames) and any(
+        name.lower() in FLUX_COLUMNS for name in table.colnames
+    )
+    if (
+        len(native_orders) > 1
+        and not named_generic_pair
+        and any(column is None for column in (wavelength_col, flux_col))
+    ):
+        raise SpectrumFormatError(
+            "This native detector table contains multiple physical orders. "
+            "Specify matching wavelength_col and flux_col for one WL/SPEC pair; "
+            "its ERR column is optional. Selecting hdu alone does not select an order."
+        )
     wave_name = _resolve_column(table, wavelength_col, WAVELENGTH_COLUMNS, 0)
     flux_name = _resolve_column(table, flux_col, FLUX_COLUMNS, 1)
+    native_prefix = _matching_native_order(wave_name, flux_name)
     uncertainty_name = None
     if uncertainty_col is not None:
         uncertainty_name = _resolve_column(table, uncertainty_col, UNCERTAINTY_COLUMNS, 2)
+        error_identity = _native_column_identity(uncertainty_name)
+        if (
+            native_prefix is not None
+            and error_identity is not None
+            and error_identity != (native_prefix, "err")
+        ):
+            raise SpectrumFormatError(
+                "The native uncertainty column must match the selected WL/SPEC physical order."
+            )
+    elif native_prefix is not None:
+        # Never substitute another order's uncertainty or a positional third column.
+        by_lower = {name.lower(): name for name in table.colnames}
+        uncertainty_name = by_lower.get(native_prefix + "_err")
     else:
         try:
             uncertainty_name = _resolve_column(table, None, UNCERTAINTY_COLUMNS, 2, required=False)
@@ -791,6 +848,31 @@ def _spectrum_from_table(
             "quality_columns": quality_columns,
             "physical_group_columns": group_columns,
         },
+    )
+
+
+def _native_column_identity(name: str) -> tuple[str, str] | None:
+    parts = name.lower().split("_")
+    if (
+        len(parts) == 3
+        and all(part.isdigit() for part in parts[:2])
+        and parts[2] in {"wl", "spec", "err"}
+    ):
+        return "_".join(parts[:2]), parts[2]
+    return None
+
+
+def _matching_native_order(wavelength_name: str, flux_name: str) -> str | None:
+    """Validate native column roles and physical identity after explicit resolution."""
+    wave = _native_column_identity(wavelength_name)
+    flux = _native_column_identity(flux_name)
+    if wave is None and flux is None:
+        return None
+    if wave is not None and flux is not None and wave[1] == "wl" and flux == (wave[0], "spec"):
+        return wave[0]
+    raise SpectrumFormatError(
+        "Native wavelength and flux columns must be a matching WL/SPEC pair "
+        "from the same physical order."
     )
 
 
@@ -899,6 +981,26 @@ def _resolve_column(
     for candidate in candidates:
         if candidate.lower() in by_lower:
             return by_lower[candidate.lower()]
+    native_orders = _native_order_prefixes(table.colnames)
+    suffix = (
+        "_wl"
+        if candidates == WAVELENGTH_COLUMNS
+        else "_spec"
+        if candidates == FLUX_COLUMNS
+        else "_err"
+        if candidates == UNCERTAINTY_COLUMNS
+        else None
+    )
+    if native_orders and suffix is not None:
+        if len(native_orders) > 1:
+            raise SpectrumFormatError(
+                "Multiple native physical orders require explicit WL/SPEC/ERR column selection; "
+                "positional fallback is unsafe for this table."
+            )
+        native_name = by_lower.get(native_orders[0] + suffix)
+        if native_name is not None:
+            return native_name
+        raise SpectrumFormatError(f"Native order {native_orders[0]} has no {suffix[1:]} column")
     if fallback_index < len(table.colnames):
         return table.colnames[fallback_index]
     if required:

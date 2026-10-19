@@ -99,7 +99,7 @@ def test_cli_exposes_native_radiative_transfer_controls():
 def test_cli_uses_public_correction_defaults():
     args = build_parser().parse_args(["fit", "input.txt", "output.txt"])
 
-    assert args.segment_size == 0.005
+    assert args.segment_size == 0.01
     assert args.min_transmission == "auto"
     assert args.continuum_order == "auto"
     assert args.loss == "soft_l1"

@@ -91,7 +91,7 @@ def test_correct_file_exposes_canonical_string_choices() -> None:
     assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_pixels"].default == "auto"
     assert inspect.signature(correct_file).parameters["fit_lsf_lorentz_fwhm"].default == "auto"
     assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_bounds"].default is None
-    assert inspect.signature(correct_file).parameters["segment_size"].default == 0.005
+    assert inspect.signature(correct_file).parameters["segment_size"].default == 0.01
     assert inspect.signature(correct_file).parameters["min_transmission"].default == "auto"
 
 

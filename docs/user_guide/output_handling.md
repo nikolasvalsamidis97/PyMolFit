@@ -60,6 +60,35 @@ This displays the uncorrected and corrected spectra plus the transmission, witho
 | `result.species_scales` | Fitted molecular column-density scaling factors. |
 | `result.success`, `result.message` | Optimiser status and explanation; success alone does not establish correction quality. |
 
+## Check numerical correction status
+
+These checks work for both new results and products saved by older versions:
+
+```python
+from pymolfit.diagnostics import correction_usability_diagnostics
+
+quality = correction_usability_diagnostics(result)
+print(quality["status"])
+print(quality["retained_corrected_pixels"], quality["input_valid_pixels"])
+print(quality["reasons"])
+```
+
+The status is `"usable"`, `"optimizer_not_converged"`, `"invalid_model"`,
+`"empty_correction"` or `"no_valid_input"`. The checks inspect all valid observed
+samples, including those outside the fitting mask. Nonpositive continua,
+nonfinite model values and negative transmission are model problems; negative
+observed flux alone is not. An empty output can occur even when the optimiser
+converged, for example when every sample is below the transmission floor.
+
+This diagnostic does not modify `result.success`, scientific arrays or masks.
+`"usable"` means the numerical checks passed and at least one corrected sample
+remains; inspect the retained fraction and plots before using the result. It is
+not a guarantee of accurate atmospheric removal or preserved stellar features.
+
+New corrections also store these checks under
+`result.provenance["fit_quality"]["correction_usability"]`. Older saved products
+may lack that provenance entry; recomputing it above does not refit the spectrum.
+
 ## Export just wavelength and corrected flux
 
 ```python
