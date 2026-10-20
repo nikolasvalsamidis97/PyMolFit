@@ -55,6 +55,39 @@ If fewer pixels are selected, the workflow adds all valid, non-excluded samples 
 
 `fit_region_selection.coverage` in result provenance records the threshold, affected segments, and selected counts before and after the final range union. This is a pixel-coverage safeguard: selected pixels can still be saturated, and it does not guarantee an identifiable or positive continuum. Missing-error estimation continues to use the original catalogue windows. Explicit fitting ranges, region files, and `automatic_fit_regions=False` bypass this expansion.
 
+Expansion can include stellar features outside the initial telluric windows.
+It is not automatic stellar identification. Supply exclusion intervals or
+reviewed fitting regions when those features could bias the correction.
+
+After continuum/wavelength model selection, an expanded automatic fit can be
+compared with a reduced-support alternative. The alternative retains catalogue
+windows and adds nearby eligible pixels only to the count target above.
+Unseeded segments retain their broad support. The selected continuum degree,
+wavelength model, instrumental model and parameter bounds are held fixed.
+
+Three paired guarded refits compare predictions only on valid, originally
+non-excluded catalogue-window pixels. Guard placement uses the reduced
+training mask and must leave adequate continuum support on both sides.
+Acceptance requires at least 5% pooled prediction-RMS improvement, improvement
+in at least two folds, no fold more than 5% worse, and the median-residual and
+supported transmission-band checks used by joint selection. Both alternatives
+use the same withheld pixels, original errors and configured starting values.
+
+The reduced support is then refitted and must not worsen RMS or median absolute
+residual over the original catalogue windows, introduce parameter-bound hits,
+produce invalid continuum/transmission predictions, or leave no transmission
+above the correction threshold. Otherwise the preceding broad-support result
+and configuration are retained exactly. Weak support or unsupported geometry
+skips these fits. This is conditional model selection, not a guarantee of
+stellar-feature rejection or independently verified correction accuracy.
+
+`fit_region_selection.support_refinement` records the candidate ranges, guards,
+scores and acceptance/fallback reason. `coverage` describes the initial
+expansion; `fit_ranges_micron` and `result.fit_mask` describe the final selection.
+Supplied region files/ranges and stellar-weighted fits bypass this refinement.
+Optional uncertainty propagation is omitted during validation refits and
+retained for the final fit.
+
 ## Automatic wavelength selection
 
 Automatic alignment first compares no correction, a constant pixel offset, and

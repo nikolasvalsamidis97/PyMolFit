@@ -164,6 +164,25 @@ def test_rescue_fit_window_regression_rejected_before_joint(case, monkeypatch):
     assert details["rescue_stage"]["reason"] == "native_fit_window_guard_rejected_rescue"
 
 
+@pytest.mark.parametrize("excluded_flux", [0.0, 10.0, -1e6])
+def test_rescue_scores_ignore_original_exclusions(case, excluded_flux):
+    native, config, _, make, _ = case
+    wave = native.spectrum.wavelength
+    config = replace(config, exclude_ranges=((wave[150], wave[249]),))
+    native.fit_mask[150:250] = False
+    candidate = make(0.8)
+    candidate.fit_mask = native.fit_mask.copy()
+    flux = native.spectrum.flux.copy()
+    flux[150:250] = excluded_flux
+    native.spectrum = replace(native.spectrum, flux=flux)
+    candidate.spectrum = native.spectrum
+    candidate.model_flux[150:250] = 1e4
+    comparison = combined._fixed_full_comparison(native, candidate, config)
+    assert comparison["passed"]
+    assert comparison["scores"]["full"]["pixels"] == 300
+    assert comparison["scores"]["full"]["rms_improvement_fraction"] == pytest.approx(0.2)
+
+
 def test_joint_only_can_accept_with_exact_winning_config(case, monkeypatch):
     _native, config, _, make, _ = case
     candidate = make(0.8)

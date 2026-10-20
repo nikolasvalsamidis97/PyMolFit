@@ -55,13 +55,22 @@ After an initial joint solution, automatic continuum selection compares degrees 
 
 ## Guarded continuum selection
 
+Optimisation uses fitting pixels. With automatic regions, continuum model
+selection also checks predictions on non-excluded wavelengths outside the
+initial fitting windows. User-supplied fitting regions instead bound both
+optimisation and validation. Original
+exclusions are removed from both training and residual-scoring domains.
+Held-out validation blocks are excluded only from training, so they can still
+be scored. Physical checks on finite predictions and positive continua retain
+their full-coverage scope.
+
 For `continuum_order="auto"`, the fixed-transmission screen can nominate one higher degree whose validation cost is at least 5% below the selected degree's cost. The lowest degree within 1% of the best eligible cost is tested. This nomination alone cannot change the result.
 
-Three paired validation folds refit all enabled parameters with identical training and scoring pixels for both degrees. Each processing segment contributes a 16-pixel core near 20%, 50% and 80% of its length, adjusted deterministically to the nearest separated positions with adequate training support. A core must contain at least eight original-valid pixels. The surrounding excluded guard is at least 16 pixels per side and covers the maximum configured Gaussian kernel support plus twice the maximum allowed wavelength displacement. The complete guard is excluded, including any already-invalid pixels; only original-valid core pixels are scored. Segments must retain enough fitting pixels and moderately transmitting support on both sides. Unsupported geometry or insufficient support keeps the previous solution without launching these refits.
+Three paired validation folds refit all enabled parameters with identical training and scoring pixels for both degrees. Each processing segment contributes a 16-pixel core near 20%, 50% and 80% of its length, adjusted deterministically to the nearest separated positions with adequate training support. A core must contain at least eight valid, originally non-excluded pixels. The surrounding excluded guard is at least 16 pixels per side and covers the maximum configured Gaussian kernel support plus twice the maximum allowed wavelength displacement. The complete guard is excluded from training; only valid core pixels outside original exclusions are scored. Segments must retain enough fitting pixels and moderately transmitting support on both sides. Unsupported geometry or insufficient support keeps the previous solution without launching these refits.
 
 Fold starts use the caller's molecular scales, the pre-pilot wavelength start and, for an automatically estimated freely fitted Gaussian width, a bounded 1-pixel starting sigma. Full-data fitted scales, widths and wavelength coefficients are not reused. Original flux, errors, validity and grids must remain unchanged, and every refitted training mask must exactly equal the reference fitting mask minus its guards. Each fold must converge and give finite models and transmission and positive finite continua on all original-valid samples, including withheld pixels.
 
-A candidate needs at least 5% improvement in pooled original-error-standardized RMS, lower RMS in every fold, and no increase in pooled median absolute standardized residual. It is then refitted on all data and must not worsen either RMS or median absolute residual on all original-valid samples or after trimming 40 samples from each outer edge. Rejected or failed comparisons retain the previous result. These residual domains do not depend on the corrected-output mask. The final transmission can nevertheless change which pixels pass the existing correction-quality thresholds.
+A candidate needs at least 5% improvement in pooled original-error-standardized RMS, lower RMS in every fold, and no increase in pooled median absolute standardized residual. It is then refitted on the original fitting pixels and must not worsen either RMS or median absolute residual on valid, originally non-excluded samples, both before and after trimming 40 samples from each outer edge. Rejected or failed comparisons retain the previous result. These residual domains do not depend on the corrected-output mask. The final transmission can nevertheless change which pixels pass the existing correction-quality thresholds.
 
 The check applies to unweighted single-physical-group fits with supported constant-width Gaussian and global wavelength geometry. It skips explicit continuum degrees, automatic Gaussian-width estimates held fixed, stellar confidence weights, variable/non-Gaussian kernels, and unsupported group-specific wavelength geometry. It only reconsiders higher degrees rejected by the initial screen. The usual continuum solver and parameter bounds remain unchanged.
 
@@ -108,7 +117,10 @@ edge, at most 1% whole-spectrum RMS regression, and at most 2% regression in eac
 supported transmission band. Bands with fewer than 32 scoring pixels remain
 unevaluated. A further guard permits at most **2% RMS regression across all
 original fitting-window pixels**, without trimming. These scores use original
-errors and valid pixels, never the candidate's corrected-output mask. The original
+errors and valid, originally non-excluded pixels, never the candidate's
+corrected-output mask. Non-excluded wavelengths outside automatic fitting
+windows remain available for these full-coverage checks; explicit fitting
+regions constrain the score domain. The original
 baseline defines the final guard domains for both stages, preventing permitted
 regressions from accumulating across replacements.
 

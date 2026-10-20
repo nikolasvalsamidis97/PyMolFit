@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from ._automatic import _continuum_prediction_score, continuum_guarded_plan
+from ._automatic import _continuum_prediction_score, continuum_guarded_plan, validation_pixels
 
 RECONSIDER_CONTINUUM = True
 FAMILIES = ("none", "constant", "linear", "quadratic")
@@ -59,8 +59,8 @@ def _bound_hits(result, config):
     return hits
 
 
-def domain_masks(reference):
-    valid = reference.spectrum.valid.copy()
+def domain_masks(reference, exclude_ranges=()):
+    valid = validation_pixels(reference, exclude_ranges)
     valid &= np.isfinite(reference.spectrum.uncertainty) & (reference.spectrum.uncertainty > 0)
     trim = valid.copy()
     trim[:40] = False
@@ -184,6 +184,7 @@ def joint_model_reconsideration(reference, config, *, run_fit, starting_config):
         "method": "bounded_joint_continuum_wavelength_reconsideration",
         "reconsider_continuum": RECONSIDER_CONTINUUM,
         "conditional_on_full_data_structure": True,
+        "score_scope": "original_valid_nonexcluded_pixels",
         "accepted": False,
         "baseline_degree": config.continuum_order,
         "baseline_family": baseline_family,
@@ -222,7 +223,7 @@ def joint_model_reconsideration(reference, config, *, run_fit, starting_config):
     details["plan"] = plan
     if not folds:
         return reference, config, {**details, "reason": "insufficient_validation_support"}
-    domains = domain_masks(reference)
+    domains = domain_masks(reference, config.exclude_ranges)
     shortlist = []
     for degree in degrees:
         for name in FAMILIES:

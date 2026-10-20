@@ -13,6 +13,7 @@ from pymolfit._automatic import (
     continuum_guarded_plan,
     guarded_continuum_refinement,
     promising_continuum_degree,
+    validation_pixels,
 )
 
 
@@ -147,6 +148,79 @@ def test_center_selection_does_not_use_flux_or_fitted_residuals():
     for a, b in zip(first, second, strict=True):
         np.testing.assert_array_equal(a["score_mask"], b["score_mask"])
         np.testing.assert_array_equal(a["guard_mask"], b["guard_mask"])
+
+
+def test_original_exclusions_are_never_used_for_guarded_scoring():
+    reference, config, _, _ = _setup()
+    wave = reference.spectrum.wavelength
+    config = replace(config, exclude_ranges=((wave[50], wave[69]), (wave[440], wave[459])))
+    reference.fit_mask[50:70] = False
+    reference.fit_mask[440:460] = False
+    folds, details = continuum_guarded_plan(reference, config, 2)
+    assert details["reason"] == "ready" and len(folds) == 3
+    for fold in folds:
+        assert not np.any(fold["score_mask"] & ~reference.fit_mask)
+
+
+@pytest.mark.parametrize("excluded_flux", [0.0, 10.0, -1e6])
+def test_continuum_choice_is_invariant_to_flux_in_original_exclusions(excluded_flux):
+    reference, config, resolution, start = _setup()
+    wave = reference.spectrum.wavelength
+    exclusions = ((wave[40], wave[79]),)
+    config = replace(config, exclude_ranges=exclusions)
+    start = replace(start, exclude_ranges=exclusions)
+    reference.fit_mask[40:80] = False
+    flux = reference.spectrum.flux.copy()
+    flux[40:80] = excluded_flux
+    reference.spectrum = replace(reference.spectrum, flux=flux)
+    run, _ = _fake_fitter(reference)
+
+    def fit(config):
+        result = run(config)
+        result.model_flux[40:80] = 9.0 if config.continuum_order == 1 else 9.2
+        return result
+
+    _, selected, details = guarded_continuum_refinement(
+        reference, config, resolution, run_fit=fit, starting_config=start
+    )
+    assert details["accepted"] and selected.continuum_order == 2
+    assert details["full_scores"]["all_original_valid"]["baseline"]["pixels"] == 860
+
+
+@pytest.mark.parametrize("unit", ["micron", "nm", "angstrom"])
+def test_validation_mask_uses_micron_exclusions_and_keeps_nonfit_support(unit):
+    reference, _, _, _ = _setup()
+    wave = reference.spectrum.wavelength
+    exclusions = ((wave[40], wave[79]),)
+    reference.fit_mask[:200] = False
+    reference.spectrum = reference.spectrum.to_unit(unit)
+    selected = validation_pixels(reference, exclusions)
+    expected = np.ones(wave.size, bool)
+    expected[40:80] = False
+    np.testing.assert_array_equal(selected, expected)
+    assert np.any(selected & ~reference.fit_mask)
+
+
+@pytest.mark.parametrize("outside_flux", [0.0, 10.0, -1e6])
+def test_manual_regions_limit_continuum_validation_to_the_original_fit_mask(outside_flux):
+    reference, config, resolution, start = _setup()
+    reference.provenance["validation_region_policy"] = "fitting"
+    reference.fit_mask[40:80] = False
+    flux = reference.spectrum.flux.copy()
+    flux[40:80] = outside_flux
+    reference.spectrum = replace(reference.spectrum, flux=flux)
+    run, _ = _fake_fitter(reference)
+
+    def fit(config):
+        result = run(config)
+        result.model_flux[40:80] = 9.0 if config.continuum_order == 1 else 9.2
+        return result
+
+    _, selected, details = guarded_continuum_refinement(
+        reference, config, resolution, run_fit=fit, starting_config=start
+    )
+    assert details["accepted"] and selected.continuum_order == 2
+    assert details["full_scores"]["all_original_valid"]["baseline"]["pixels"] == 860
 
 
 @pytest.mark.parametrize("failure", ["fold", "leak", "full"])

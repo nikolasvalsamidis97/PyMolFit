@@ -169,6 +169,24 @@ class JointSelectionTests(TestCase):
         self.assertFalse(score["passed"])
         self.assertIn("transparent_regression", score["reasons"])
 
+    def test_joint_choice_does_not_depend_on_flux_in_original_exclusions(self):
+        self.config = replace(self.config, exclude_ranges=((self.wave[40], self.wave[79]),))
+        self.fit_mask[40:80] = False
+        for level in (0.0, 10.0, -1e6):
+            with self.subTest(excluded_flux=level):
+                flux = np.full(600, 10.0)
+                flux[40:80] = level
+                self.spectrum = replace(self.spectrum, flux=flux)
+                self.reference = self.result(1.0, self.fit_mask)
+                result, config, details = self.reconsider()
+                self.assertTrue(details["accepted"])
+                self.assertEqual(config.continuum_order, 1)
+                self.assertEqual(joint.family(config), "linear")
+                self.assertTrue(np.allclose(result.model_flux, 9.2))
+                domains = joint.domain_masks(self.reference, self.config.exclude_ranges)
+                self.assertFalse(np.any(domains["full"][40:80]))
+                self.assertEqual(int(domains["full"].sum()), 560)
+
     def test_bad_prediction_cannot_be_selected_despite_good_training_fit(self):
         def overfit(config):
             result = self.fit(config)

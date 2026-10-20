@@ -26,6 +26,7 @@ from ._automatic import (
 )
 from ._coordinated_rescue import defer_rescued_pair
 from ._coordinated_selection import configured_selection_start, coordinated_model_selection
+from ._region_support import refine_region_support
 from ._wavelength_validation import (
     build_wavelength_validation_plan,
     evaluate_wavelength_validation,
@@ -2051,7 +2052,7 @@ def _correct_spectrum_workflow(
 
     fit_opacity_cache: dict[tuple[object, ...], _PreparedOpacity] = {}
 
-    def run_fit(config: FitConfig) -> TelluricFitResult:
+    def run_model_fit(config: FitConfig) -> TelluricFitResult:
         single_fit_options = {
             **({} if stellar_fit_weights is None else {"fit_weights": stellar_fit_weights}),
         }
@@ -2175,6 +2176,18 @@ def _correct_spectrum_workflow(
             multi_result,
             segment_size=segment_size,
             segment_results=segment_results,
+        )
+
+    def run_fit(config: FitConfig) -> TelluricFitResult:
+        result = run_model_fit(config)
+        return replace(
+            result,
+            provenance={
+                **result.provenance,
+                "validation_region_policy": (
+                    "fitting" if region_resolution["source"] == "explicit" else "nonexcluded"
+                ),
+            },
         )
 
     wavelength_model_resolution: dict[str, object] = {
@@ -2544,6 +2557,38 @@ def _correct_spectrum_workflow(
                 selected_coefficients_pixels=selected_result.wavelength_coefficients.tolist(),
                 selection_reason="coordinated_choices_passed_original_native_guards",
             )
+
+    if (
+        region_resolution.get("coverage", {}).get("expanded_segment_count", 0) > 0
+        and selected_result.success
+        and stellar_fit_weights is None
+    ):
+        support_start = configured_selection_start(
+            fit_config,
+            initial_species_scales=initial_species_scales,
+            lsf_sigma_pixels=(
+                float(np.clip(1.0, *fit_config.lsf_sigma_bounds))
+                if lsf_sigma_pixels == "auto" and fit_config.fit_lsf_sigma
+                else resolved_lsf_sigma_pixels
+            ),
+            resolved_lorentz_fwhm_pixels=resolved_lsf_lorentz_fwhm_pixels,
+            automatic_lorentz=lsf_lorentz_fwhm_pixels == "auto",
+        )
+        selected_result, fit_config, support_details = refine_region_support(
+            selected_result,
+            fit_config,
+            coverage_segments,
+            region_resolution["catalogue_fit_ranges_micron"],
+            run_fit=run_fit,
+            starting_config=support_start,
+        )
+        region_resolution["support_refinement"] = support_details
+        if support_details["accepted"]:
+            region_resolution["fit_ranges_micron"] = fit_config.fit_ranges
+            if "selected_coefficients_pixels" in wavelength_model_resolution:
+                wavelength_model_resolution["selected_coefficients_pixels"] = (
+                    selected_result.wavelength_coefficients.tolist()
+                )
 
     quality_mask_resolution = {
         "source": "fixed_threshold",

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from ._automatic import _continuum_prediction_score
+from ._automatic import _continuum_prediction_score, validation_pixels
 from ._wavelength_validation import evaluate_wavelength_validation
 
 COMPLEXITY = {
@@ -84,8 +84,8 @@ def defer_rescued_pair(original, candidates, original_matrix, rescued, details):
     return baseline, details
 
 
-def _domains(reference):
-    valid = reference.spectrum.valid.copy()
+def _domains(reference, exclude_ranges):
+    valid = validation_pixels(reference, exclude_ranges)
     valid &= np.isfinite(reference.spectrum.uncertainty) & (reference.spectrum.uncertainty > 0)
     trimmed = valid.copy()
     trimmed[:40] = False
@@ -108,7 +108,7 @@ def _fixed_full_comparison(reference, candidate, config):
     if np.any(candidate.transmission[valid] < 0) or np.any(candidate.model_flux[valid] < 0):
         raise ValueError("negative physical model or transmission")
     scores, reasons = {}, []
-    for name, mask in _domains(reference).items():
+    for name, mask in _domains(reference, config.exclude_ranges).items():
         count = int(mask.sum())
         if count < MINIMUM_DOMAIN_PIXELS and name not in {"full", "trim40"}:
             scores[name] = {"pixels": count, "evaluated": False}
@@ -157,6 +157,7 @@ def apply_rescued_pair(reference, config, deferred, *, run_fit, starting_config)
         "pair": dict(deferred),
         "baseline_continuum_order": int(config.continuum_order),
         "conditional_on_full_data_structure": True,
+        "score_scope": "original_valid_nonexcluded_pixels",
         "thresholds": {
             "minimum_trim_gain": MINIMUM_TRIM_GAIN,
             "maximum_full_regression": MAXIMUM_FULL_REGRESSION,

@@ -111,9 +111,21 @@ result = correct(
 
 Do not combine `region_file` with `fit_ranges` or `exclude_ranges`. Exclusions affect fitting, not correction coverage. Automatic selection without usable windows warns and falls back to all valid, non-excluded pixels.
 
+Original exclusions are also omitted from automatic continuum/wavelength
+validation scores. Unlike optimisation, these checks can use non-excluded
+continuum-support pixels outside automatically selected fitting windows.
+User-supplied fitting regions bound both optimisation and validation.
+
 With `continuum_order="auto"`, a promising higher degree can trigger three paired fits with separate guarded wavelength blocks withheld from fitting. It must improve pooled prediction RMS by at least 5%, improve every fold, and retain or improve full-data RMS and median residuals. Original errors and score pixels are held fixed. Insufficient support, unsupported geometry or failed fits keep the previous solution. A triggered check adds up to six validation fits and one final refit; setting a numerical `continuum_order` bypasses it. Inspect `result.provenance["automatic_continuum"]["guarded_degree_validation"]` when present. See [guarded continuum selection](../technical_details/parameter_estimation.md#guarded-continuum-selection) for the scope and safeguards.
 
 Automatic catalogue selection checks each processing segment before pilot fits. When selected pixels fall below 25% of available pixels or the minimum count of `max(32, 8 * (initial_continuum_order + 1))`, it includes all valid, non-excluded pixels in that segment; the required count is capped at the available count. Existing windows and masks are preserved. Explicit ranges/files are unchanged. Counts are recorded in `fit_region_selection.coverage`; sufficient coverage does not guarantee useful transmission or a well-constrained continuum. See [segmentation and regions](../technical_details/segmentation_and_regions.md#automatic-region-selection).
+
+After model selection, a guarded comparison can reduce this added support to
+nearby pixels. It keeps the existing fit unless the reduced support improves
+withheld telluric predictions and passes physical/residual checks. Insufficient
+support leaves the broad fit unchanged. A supported comparison adds up to six
+validation fits and one final refit. Decisions are recorded in
+`fit_region_selection.support_refinement`; reviewed explicit regions bypass it.
 
 ### Wavelength alignment
 

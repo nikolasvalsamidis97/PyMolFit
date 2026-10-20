@@ -362,7 +362,20 @@ def _separated_continuum_centers(feasible, size):
     return None if best is None else best[1:]
 
 
-def continuum_guarded_plan(reference, config, degree):
+def validation_pixels(reference, exclude_ranges):
+    """Keep continuum validation support, but never score original exclusions."""
+    spectrum = reference.spectrum.to_unit("micron")
+    valid = spectrum.valid.copy()
+    if getattr(reference, "provenance", {}).get("validation_region_policy") == "fitting":
+        if reference.fit_mask is None:
+            raise ValueError("explicit fitting regions require the original fitting mask")
+        valid &= reference.fit_mask
+    for lower, upper in exclude_ranges or ():
+        valid &= (spectrum.wavelength < lower) | (spectrum.wavelength > upper)
+    return valid
+
+
+def continuum_guarded_plan(reference, config, degree, *, score_pixels=None):
     """Build three common geometry-only folds; fail closed on weak support."""
     spectrum = reference.spectrum.to_unit("micron")
     wave = spectrum.wavelength
@@ -400,13 +413,20 @@ def continuum_guarded_plan(reference, config, degree):
     boundaries = reference.provenance.get("segmentation", {}).get(
         "boundaries_micron", [(float(wave.min()), float(wave.max()))]
     )
-    valid = spectrum.valid & np.isfinite(spectrum.uncertainty) & (spectrum.uncertainty > 0)
+    valid = validation_pixels(reference, config.exclude_ranges)
+    valid &= np.isfinite(spectrum.uncertainty) & (spectrum.uncertainty > 0)
+    scoring = valid if score_pixels is None else valid & np.asarray(score_pixels, bool)
     eligible = valid & np.asarray(reference.fit_mask, bool)
     moderate = eligible & (reference.transmission > 0.1)
     minimum_training, side = max(48, 12 * (degree + 1)), max(8, 2 * (degree + 1))
     details = {
         "reason": "ready",
         "conditional_on_full_data_structure": True,
+        "score_scope": (
+            "original_valid_nonexcluded_pixels"
+            if score_pixels is None
+            else "supplied_original_valid_nonexcluded_pixels"
+        ),
         "core_pixels": 16,
         "guard_pixels_per_side": guard,
         "maximum_kernel_half_support_pixels": kernel_support,
@@ -435,7 +455,7 @@ def continuum_guarded_plan(reference, config, degree):
         for center in range(8 + guard, indices.size - 8 - guard + 1):
             left, right = center - 8, center + 8
             lower, upper = left - guard, right + guard
-            if np.count_nonzero(valid[indices[left:right]]) < 8:
+            if np.count_nonzero(scoring[indices[left:right]]) < 8:
                 continue
             training = eligible[indices].copy()
             training[lower:upper] = False
@@ -466,7 +486,7 @@ def continuum_guarded_plan(reference, config, degree):
             left, right = center - 8, center + 8
             lower, upper = left - guard, right + guard
             guard_indices, core_indices = indices[lower:upper], indices[left:right]
-            score[core_indices] = valid[core_indices]
+            score[core_indices] = scoring[core_indices]
             withheld[guard_indices] = True
             ranges.append((float(wave[guard_indices[0]]), float(wave[guard_indices[-1]])))
             blocks.append(
@@ -474,7 +494,7 @@ def continuum_guarded_plan(reference, config, degree):
                     "core_indices": [int(core_indices[0]), int(core_indices[-1])],
                     "guard_indices": [int(guard_indices[0]), int(guard_indices[-1])],
                     "training_pixels": feasible[center],
-                    "original_valid_core_pixels": int(valid[core_indices].sum()),
+                    "original_valid_core_pixels": int(scoring[core_indices].sum()),
                     "already_invalid_guard_pixels": int((~valid[guard_indices]).sum()),
                     "center_fraction": float(center / (indices.size - 1)),
                 }
@@ -592,7 +612,7 @@ def guarded_continuum_refinement(reference, config, resolution, *, run_fit, star
             return reference, config, {**details, "reason": "guarded_prediction_threshold_not_met"}
         trial_config = replace(config, continuum_order=degree)
         trial = run_fit(trial_config)
-        valid = reference.spectrum.valid.copy()
+        valid = validation_pixels(reference, config.exclude_ranges)
         full_scores = {}
         for label, mask in (("all_original_valid", valid), ("trim40", valid.copy())):
             if label == "trim40":

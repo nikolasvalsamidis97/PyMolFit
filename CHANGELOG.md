@@ -3,6 +3,31 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.8.2 - 2026-10-20
+
+### Fixed
+
+- Respect original exclusion intervals in guarded continuum validation and
+  coordinated continuum/wavelength model-selection scores. Explicitly excluded
+  stellar or defective pixels no longer affect those residual comparisons.
+  User-supplied fitting regions also bound the validation domain. For automatic
+  regions, ordinary non-excluded continuum support outside the initial windows
+  remains available for validation.
+  Corrections with exclusions can change; this exclusion-mask fix alone leaves
+  automatic no-exclusion calculations unchanged.
+
+### Changed
+
+- Guard reductions of automatically expanded fitting support with paired
+  telluric prediction tests. The existing broad-support fit remains the
+  fallback. A nearby-window alternative must have adequate guarded training
+  support, improve withheld catalogue-line predictions, and preserve physical
+  validity and catalogue-window residuals. Unsupported or failed alternatives
+  retain the existing result and configuration. User-supplied intervals are
+  never expanded or reduced.
+  A supported comparison adds up to six validation fits and one final refit;
+  accepted reductions can change scientific corrections.
+
 ## 0.8.1 - 2026-10-19
 
 ### Fixed
