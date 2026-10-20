@@ -6,6 +6,7 @@ from typing import Literal, get_args, get_origin, get_type_hints
 from pymolfit import (
     Observation,
     correct,
+    correct_arrays,
     correct_file,
     save_corrected_txt,
     save_fit_product_ecsv,
@@ -24,6 +25,11 @@ def _string_choices(annotation: object) -> set[str | None]:
         else:
             pending.extend(get_args(item))
     return choices
+
+
+def test_correction_entry_points_default_to_a_fixed_transmission_floor() -> None:
+    for function in (correct, correct_file, correct_arrays):
+        assert inspect.signature(function).parameters["min_transmission"].default == 0.01
 
 
 def test_unified_correct_documents_every_explicit_parameter_for_editor_hover() -> None:
@@ -92,7 +98,7 @@ def test_correct_file_exposes_canonical_string_choices() -> None:
     assert inspect.signature(correct_file).parameters["fit_lsf_lorentz_fwhm"].default == "auto"
     assert inspect.signature(correct_file).parameters["lsf_lorentz_fwhm_bounds"].default is None
     assert inspect.signature(correct_file).parameters["segment_size"].default == 0.01
-    assert inspect.signature(correct_file).parameters["min_transmission"].default == "auto"
+    assert inspect.signature(correct_file).parameters["min_transmission"].default == 0.01
 
 
 def test_atmosphere_hover_text_defines_domain_terms() -> None:

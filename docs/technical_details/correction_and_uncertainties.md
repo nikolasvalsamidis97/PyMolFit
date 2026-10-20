@@ -38,7 +38,9 @@ That neglected covariance can matter because the transmission was fitted from th
 
 ## Correction masks
 
-Invalid input pixels and transmission below the configured floor are masked in the corrected output. `min_transmission="auto"` uses 0.01 and additionally rejects uncertain divisions below transmission 0.98 when propagated uncertainty exceeds the greater of 10 percent of the fitted continuum and twice the input uncertainty. This protects noisy input from being rejected merely for already being noisy. A numerical `min_transmission` requests only that explicit cutoff.
+Invalid input pixels and transmission below the configured floor are masked in the corrected output. The default `min_transmission=0.01` retains corrected values and their propagated uncertainties even when those uncertainties are large. Observed flux near zero or below zero is not itself a rejection criterion. Retaining a pixel does not establish that its correction is scientifically useful; inspect its uncertainty.
+
+Optional `min_transmission="auto"` adds uncertainty-based rejection below transmission 0.98 when propagated uncertainty exceeds the greater of 10 percent of the fitted continuum and twice the input uncertainty. This stricter mode must be requested explicitly. Changing this output-mask policy does not change the atmospheric fit.
 
 Input validity, fitting selection and corrected-output validity are separate masks. Quality masking does not improve a fit; it marks correction values that should not be trusted.
 

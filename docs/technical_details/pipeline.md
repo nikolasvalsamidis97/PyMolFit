@@ -71,7 +71,7 @@ The flux continuum is **not** divided out. Stellar features and noise remain; ad
 
 ## 8. Propagate errors and return the result
 
-Measurement errors are propagated through the division. Optional fitted-transmission errors add an approximate parameter-uncertainty contribution where supported. Invalid or unreliable corrections are masked, particularly in deep atmospheric absorption.
+Measurement errors are propagated through the division. Optional fitted-transmission errors add an approximate parameter-uncertainty contribution where supported. By default, invalid inputs and transmission below 0.01 are masked; large propagated errors are retained alongside the corrected flux. Uncertainty-based masking is optional.
 
 The returned `TelluricFitResult` contains observed and corrected spectra, transmission, continuum, model flux, masks, parameters and diagnostics. `output_path` saves the complete product; `show_plot=True` displays it. Inspect residuals and masks as well as solver success.
 

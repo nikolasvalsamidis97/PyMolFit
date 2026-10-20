@@ -528,7 +528,7 @@ def correct_arrays(
     o3_continuum: bool = False,
     o3_continuum_xo3cn: float = 1.0,
     line_margin_micron: float = 0.01,
-    min_transmission: float | Literal["auto"] = "auto",
+    min_transmission: float | Literal["auto"] = 0.01,
     max_corrected_relative_uncertainty: float = 0.1,
     minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
     fixed_species_scales: Mapping[str, float] | None = None,
@@ -804,7 +804,7 @@ def correct_file(
     o3_continuum: bool = False,
     o3_continuum_xo3cn: float = 1.0,
     line_margin_micron: float = 0.01,
-    min_transmission: float | Literal["auto"] = "auto",
+    min_transmission: float | Literal["auto"] = 0.01,
     max_corrected_relative_uncertainty: float = 0.1,
     minimum_species_peak_optical_depth: float = (DEFAULT_MINIMUM_SPECIES_PEAK_OPTICAL_DEPTH),
     fixed_species_scales: Mapping[str, float] | None = None,
@@ -933,7 +933,7 @@ def correct_file(
     :param o3_continuum: ``True`` includes packaged LBLRTM Chappuis/Wulf and Hartley-Huggins ozone absorption; ``False`` omits it. Requires O3 in the atmospheric profile and respects the species selection.
     :param o3_continuum_xo3cn: Multiplicative LBLRTM ozone-continuum coefficient scale, normally ``1``.
     :param line_margin_micron: Extra line-selection margin in microns around each modelled spectral interval.
-    :param min_transmission: ``"auto"`` masks transmission below 0.01 plus corrections exceeding the propagated-noise limit. A number strictly between 0 and 1 applies only that fixed threshold.
+    :param min_transmission: Transmission floor, default 0.01; large propagated uncertainties are retained. Optional ``"auto"`` adds the propagated-noise mask. Numeric thresholds must be strictly between 0 and 1.
     :param minimum_species_peak_optical_depth: A molecule's abundance scale is fitted only when its strongest expected absorption in the selected fit pixels reaches this optical-depth threshold. Weaker species remain in the atmospheric model at their profile abundance instead of acquiring an unconstrained extreme scale; lower the default only when deliberately measuring weak trace-gas lines.
     :param initial_species_scales: Initial molecular column scales keyed by species; omitted species start at unity. These are starting guesses, not fixed values.
     :param scale_bounds: Positive lower and upper bounds on fitted molecular column scales.
@@ -1154,7 +1154,7 @@ def correct(
     uncertainty_col: int | str | None = None,
     hdu: int | None = None,
     image_index: int | None = None,
-    min_transmission: float | Literal["auto"] = "auto",
+    min_transmission: float | Literal["auto"] = 0.01,
     estimate_uncertainties: bool = False,
     advanced: AdvancedOptions | None = None,
     cache: CacheConfig | None = None,
@@ -1200,8 +1200,9 @@ def correct(
     :param hdu: FITS extension index; None selects a unique spectral extension.
         Multiple candidates require a choice. This is not an order number.
     :param image_index: Row to extract from a supported 2D FITS image.
-    :param min_transmission: Explicit transmission floor in (0, 1), or 'auto'
-        for a 0.01 floor plus an uncertainty-based correction mask.
+    :param min_transmission: Transmission floor in (0, 1), default 0.01.
+        Large propagated errors are retained. Optional 'auto' adds an
+        uncertainty-based correction mask to the 0.01 floor.
     :param estimate_uncertainties: Also propagate approximate fitted-parameter
         uncertainty. Measurement errors are propagated regardless.
     :param advanced: Optional ``AdvancedOptions`` for fitting regions, molecular

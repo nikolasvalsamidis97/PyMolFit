@@ -74,7 +74,7 @@ only the detector HDU does not choose or combine its orders.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `min_transmission` | `"auto"` | Mask unreliable divisions: an internal transmission floor of 0.01 plus an uncertainty-based quality mask. A number in `(0, 1)` sets an explicit transmission threshold instead. |
+| `min_transmission` | `0.01` | Mask transmission below this floor; retain large propagated errors. Optional `"auto"` adds an uncertainty-based quality mask to the 0.01 floor. Numeric thresholds must be in `(0, 1)`. |
 | `estimate_uncertainties` | `False` | Also propagate approximate fitted-parameter uncertainty into transmission and corrected flux. Measurement errors are propagated without this option. |
 | `report` | `True` | Print the resolved configuration and fit summary. |
 | `advanced` | `None` | Optional `AdvancedOptions`, described below. Omit to use normal defaults. |

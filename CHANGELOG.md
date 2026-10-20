@@ -3,6 +3,17 @@
 PyMolFit follows [Semantic Versioning](https://semver.org/). Changes that can
 affect scientific results are identified explicitly.
 
+## 0.8.3 - 2026-10-20
+
+### Changed
+
+- Default correction masking now uses a fixed transmission floor of 0.01,
+  retaining corrected flux and propagated uncertainties even when the errors
+  are large. Explicit `min_transmission="auto"` retains the previous stricter
+  uncertainty-based mask. Python correction entry points and the CLI share
+  this default. Atmospheric fitting is unchanged, but more corrected pixels
+  can be retained; output validity alone does not establish scientific accuracy.
+
 ## 0.8.2 - 2026-10-20
 
 ### Fixed

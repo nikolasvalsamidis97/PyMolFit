@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pymolfit import LineList, Spectrum, correct_arrays
+from pymolfit import LineList, Spectrum, correct_arrays, load_fit_product
 from pymolfit._automatic import (
     automatic_regions,
     automatic_robust_scale,
@@ -134,7 +134,10 @@ def test_default_correction_selects_continuum_and_serializes_provenance(tmp_path
     assert r.provenance["automatic_continuum"]["selected_order"] == 2
     assert r.provenance["fit_config"]["fields"]["loss"] == "soft_l1"
     assert r.provenance["input_uncertainty"]["source"] == "estimated"
-    assert r.provenance["correction_mask"]["source"] == "propagated_uncertainty"
+    assert r.provenance["correction_mask"] == {
+        "source": "fixed_threshold",
+        "minimum_transmission": 0.01,
+    }
     json.dumps(r.provenance)
     for name in ("automatic_continuum", "input_uncertainty", "robust_scale", "correction_mask"):
         json.dumps(r.provenance[name], allow_nan=False)
@@ -185,6 +188,57 @@ def test_automatic_noise_mask_only_masks_uncertain_correction():
     np.testing.assert_array_equal(updated.spectrum.flux, spectrum.flux)
     assert details["additional_masked_pixels"] == 1
     assert np.isfinite(result.corrected.flux[3])
+
+
+def test_default_retains_uncertain_divisions_without_changing_the_fit(tmp_path):
+    wave = np.linspace(1.0, 1.002, 401)
+    lines = LineList(
+        wavelength=np.array([1.001]),
+        strength=np.array([5.0e-4]),
+        sigma=np.array([3.0e-5]),
+        gamma=np.array([3.0e-6]),
+        species=np.array(["H2O"]),
+    )
+    species, basis = optical_depth_basis(wave, lines)
+    flux = transmission_from_basis(species, basis, species_scales={"H2O": 1.0})
+    flux[0], flux[1], flux[2] = 0.0, -0.001, np.nan
+    valid = np.ones(wave.size, bool)
+    valid[3] = False
+    options = {
+        **quiet_options(),
+        "line_list": lines,
+        "uncertainty": np.full(wave.size, 0.05),
+        "mask": valid,
+        "automatic_fit_regions": False,
+        "continuum_order": 0,
+        "fixed_species_scales": {"H2O": 1.0},
+        "loss": "linear",
+        "f_scale": 1.0,
+    }
+    default = correct_arrays(wave, flux, **options)
+    strict = correct_arrays(wave, flux, min_transmission="auto", **options)
+    keep = default.spectrum.valid & (default.transmission >= 0.01)
+    assert np.any(default.transmission < 0.01)
+    np.testing.assert_array_equal(default.corrected.valid, keep)
+    assert default.corrected.valid[0] and default.corrected.valid[1]
+    assert not default.corrected.valid[2] and not default.corrected.valid[3]
+    recovered = default.corrected.valid & ~strict.corrected.valid
+    assert recovered.any()
+    assert np.all(default.corrected.uncertainty[recovered] > 0.1 * default.continuum[recovered])
+    np.testing.assert_allclose(
+        default.corrected.flux[keep], flux[keep] / default.transmission[keep]
+    )
+    np.testing.assert_allclose(
+        default.corrected.uncertainty[keep], 0.05 / default.transmission[keep]
+    )
+    for name in ("transmission", "continuum", "model_flux", "fit_mask"):
+        np.testing.assert_array_equal(getattr(default, name), getattr(strict, name))
+    assert default.species_scales == strict.species_scales
+    assert strict.provenance["correction_mask"]["source"] == "propagated_uncertainty"
+    default.write(tmp_path / "default.ecsv")
+    loaded = load_fit_product(tmp_path / "default.ecsv")
+    np.testing.assert_array_equal(loaded.corrected.valid, default.corrected.valid)
+    np.testing.assert_allclose(loaded.corrected.uncertainty, default.corrected.uncertainty)
 
 
 def test_robust_scale_is_bounded():

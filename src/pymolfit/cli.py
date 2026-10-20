@@ -376,14 +376,14 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument(
         "--min-transmission",
         type=_auto_or_float,
-        default="auto",
-        help="fixed transmission threshold, or auto: 0.01 plus a propagated-noise limit",
+        default=0.01,
+        help="transmission floor (default: 0.01); auto additionally masks propagated noise",
     )
     fit_parser.add_argument(
         "--max-corrected-relative-uncertainty",
         type=float,
         default=0.1,
-        help="automatic correction-mask uncertainty limit relative to continuum",
+        help="uncertainty limit relative to continuum; used only with --min-transmission auto",
     )
     fit_parser.add_argument(
         "--automatic-fit-regions",

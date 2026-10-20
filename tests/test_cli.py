@@ -100,7 +100,7 @@ def test_cli_uses_public_correction_defaults():
     args = build_parser().parse_args(["fit", "input.txt", "output.txt"])
 
     assert args.segment_size == 0.01
-    assert args.min_transmission == "auto"
+    assert args.min_transmission == 0.01
     assert args.continuum_order == "auto"
     assert args.loss == "soft_l1"
     assert args.f_scale == "auto"
